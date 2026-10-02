@@ -11960,7 +11960,7 @@ async function updateData() {
       }
       const droneLat = det.drone_lat, droneLng = det.drone_long;
       const pilotLat = det.pilot_lat, pilotLng = det.pilot_long;
-      const validDrone = (droneLat !== 0 && droneLng !== 0);
+      const validDrone = !!(droneLat && droneLng);
       // State-change popup logic
       const alias     = aliases[mac];
       // New state calculation: consider time-based staleness
@@ -11985,7 +11985,7 @@ async function updateData() {
 
       // Only fire popup on transition from inactive to active, after initial load, and within stale threshold
       // ALSO handle no-GPS drones here in centralized popup logic
-      const hasGps = validDrone || (pilotLat !== 0 && pilotLng !== 0);
+      const hasGps = validDrone || !!(pilotLat && pilotLng);
       const hasRecentTransmission = det.last_update && (currentTime - det.last_update <= 5);
       const isNoGpsDrone = !hasGps && hasRecentTransmission;
       
@@ -12015,7 +12015,7 @@ async function updateData() {
       // Persist for next update
       previousActive[mac] = activeNow;
 
-      const validPilot = (pilotLat !== 0 && pilotLng !== 0);
+      const validPilot = !!(pilotLat && pilotLng);
       
       // Handle no-GPS drones that are still transmitting (mapping only, no popup)
       if (isNoGpsDrone) {
