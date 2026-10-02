@@ -1,0 +1,32 @@
+RESTORING THIS WORK
+===================
+
+Two files were produced:
+
+1. drone-mesh-5plus.bundle   - the complete git repository: every commit on
+   main and on the intl-detection branch (which holds the FAA removal and the
+   multi-protocol detection work), plus the original origin refs.
+
+     git clone drone-mesh-5plus.bundle drone-mesh-5plus
+     cd drone-mesh-5plus
+     git checkout intl-detection          # the new work
+     git remote set-url origin <url of your new empty GitHub repo>
+     git push --all origin
+
+2. drone-mesh-5plus-intl-detection.zip - this archive: the source tree exactly
+   as committed on intl-detection (no git metadata), plus this folder:
+
+     docs-research/research_mavlink.md            MAVLink frame/CRC/field reference
+     docs-research/research_dji.md                DJI DroneID beacon IE layout, OUIs, SSIDs
+     docs-research/research_ble5.md               BLE 5 Long Range on ESP32 / NimBLE notes
+     docs-research/research_fingerprints_intl.md  vendor prefixes, SSID patterns, RID regimes
+     docs-research/0001-intl-detection.patch      the whole change as one git patch,
+                                                  applicable to the original upstream with
+                                                  `git am 0001-intl-detection.patch`
+
+Verification done before packaging: firmware-common/test `make` passes (18
+synthetic-frame tests incl. independent MAVLink CRC vectors), mesh-mapper.py
+compiles, its inline JavaScript parses. The ESP32 firmware could not be
+compiled in the build environment that produced this; build each
+PlatformIO tree once before flashing. Prebuilt binaries under flasher/ and
+firmware/ are the OLD firmware.

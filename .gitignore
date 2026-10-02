@@ -14,6 +14,10 @@ remoteid-mesh-dualcore/.pio/build/
 remoteid-mesh/.pio/build/
 remoteid-c5-5g/.pio/build/
 
+# ── Host unit tests of the shared detection library ────────
+firmware-common/test/test_detect
+firmware-common/test/json_samples.txt
+
 # ── Python ─────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
@@ -50,5 +54,3 @@ tiles/*-shm
 .env.local
 *.secret
 *credentials*
-faa_cache.csv
-faa_log.csv

@@ -19,7 +19,6 @@ import argparse
 from datetime import datetime, timedelta
 from typing import Optional, List
 from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import Flask, request, jsonify, redirect, url_for, render_template, render_template_string, send_file, make_response
 from flask_socketio import SocketIO, emit
@@ -65,7 +64,6 @@ SHUTDOWN_EVENT = threading.Event()
 # Performance Optimizations
 # ----------------------
 MAX_DETECTION_HISTORY = 1000  # Limit detection history size
-MAX_FAA_CACHE_SIZE = 500      # Limit FAA cache size
 KML_GENERATION_INTERVAL = 30  # Only regenerate KML every 30 seconds
 last_kml_generation = 0
 last_cumulative_kml_generation = 0
@@ -82,12 +80,6 @@ def cleanup_old_detections():
         elif current_time - last_update > staleThreshold * 3:  # 3x stale threshold (3 minutes)
             detection['status'] = 'inactive'  # Mark as inactive but keep in session
     
-    # Only clean up FAA cache, but keep drone detections for session persistence
-    if len(FAA_CACHE) > MAX_FAA_CACHE_SIZE:
-        keys_to_remove = list(FAA_CACHE.keys())[:100]
-        for key in keys_to_remove:
-            del FAA_CACHE[key]
-
 def start_cleanup_timer():
     """Start periodic cleanup every 5 minutes"""
     def cleanup_timer():
@@ -749,18 +741,6 @@ def emit_cumulative_log():
     except Exception as e:
         logger.debug(f"Error emitting cumulative log: {e}")
 
-def emit_faa_cache():
-    try:
-        # Convert FAA_CACHE to JSON-serializable format
-        serializable_cache = {}
-        for key, value in FAA_CACHE.items():
-            # Convert tuple keys to strings
-            str_key = str(key) if isinstance(key, tuple) else key
-            serializable_cache[str_key] = value
-        socketio.emit('faa_cache', serializable_cache, )
-    except Exception as e:
-        logger.debug(f"Error emitting FAA cache: {e}")
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ----------------------
@@ -827,10 +807,8 @@ serial_objs = {}
 serial_objs_lock = threading.Lock()
 
 startup_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-# Updated detections CSV header to include faa_data.
 CSV_FILENAME = os.path.join(BASE_DIR, f"detections_{startup_timestamp}.csv")
 KML_FILENAME = os.path.join(BASE_DIR, f"detections_{startup_timestamp}.kml")
-FAA_LOG_FILENAME = os.path.join(BASE_DIR, "faa_log.csv")  # FAA log CSV remains basic
 
 # Cumulative KML file for all detections
 CUMULATIVE_KML_FILENAME = os.path.join(BASE_DIR, "cumulative.kml")
@@ -843,32 +821,83 @@ if not os.path.exists(CUMULATIVE_KML_FILENAME):
         f.write(f'<name>Cumulative Detections</name>\n')
         f.write('</Document>\n</kml>')
 
-# Write CSV header for detections.
+# ----------------------
+# Detection CSV logging
+# ----------------------
+# One column list shared by the per-session and the cumulative CSV. Files are
+# append-only: a file that already exists keeps the header it was created with
+# and rows are written against THAT header, so a cumulative file from an older
+# version (which may carry columns this version no longer produces) stays
+# well-formed - legacy columns are left blank, new columns only appear in files
+# created with them.
+DETECTION_CSV_FIELDS = [
+    'timestamp', 'alias', 'mac', 'rssi', 'drone_lat', 'drone_long',
+    'drone_altitude', 'pilot_lat', 'pilot_long', 'basic_id',
+    # Added with the multi-protocol detection layer (Remote ID identity
+    # messages, DJI DroneID, MAVLink, WiFi/BLE fingerprints)
+    'id_type', 'op_id', 'ua_type', 'desc', 'eu_cat', 'eu_class',
+    'height', 'speed', 'heading', 'home_lat', 'home_long',
+    'src', 'vendor', 'model', 'ssid', 'conf', 'node_id', 'ch'
+]
+
+# Fields that identify the aircraft or its operator rather than describe the
+# current position. Remote ID sends them in their own messages (Basic ID,
+# Operator ID, Self ID, System) at a lower rate than Location, and a
+# fingerprint hit carries them only once, so update_detection() keeps the last
+# value seen for the MAC whenever a frame arrives without them.
+IDENTITY_FIELDS = [
+    'basic_id', 'id_type', 'basic_id2', 'id_type2', 'ua_type', 'op_id', 'desc',
+    'eu_cat', 'eu_class', 'src', 'vendor', 'model', 'ssid', 'conf', 'role',
+    'sysid', 'mavtype', 'autopilot', 'node_id'
+]
+
+_csv_header_cache = {}
+
+def _csv_fieldnames(path):
+    """Columns to write `path` with: its existing header if it has one, else the current default."""
+    cached = _csv_header_cache.get(path)
+    if cached:
+        return cached
+    fields = list(DETECTION_CSV_FIELDS)
+    try:
+        if os.path.exists(path) and os.path.getsize(path) > 0:
+            with open(path, newline='') as f:
+                header = next(csv.reader(f), None)
+            if header:
+                fields = header
+    except Exception as e:
+        logger.debug(f"Could not read CSV header of {path}: {e}")
+    _csv_header_cache[path] = fields
+    return fields
+
+def append_detection_csv(path, detection):
+    """Append one detection row to `path`, matching whatever header that file has."""
+    fields = _csv_fieldnames(path)
+    row = {
+        'timestamp': datetime.now().isoformat(),
+        'alias': ALIASES.get(detection.get('mac'), ''),
+    }
+    for k in fields:
+        if k in row:
+            continue
+        v = detection.get(k, '')
+        row[k] = '' if v is None else v
+    try:
+        with open(path, mode='a', newline='') as csvfile:
+            csv.DictWriter(csvfile, fieldnames=fields, extrasaction='ignore').writerow(row)
+    except Exception as e:
+        logger.error(f"CSV append failed for {path}: {e}")
+
+# Write CSV header for this session's detections.
 with open(CSV_FILENAME, mode='w', newline='') as csvfile:
-    fieldnames = [
-        'timestamp', 'alias', 'mac', 'rssi', 'drone_lat', 'drone_long',
-        'drone_altitude', 'pilot_lat', 'pilot_long', 'basic_id', 'faa_data'
-    ]
-    writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-    writer.writeheader()
+    csv.DictWriter(csvfile, fieldnames=DETECTION_CSV_FIELDS).writeheader()
 
 # Cumulative CSV file for all detections
 CUMULATIVE_CSV_FILENAME = os.path.join(BASE_DIR, f"cumulative_detections.csv")
 # Initialize cumulative CSV on first run
 if not os.path.exists(CUMULATIVE_CSV_FILENAME):
     with open(CUMULATIVE_CSV_FILENAME, mode='w', newline='') as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=[
-            'timestamp', 'alias', 'mac', 'rssi', 'drone_lat', 'drone_long',
-            'drone_altitude', 'pilot_lat', 'pilot_long', 'basic_id', 'faa_data'
-        ])
-        writer.writeheader()
-
-# Create FAA log CSV with header if not exists.
-if not os.path.exists(FAA_LOG_FILENAME):
-    with open(FAA_LOG_FILENAME, mode='w', newline='') as csvfile:
-        fieldnames = ['timestamp', 'mac', 'remote_id', 'faa_response']
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-        writer.writeheader()
+        csv.DictWriter(csvfile, fieldnames=DETECTION_CSV_FIELDS).writeheader()
 
 # --- Alias Persistence ---
 ALIASES_FILE = os.path.join(BASE_DIR, "aliases.json")
@@ -1391,7 +1420,6 @@ def start_websocket_broadcaster():
                     
                     if int(time.time()) % 30 == 0:  # Every 30 seconds
                         emit_cumulative_log()
-                        emit_faa_cache()
             except Exception as e:
                 # Ignore errors if no clients connected
                 pass
@@ -1408,42 +1436,7 @@ def start_websocket_broadcaster():
     logger.info("WebSocket broadcaster thread started")
 
 # ----------------------
-# FAA Cache Persistence
-# ----------------------
-FAA_CACHE_FILENAME = os.path.join(BASE_DIR, "faa_cache.csv")
-FAA_CACHE = {}
-
-# Load FAA cache from disk if it exists
-if os.path.exists(FAA_CACHE_FILENAME):
-    try:
-        with open(FAA_CACHE_FILENAME, newline='') as csvfile:
-            reader = csv.DictReader(csvfile)
-            for row in reader:
-                key = (row['mac'], row['remote_id'])
-                FAA_CACHE[key] = json.loads(row['faa_response'])
-    except Exception as e:
-        print("Error loading FAA cache:", e)
-
-def write_to_faa_cache(mac, remote_id, faa_data):
-    key = (mac, remote_id)
-    FAA_CACHE[key] = faa_data
-    try:
-        file_exists = os.path.isfile(FAA_CACHE_FILENAME)
-        with open(FAA_CACHE_FILENAME, "a", newline='') as csvfile:
-            fieldnames = ["mac", "remote_id", "faa_response"]
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            if not file_exists:
-                writer.writeheader()
-            writer.writerow({
-                "mac": mac,
-                "remote_id": remote_id,
-                "faa_response": json.dumps(faa_data)
-            })
-    except Exception as e:
-        print("Error writing to FAA cache:", e)
-
-# ----------------------
-# KML Generation (including FAA data)
+# KML Generation
 # ----------------------
 def generate_kml():
     # Build sorted list of all MACs seen so far
@@ -1702,99 +1695,43 @@ def update_detection(detection):
     new_drone_long = detection.get("drone_long", 0)
     valid_drone = (new_drone_lat != 0 and new_drone_long != 0)
 
+    # Identity fields are not in every frame - Basic ID, Operator ID, Self ID
+    # and Location are separate Remote ID messages, so a position update often
+    # arrives without the identity it belongs to. Keep the last value seen for
+    # this MAC for every identity field this frame lacks.
+    if prev:
+        for k in IDENTITY_FIELDS:
+            if not detection.get(k) and prev.get(k):
+                detection[k] = prev[k]
+
     if not valid_drone:
         print(f"No-GPS detection for {mac}; forwarding for processing.")
         # Set last_update for no-GPS detections so they can be tracked for timeout
         detection["last_update"] = time.time()
         # Mark as active since this is a fresh detection
         detection["status"] = "active"
-        
-        # Preserve previous basic_id if new detection lacks one (same logic as GPS section)
-        if not detection.get("basic_id") and mac in tracked_pairs and tracked_pairs[mac].get("basic_id"):
-            detection["basic_id"] = tracked_pairs[mac]["basic_id"]
-        
-        # Comprehensive FAA data persistence logic for no-GPS detections
-        remote_id = detection.get("basic_id")
-        if mac:
-            # Exact match if basic_id provided
-            if remote_id:
-                key = (mac, remote_id)
-                if key in FAA_CACHE:
-                    detection["faa_data"] = FAA_CACHE[key]
-            # Fallback: any cached FAA data for this mac (regardless of basic_id)
-            if "faa_data" not in detection:
-                for (c_mac, _), faa_data in FAA_CACHE.items():
-                    if c_mac == mac:
-                        detection["faa_data"] = faa_data
-                        break
-            # Fallback: last known FAA data in tracked_pairs
-            if "faa_data" not in detection and mac in tracked_pairs and "faa_data" in tracked_pairs[mac]:
-                detection["faa_data"] = tracked_pairs[mac]["faa_data"]
-            # Always cache FAA data by MAC and current basic_id for future lookups
-            if "faa_data" in detection:
-                write_to_faa_cache(mac, detection.get("basic_id", ""), detection["faa_data"])
-        
+
         # Forward this no-GPS detection to the client
         tracked_pairs[mac] = detection
         detection_history.append(detection.copy())
-        
+
         # Backend webhook logic for all detections (GPS and no-GPS) - enabled
         should_trigger, is_new = should_trigger_webhook_earliest(detection, mac)
         if should_trigger:
             trigger_backend_webhook_earliest(detection, is_new)
-        
-        # Write to session CSV even for no-GPS
-        with open(CSV_FILENAME, mode='a', newline='') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=[
-                'timestamp', 'alias', 'mac', 'rssi', 'drone_lat', 'drone_long',
-                'drone_altitude', 'pilot_lat', 'pilot_long', 'basic_id', 'faa_data'
-            ])
-            writer.writerow({
-                'timestamp': datetime.now().isoformat(),
-                'alias': ALIASES.get(mac, ''),
-                'mac': mac,
-                'rssi': detection.get('rssi', ''),
-                'drone_lat': new_drone_lat,
-                'drone_long': new_drone_long,
-                'drone_altitude': detection.get('drone_altitude', ''),
-                'pilot_lat': detection.get('pilot_lat', ''),
-                'pilot_long': detection.get('pilot_long', ''),
-                'basic_id': detection.get('basic_id', ''),
-                'faa_data': json.dumps(detection.get('faa_data', {}))
-            })
 
-        # Append to cumulative CSV for no-GPS
-        with open(CUMULATIVE_CSV_FILENAME, mode='a', newline='') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=[
-                'timestamp', 'alias', 'mac', 'rssi', 'drone_lat', 'drone_long',
-                'drone_altitude', 'pilot_lat', 'pilot_long', 'basic_id', 'faa_data'
-            ])
-            writer.writerow({
-                'timestamp': datetime.now().isoformat(),
-                'alias': ALIASES.get(mac, ''),
-                'mac': mac,
-                'rssi': detection.get('rssi', ''),
-                'drone_lat': new_drone_lat,
-                'drone_long': new_drone_long,
-                'drone_altitude': detection.get('drone_altitude', ''),
-                'pilot_lat': detection.get('pilot_lat', ''),
-                'pilot_long': detection.get('pilot_long', ''),
-                'basic_id': detection.get('basic_id', ''),
-                'faa_data': json.dumps(detection.get('faa_data', {}))
-            })
+        # Log no-GPS detections too: identity and RSSI are still evidence
+        append_detection_csv(CSV_FILENAME, detection)
+        append_detection_csv(CUMULATIVE_CSV_FILENAME, detection)
         # Regenerate full cumulative KML
         generate_cumulative_kml_throttled()
         generate_kml_throttled()
-        
+
         # Reduce WebSocket emissions - only emit detection, not all data types
         try:
             socketio.emit('detection', detection, )
         except Exception:
             pass
-        
-        # Cache FAA data even for no-GPS
-        if detection.get('basic_id'):
-            write_to_faa_cache(mac, detection['basic_id'], detection.get('faa_data', {}))
         return
 
     # Otherwise, use the provided non-zero coordinates.
@@ -1806,30 +1743,6 @@ def update_detection(detection):
     detection["last_update"] = time.time()
     # Mark as active since this is a fresh detection
     detection["status"] = "active"
-
-    # Preserve previous basic_id if new detection lacks one
-    if not detection.get("basic_id") and mac in tracked_pairs and tracked_pairs[mac].get("basic_id"):
-        detection["basic_id"] = tracked_pairs[mac]["basic_id"]
-    remote_id = detection.get("basic_id")
-    # Try exact cache lookup by (mac, remote_id), then fallback to any cached data for this mac, then to previous tracked_pairs entry
-    if mac:
-        # Exact match if basic_id provided
-        if remote_id:
-            key = (mac, remote_id)
-            if key in FAA_CACHE:
-                detection["faa_data"] = FAA_CACHE[key]
-        # Fallback: any cached FAA data for this mac
-        if "faa_data" not in detection:
-            for (c_mac, _), faa_data in FAA_CACHE.items():
-                if c_mac == mac:
-                    detection["faa_data"] = faa_data
-                    break
-        # Fallback: last known FAA data in tracked_pairs
-        if "faa_data" not in detection and mac in tracked_pairs and "faa_data" in tracked_pairs[mac]:
-            detection["faa_data"] = tracked_pairs[mac]["faa_data"]
-        # Always cache FAA data by MAC and current basic_id for fallback
-        if "faa_data" in detection:
-            write_to_faa_cache(mac, detection.get("basic_id", ""), detection["faa_data"])
 
     tracked_pairs[mac] = detection
 
@@ -1854,53 +1767,17 @@ def update_detection(detection):
         pass
     detection_history.append(detection.copy())
     print("Updated tracked_pairs:", tracked_pairs)
-    with open(CSV_FILENAME, mode='a', newline='') as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=[
-            'timestamp', 'alias', 'mac', 'rssi', 'drone_lat', 'drone_long',
-            'drone_altitude', 'pilot_lat', 'pilot_long', 'basic_id', 'faa_data'
-        ])
-        writer.writerow({
-            'timestamp': datetime.now().isoformat(),
-            'alias': ALIASES.get(mac, ''),
-            'mac': mac,
-            'rssi': detection.get('rssi', ''),
-            'drone_lat': detection.get('drone_lat', ''),
-            'drone_long': detection.get('drone_long', ''),
-            'drone_altitude': detection.get('drone_altitude', ''),
-            'pilot_lat': detection.get('pilot_lat', ''),
-            'pilot_long': detection.get('pilot_long', ''),
-            'basic_id': detection.get('basic_id', ''),
-            'faa_data': json.dumps(detection.get('faa_data', {}))
-        })
-    # Append to cumulative CSV
-    with open(CUMULATIVE_CSV_FILENAME, mode='a', newline='') as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=[
-            'timestamp', 'alias', 'mac', 'rssi', 'drone_lat', 'drone_long',
-            'drone_altitude', 'pilot_lat', 'pilot_long', 'basic_id', 'faa_data'
-        ])
-        writer.writerow({
-            'timestamp': datetime.now().isoformat(),
-            'alias': ALIASES.get(mac, ''),
-            'mac': mac,
-            'rssi': detection.get('rssi', ''),
-            'drone_lat': detection.get('drone_lat', ''),
-            'drone_long': detection.get('drone_long', ''),
-            'drone_altitude': detection.get('drone_altitude', ''),
-            'pilot_lat': detection.get('pilot_lat', ''),
-            'pilot_long': detection.get('pilot_long', ''),
-            'basic_id': detection.get('basic_id', ''),
-            'faa_data': json.dumps(detection.get('faa_data', {}))
-        })
+    append_detection_csv(CSV_FILENAME, detection)
+    append_detection_csv(CUMULATIVE_CSV_FILENAME, detection)
     # Regenerate full cumulative KML
     generate_cumulative_kml_throttled()
     generate_kml_throttled()
-    
+
     # Emit real-time updates via WebSocket (if available in this context)
     try:
         emit_detections()
         emit_paths()
         emit_cumulative_log()
-        emit_faa_cache()
     except NameError:
         # Emit functions not available in this thread context
         pass
@@ -2019,22 +1896,22 @@ def trigger_backend_webhook_earliest(detection, is_new_detection):
             'alert': header,
             'mac': mac,
             'basic_id': detection.get('basic_id'),
+            'op_id': detection.get('op_id'),
+            'src': detection.get('src'),
+            'vendor': detection.get('vendor'),
+            'model': detection.get('model'),
+            'ssid': detection.get('ssid'),
+            'desc': detection.get('desc'),
             'alias': alias,
             'drone_lat': detection.get('drone_lat') if detection.get('drone_lat') != 0 else None,
             'drone_long': detection.get('drone_long') if detection.get('drone_long') != 0 else None,
             'pilot_lat': detection.get('pilot_lat') if detection.get('pilot_lat') != 0 else None,
             'pilot_long': detection.get('pilot_long') if detection.get('pilot_long') != 0 else None,
-            'faa_data': None,  # Will be populated below
             'drone_gmap': None,
             'pilot_gmap': None,
             'isNew': is_new_detection
         }
-        
-        # Add FAA data if available
-        faa_data = detection.get('faa_data')
-        if faa_data and isinstance(faa_data, dict) and faa_data.get('data') and isinstance(faa_data['data'].get('items'), list) and len(faa_data['data']['items']) > 0:
-            payload['faa_data'] = faa_data['data']['items'][0]
-        
+
         # Add Google Maps links
         if payload['drone_lat'] and payload['drone_long']:
             payload['drone_gmap'] = f"https://www.google.com/maps?q={payload['drone_lat']},{payload['drone_long']}"
@@ -2055,40 +1932,6 @@ def trigger_backend_webhook_earliest(detection, is_new_detection):
     except Exception as e:
         logging.error(f"Backend webhook error for {detection.get('mac', 'unknown')}: {e}")
 
-
-# ----------------------
-# FAA Query Helper Functions
-# ----------------------
-def create_retry_session(retries=3, backoff_factor=2, status_forcelist=(502, 503, 504)):
-    logging.debug("Creating retry-enabled session with custom headers for FAA query.")
-    session = requests.Session()
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:137.0) Gecko/20100101 Firefox/137.0",
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.5",
-        "Referer": "https://uasdoc.faa.gov/listdocs",
-        "client": "external"
-    })
-    retry = Retry(
-        total=retries,
-        read=retries,
-        connect=retries,
-        backoff_factor=backoff_factor,
-        status_forcelist=status_forcelist,
-        raise_on_status=False
-    )
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount("https://", adapter)
-    return session
-
-def refresh_cookie(session):
-    homepage_url = "https://uasdoc.faa.gov/listdocs"
-    logging.debug("Refreshing FAA cookie by requesting homepage: %s", homepage_url)
-    try:
-        response = session.get(homepage_url, timeout=30)
-        logging.debug("FAA homepage response code: %s", response.status_code)
-    except requests.exceptions.RequestException as e:
-        logging.exception("Error refreshing FAA cookie: %s", e)
 
 # ----------------------
 # Offline tiles HTTP routes
@@ -3741,8 +3584,8 @@ _TRACE_UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.
 def _trace_session():
     """Fast, NO-retry session for high-volume trace fetches.
 
-    Traces were being fetched with create_retry_session() — the FAA-query session
-    (retries=3, backoff_factor=2). A single slow/hanging host then became
+    Traces were being fetched with a retrying session (retries=3,
+    backoff_factor=2). A single slow/hanging host then became
     ~8s timeout x (1 + 3 retries) + 2s/4s/8s backoff, repeated across 2 URLs x 3
     hosts = a MINUTES-long stall per aircraft. So the real flight trace never
     arrived in time and the trail fell back to the dead-reckoned straight line.
@@ -4132,30 +3975,8 @@ def api_cache_job_delete(job_id):
     return jsonify({'ok': True})
 
 
-def query_remote_id(session, remote_id):
-    endpoint = "https://uasdoc.faa.gov/api/v1/serialNumbers"
-    params = {
-        "itemsPerPage": 8,
-        "pageIndex": 0,
-        "orderBy[0]": "updatedAt",
-        "orderBy[1]": "DESC",
-        "findBy": "serialNumber",
-        "serialNumber": remote_id
-    }
-    logging.debug("Querying FAA API endpoint: %s with params: %s", endpoint, params)
-    try:
-        response = session.get(endpoint, params=params, timeout=30)
-        logging.debug("FAA Request URL: %s", response.url)
-        if response.status_code != 200:
-            logging.error("FAA HTTP error: %s - %s", response.status_code, response.reason)
-            return None
-        return response.json()
-    except Exception as e:
-        logging.exception("Error querying FAA API: %s", e)
-        return None
-
 # ----------------------
-# Webhook popup API Endpoint 
+# Webhook popup API Endpoint
 # ----------------------
 @app.route('/api/webhook_popup', methods=['POST'])
 def webhook_popup():
@@ -4179,78 +4000,6 @@ def webhook_popup():
     except Exception as e:
         logging.error(f"Webhook send error: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
-
-# ----------------------
-# New FAA Query API Endpoint
-# ----------------------
-@app.route('/api/query_faa', methods=['POST'])
-def api_query_faa(): 
-    data = request.get_json()
-    mac = data.get("mac")
-    remote_id = data.get("remote_id")
-    if not mac or not remote_id:
-        return jsonify({"status": "error", "message": "Missing mac or remote_id"}), 400
-    session = create_retry_session()
-    refresh_cookie(session)
-    faa_result = query_remote_id(session, remote_id)
-    # Fallback: if FAA API query failed or returned no records, try cached FAA data by MAC
-    if not faa_result or not faa_result.get("data", {}).get("items"):
-        for (c_mac, _), cached_data in FAA_CACHE.items():
-            if c_mac == mac:
-                faa_result = cached_data
-                break
-    if faa_result is None:
-        return jsonify({"status": "error", "message": "FAA query failed"}), 500
-    if mac in tracked_pairs:
-        tracked_pairs[mac]["faa_data"] = faa_result
-    else:
-        tracked_pairs[mac] = {"basic_id": remote_id, "faa_data": faa_result}
-    write_to_faa_cache(mac, remote_id, faa_result)
-    timestamp = datetime.now().isoformat()
-    try:
-        with open(FAA_LOG_FILENAME, "a", newline='') as csvfile:
-            fieldnames = ["timestamp", "mac", "remote_id", "faa_response"]
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            writer.writerow({
-                "timestamp": timestamp,
-                "mac": mac,
-                "remote_id": remote_id,
-                "faa_response": json.dumps(faa_result)
-            })
-    except Exception as e:
-        print("Error writing to FAA log CSV:", e)
-    generate_kml()
-    return jsonify({"status": "ok", "faa_data": faa_result})
-
-# ----------------------
-# FAA Data GET API Endpoint (by MAC or basic_id)
-# ----------------------
-
-@app.route('/api/faa/<identifier>', methods=['GET'])
-def api_get_faa(identifier):
-    """
-    Retrieve cached FAA data by MAC address or by basic_id (remote ID).
-    """
-    # First try lookup by MAC
-    if identifier in tracked_pairs and 'faa_data' in tracked_pairs[identifier]:
-        return jsonify({'status': 'ok', 'faa_data': tracked_pairs[identifier]['faa_data']})
-    # Then try lookup by basic_id
-    for mac, det in tracked_pairs.items():
-        if det.get('basic_id') == identifier and 'faa_data' in det:
-            return jsonify({'status': 'ok', 'faa_data': det['faa_data']})
-    # Fallback: search cached FAA data by remote_id first, then by MAC
-    for (c_mac, c_rid), faa_data in     FAA_CACHE.items():
-        if c_rid == identifier:
-            return jsonify({'status': 'ok', 'faa_data': faa_data})
-    for (c_mac, c_rid), faa_data in FAA_CACHE.items():
-        if c_mac == identifier:
-            return jsonify({'status': 'ok', 'faa_data': faa_data})
-    return jsonify({'status': 'error', 'message': 'No FAA data found for this identifier'}), 404
-
-
-
-# ----------------------
-
 
 # ----------------------
 # HTML & JS (UI) Section
@@ -5151,6 +4900,16 @@ HTML_PAGE = '''
       position: relative;
       border: 1px solid deepskyblue !important;
     }
+    /* Detection source. Fingerprint hits are heuristics (no Remote ID, never a
+       position) and get a dashed amber border; MAVLink and DJI DroneID decodes
+       get their own accent so the list reads at a glance. Declared after
+       .no-gps so it wins for entries that are both. */
+    .drone-item.src-fingerprint {
+      border: 1px dashed #ffaa44 !important;
+      opacity: 0.85;
+    }
+    .drone-item.src-mavlink { border-left: 3px solid #66aaff !important; }
+    .drone-item.src-dji     { border-left: 3px solid #ff66ff !important; }
     /* #activePlaceholder .drone-item.no-gps:hover::after {
       content: "no gps lock";
       position: absolute;
@@ -6488,9 +6247,31 @@ HTML_PAGE = '''
               <option value='{"bbox":[-106.6,25.8,-93.5,36.5],"name":"texas"}'>Texas</option>
               <option value='{"bbox":[-160.3,18.9,-154.8,22.3],"name":"hawaii"}'>Hawaii</option>
               <option value='{"bbox":[-170,54,-130,72],"name":"alaska"}'>Alaska</option>
-              <option value='{"bbox":[-11,49.8,2,59],"name":"uk"}'>United Kingdom</option>
-              <option value='{"bbox":[2.5,42.3,8,51.1],"name":"germany_west"}'>Germany (west)</option>
+              <option value='{"bbox":[-11,49.8,2,59],"name":"uk"}'>United Kingdom &amp; Ireland</option>
+              <option value='{"bbox":[-10,35,32,71],"name":"europe"}'>Europe (whole)</option>
+              <option value='{"bbox":[2.5,49.4,7.3,53.6],"name":"benelux"}'>Benelux</option>
+              <option value='{"bbox":[5.8,47.2,15.1,55.1],"name":"germany"}'>Germany</option>
+              <option value='{"bbox":[-5.2,42.3,8.3,51.1],"name":"france"}'>France</option>
+              <option value='{"bbox":[-9.6,36,3.4,43.8],"name":"iberia"}'>Spain &amp; Portugal</option>
+              <option value='{"bbox":[6.6,36.6,18.6,47.1],"name":"italy"}'>Italy</option>
+              <option value='{"bbox":[14.1,49,24.2,54.9],"name":"poland"}'>Poland</option>
+              <option value='{"bbox":[4.5,54.5,31.6,71.2],"name":"nordics"}'>Nordics</option>
+              <option value='{"bbox":[5.9,45.8,10.5,47.9],"name":"switzerland"}'>Switzerland &amp; Alps</option>
+              <option value='{"bbox":[25.6,35.8,45,42.2],"name":"turkey"}'>Turkey</option>
               <option value='{"bbox":[129.5,30.5,146,46],"name":"japan"}'>Japan</option>
+              <option value='{"bbox":[124.5,33,131.9,38.7],"name":"korea"}'>South Korea</option>
+              <option value='{"bbox":[119.3,21.8,122.1,25.4],"name":"taiwan"}'>Taiwan</option>
+              <option value='{"bbox":[103.6,1.1,104.1,1.5],"name":"singapore"}'>Singapore</option>
+              <option value='{"bbox":[68,6.5,97.5,35.7],"name":"india"}'>India</option>
+              <option value='{"bbox":[140.9,-39.2,153.7,-28],"name":"australia_se"}'>Australia (south-east)</option>
+              <option value='{"bbox":[166,-47.5,179,-34],"name":"new_zealand"}'>New Zealand</option>
+              <option value='{"bbox":[-83.5,41.6,-73,47],"name":"canada_on_qc"}'>Canada (Ontario &amp; Quebec)</option>
+              <option value='{"bbox":[-128.5,48,-114,54],"name":"canada_bc"}'>Canada (British Columbia)</option>
+              <option value='{"bbox":[-118.5,14.5,-86.7,32.7],"name":"mexico"}'>Mexico</option>
+              <option value='{"bbox":[-53.2,-25.5,-39.5,-14.2],"name":"brazil_se"}'>Brazil (south-east)</option>
+              <option value='{"bbox":[-73.6,-55.1,-53.6,-21.8],"name":"argentina_chile"}'>Argentina &amp; Chile</option>
+              <option value='{"bbox":[16.4,-34.9,32.9,-22.1],"name":"south_africa"}'>South Africa</option>
+              <option value='{"bbox":[51.5,22.6,56.4,26.1],"name":"uae"}'>United Arab Emirates</option>
             </select>
           </div>
           <label style="display:block; margin-top:4px;">Source:
@@ -6885,13 +6666,7 @@ socket.on('cumulative_log', function(log) {
   // ...
 });
 
-// Listen for real-time FAA cache updates
-socket.on('faa_cache', function(faaCache) {
-  // Optionally update UI with new FAA data
-  // ...
-});
-
-// Remove all polling for detections, serial status, aliases, paths, cumulative log, FAA cache, etc.
+// Remove all polling for detections, serial status, aliases, paths, cumulative log, etc.
 // All UI updates are now handled by Socket.IO events above.
 // ... existing code ...
 
@@ -7256,17 +7031,23 @@ function showTerminalPopup(det, isNew) {
 
   // Build concise popup text
   const alias = aliases[det.mac];
-  const rid   = det.basic_id || 'N/A';
+  const rid   = det.basic_id || det.op_id || 'N/A';
+  // Fingerprint hits (src wifi/ble) never carry Remote ID or a position: say
+  // so instead of reporting a "GPS lock" that will never come.
+  const isFingerprint = det.src === 'wifi' || det.src === 'ble';
   let header;
-  if (!det.drone_lat || !det.drone_long || det.drone_lat === 0 || det.drone_long === 0) {
+  if (isFingerprint) {
+    const what = ((det.vendor || '') + ' ' + (det.model || det.ssid || '')).trim();
+    header = 'Possible drone, no Remote ID' + (what ? ` – ${what}` : '');
+  } else if (!det.drone_lat || !det.drone_long || det.drone_lat === 0 || det.drone_long === 0) {
     header = 'Drone with no GPS lock detected';
   } else if (alias) {
     header = `Known drone detected – ${alias}`;
   } else {
     header = isNew ? 'New drone detected' : 'Previously seen non-aliased drone detected';
   }
-  const content = alias
-    ? `${header} - RID:${rid} MAC:${det.mac}`
+  const content = isFingerprint
+    ? `${header} - MAC:${det.mac}`
     : `${header} - RID:${rid} MAC:${det.mac}`;
   // Build popup HTML and button using new logic
   // Build popup text
@@ -7363,7 +7144,7 @@ function generatePopupContent(detection, markerType) {
   // Drone popup — same visual language as the ADS-B aircraft popup (dark
   // gradient card, system UI, label/value rows, pill buttons, iOS toggles)
   // but with a lime accent so it reads as "drone" at a glance. Every existing
-  // feature kept: alias, FAA RemoteID + lookup, OSINT tag, lock-on follow,
+  // feature kept: alias, Remote ID identity, OSINT tag, lock-on follow,
   // path toggles, color slider, Google Maps links, raw key/value telemetry.
   const mac = detection.mac;
   const accent = '#88ff99';   // lime accent (drone vocabulary)
@@ -7418,41 +7199,68 @@ function generatePopupContent(detection, markerType) {
        +      curTag.toUpperCase() + '</span>'
        + '</div>';
 
-  // ── FAA RemoteID + lookup ──
-  if (detection.basic_id || detection.faa_data) {
+  // ── Identity: Remote ID (ASTM F3411 / ASD-STAN EN 4709-002), DJI DroneID,
+  //    MAVLink, or a WiFi/BLE fingerprint when nothing is broadcast ──
+  // Label tables mirror the Open Drone ID enums so a UAS ID is shown with its
+  // meaning: a serial number (ANSI/CTA-2063-A), a national registration ID
+  // (the Basic ID type Japan uses), a UTM UUID or a session ID. The Operator
+  // ID is the primary identifier in the EU/UK and is shown whenever present.
+  const ID_TYPE_LABEL = {1:'Serial number', 2:'Registration ID', 3:'UTM UUID', 4:'Session ID'};
+  const UA_TYPE_LABEL = {1:'Aeroplane / fixed wing', 2:'Helicopter or multirotor', 3:'Gyroplane',
+    4:'Hybrid lift (VTOL)', 5:'Ornithopter', 6:'Glider', 7:'Kite', 8:'Free balloon', 9:'Captive balloon',
+    10:'Airship', 11:'Free-fall parachute', 12:'Rocket', 13:'Tethered powered aircraft', 14:'Ground obstacle', 15:'Other'};
+  const EU_CAT_LABEL = {1:'Open', 2:'Specific', 3:'Certified'};
+  const EU_CLASS_LABEL = {1:'C0', 2:'C1', 3:'C2', 4:'C3', 5:'C4', 6:'C5', 7:'C6'};
+  const SRC_LABEL = {odid_ble:'Remote ID · BLE 4', odid_ble5:'Remote ID · BLE 5 Long Range',
+    odid_nan:'Remote ID · WiFi NAN', odid_bcn:'Remote ID · WiFi Beacon', dji:'DJI DroneID · WiFi beacon',
+    mavlink:'MAVLink telemetry · WiFi', wifi:'WiFi fingerprint', ble:'BLE fingerprint'};
+  const CONF_COLOR = {high:'#88ff99', med:'#ffcc66', low:'#ff8866'};
+  const isFingerprint = detection.src === 'wifi' || detection.src === 'ble';
+  const hasIdentity = detection.basic_id || detection.op_id || detection.desc || detection.src
+                   || detection.vendor || detection.ssid;
+  if (hasIdentity) {
     html += '<div style="height:1px; background:rgba(255,255,255,0.07); margin:8px 0;"></div>';
-    html += '<div style="font-size:0.72em; color:' + muted + '; letter-spacing:1.5px; margin-bottom:4px;">FAA REMOTE-ID</div>';
+    html += '<div style="font-size:0.72em; color:' + muted + '; letter-spacing:1.5px; margin-bottom:4px;">'
+         +  (isFingerprint ? 'IDENTIFICATION (HEURISTIC)' : 'REMOTE ID') + '</div>';
+    if (detection.src) html += stat('SOURCE', SRC_LABEL[detection.src] || detection.src, '#dde6ee');
     if (detection.basic_id) {
-      html += stat('SERIAL', detection.basic_id, '#fff');
-      html += '<button onclick="event.stopPropagation(); queryFaaAPI(\\'' + mac + '\\', \\'' + detection.basic_id + '\\')" '
-           +  'id="queryFaaButton_' + mac + '" '
-           +  'style="width:100%; margin-top:6px; padding:5px 0; border:1px solid ' + accent + '; border-radius:5px; '
-           +  'background:transparent; color:' + accent + '; font-family:inherit; font-weight:600; letter-spacing:1px; '
-           +  'font-size:0.72em; cursor:pointer;">QUERY FAA</button>';
+      const t = ID_TYPE_LABEL[detection.id_type];
+      html += stat(t ? t.toUpperCase() : 'UAS ID', detection.basic_id, '#fff');
     }
-    html += '<div id="faaResult_' + mac + '" style="margin-top:6px;">';
-    if (detection.faa_data) {
-      let item = null;
-      const fd = detection.faa_data;
-      if (fd && fd.data && fd.data.items && fd.data.items.length > 0) item = fd.data.items[0];
-      if (item) {
-        const fields = ['makeName', 'modelName', 'series', 'trackingNumber', 'complianceCategories', 'updatedAt'];
-        html += '<div style="font-size:0.85em; line-height:1.45; padding:6px 8px; background:rgba(136,255,153,0.05); border:1px solid rgba(136,255,153,0.18); border-radius:4px;">';
-        fields.forEach(f => {
-          if (item[f] !== undefined && item[f] !== '') html += stat(f, String(item[f]), '#dde6ee');
-        });
-        html += '</div>';
-      } else {
-        html += '<div style="font-size:0.78em; color:' + muted + '; font-style:italic; padding:4px 0;">No FAA data available</div>';
-      }
+    if (detection.basic_id2) {
+      const t2 = ID_TYPE_LABEL[detection.id_type2];
+      html += stat(t2 ? t2.toUpperCase() : 'UAS ID 2', detection.basic_id2, '#fff');
     }
-    html += '</div>';
+    if (detection.op_id) html += stat('OPERATOR ID', detection.op_id, '#fff');
+    if (detection.ua_type && UA_TYPE_LABEL[detection.ua_type]) html += stat('UA TYPE', UA_TYPE_LABEL[detection.ua_type]);
+    if (detection.eu_cat || detection.eu_class) {
+      const cat = EU_CAT_LABEL[detection.eu_cat] || '';
+      const cls = EU_CLASS_LABEL[detection.eu_class] || '';
+      html += stat('EU CATEGORY', (cat + ' ' + cls).trim() || 'undeclared');
+    }
+    if (detection.desc) html += stat('SELF ID', detection.desc);
+    if (detection.vendor || detection.model) {
+      html += stat('MAKE / MODEL', ((detection.vendor || '') + ' ' + (detection.model || '')).trim());
+    }
+    if (detection.ssid) html += stat('SSID', detection.ssid);
+    if (detection.role) html += stat('DEVICE', String(detection.role).toUpperCase());
+    if (detection.conf) {
+      html += stat('CONFIDENCE', String(detection.conf).toUpperCase(), CONF_COLOR[detection.conf] || '#dde6ee');
+    }
+    if (isFingerprint) {
+      html += '<div style="font-size:0.72em; color:' + muted + '; font-style:italic; margin-top:4px; line-height:1.35;">'
+           +  'No Remote ID broadcast. Identity inferred from the network name or MAC prefix; '
+           +  'no position is available for this aircraft.</div>';
+    }
   }
 
   // ── Telemetry (key/value, smart-filtered) ──
   // Hide internal/dev fields the user doesn't care about (_simulated comes
-  // from the demo flight injector; lockTime/userLocked are UI bookkeeping).
-  const skip = new Set(['mac','basic_id','last_update','userLocked','lockTime','faa_data','_simulated']);
+  // from the demo flight injector; lockTime/userLocked are UI bookkeeping) and
+  // the identity fields rendered in the section above.
+  const skip = new Set(['mac','basic_id','last_update','userLocked','lockTime','_simulated',
+    'id_type','basic_id2','id_type2','ua_type','op_id','desc','eu_cat','eu_class',
+    'src','vendor','model','ssid','conf','role']);
   const telemetryKeys = Object.keys(detection).filter(k => !skip.has(k) && detection[k] !== '' && detection[k] !== null && detection[k] !== undefined);
   if (telemetryKeys.length > 0) {
     html += '<div style="height:1px; background:rgba(255,255,255,0.07); margin:8px 0;"></div>';
@@ -7582,78 +7390,6 @@ function generatePopupContent(detection, markerType) {
   html += '</div>';
 
   return html;
-}
-
-// New function to query the FAA API.
-async function queryFaaAPI(mac, remote_id) {
-    const button = document.getElementById("queryFaaButton_" + mac);
-    if (button) {
-        button.disabled = true;
-        const originalText = button.textContent;
-        button.textContent = "Querying...";
-        button.style.backgroundColor = "gray";
-    }
-    try {
-        const response = await fetch(window.location.origin + '/api/query_faa', {
-            method: "POST",
-            headers: {"Content-Type": "application/json"},
-            body: JSON.stringify({mac: mac, remote_id: remote_id})
-        });
-        const result = await response.json();
-        if (result.status === "ok") {
-            // Immediately update the in-memory tracked_pairs with the returned FAA data
-            if (window.tracked_pairs && window.tracked_pairs[mac]) {
-              window.tracked_pairs[mac].faa_data = result.faa_data;
-            }
-            const faaDiv = document.getElementById("faaResult_" + mac);
-            if (faaDiv) {
-                let faaData = result.faa_data;
-                let item = null;
-                if (faaData.data && faaData.data.items && faaData.data.items.length > 0) {
-                  item = faaData.data.items[0];
-                }
-                if (item) {
-                  const fields = ["makeName", "modelName", "series", "trackingNumber", "complianceCategories", "updatedAt"];
-                  let html = '<div style="border:2px solid #FF69B4; padding:5px; margin:5px 0;">';
-                  fields.forEach(function(field) {
-                    let value = item[field] !== undefined ? item[field] : "";
-                    html += `<div><span style="color:#FF00FF;">${field}:</span> <span style="color:#00FF00;">${value}</span></div>`;
-                  });
-                  html += '</div>';
-                  faaDiv.innerHTML = html;
-                } else {
-                  faaDiv.innerHTML = '<div style="border:2px solid #FF69B4; padding:5px; margin:5px 0;">No FAA data available</div>';
-                }
-            }
-            // Immediately refresh popups with new FAA data
-            const key = result.mac || mac;
-            if (typeof tracked_pairs !== "undefined" && tracked_pairs[key]) {
-              if (droneMarkers[key]) {
-                droneMarkers[key].setPopupContent(generatePopupContent(tracked_pairs[key], 'drone'));
-                if (droneMarkers[key].isPopupOpen()) {
-                  droneMarkers[key].openPopup();
-                }
-              }
-              if (pilotMarkers[key]) {
-                pilotMarkers[key].setPopupContent(generatePopupContent(tracked_pairs[key], 'pilot'));
-                if (pilotMarkers[key].isPopupOpen()) {
-                  pilotMarkers[key].openPopup();
-                }
-              }
-            }
-        } else {
-            alert("FAA API error: " + result.message);
-        }
-    } catch(error) {
-        console.error("Error querying FAA API:", error);
-    } finally {
-        const button = document.getElementById("queryFaaButton_" + mac);
-        if (button) {
-            button.disabled = false;
-            button.style.backgroundColor = "#333";
-            button.textContent = "Query FAA API";
-        }
-    }
 }
 
 function lockMarker(markerType, id) {
@@ -12108,12 +11844,29 @@ function updateComboList(data) {
     const det = data[mac];
     const hasGps = det && det.drone_lat && det.drone_long && det.drone_lat !== 0 && det.drone_long !== 0;
     const hasRecentTransmission = det && det.last_update && ((currentTime - det.last_update) <= 5);
-    
+
     // Apply no-GPS styling only if drone has no GPS AND has recent transmission (within 5 seconds)
     if (!hasGps && hasRecentTransmission) {
       item.classList.add('no-gps');
     } else {
       item.classList.remove('no-gps');
+    }
+
+    // Tag the entry with how it was detected so heuristic fingerprint hits
+    // (no Remote ID, never a position) read differently from decoded Remote
+    // ID, DJI DroneID or MAVLink. The tooltip carries the identity summary.
+    const srcKind = (det && det.src) ? det.src : '';
+    item.classList.toggle('src-fingerprint', srcKind === 'wifi' || srcKind === 'ble');
+    item.classList.toggle('src-mavlink', srcKind === 'mavlink');
+    item.classList.toggle('src-dji', srcKind === 'dji');
+    if (det) {
+      const bits = [];
+      if (det.src) bits.push(det.src);
+      if (det.vendor) bits.push(det.vendor + (det.model ? ' ' + det.model : ''));
+      if (det.ssid) bits.push(det.ssid);
+      if (det.basic_id) bits.push(det.basic_id);
+      if (det.op_id) bits.push('op:' + det.op_id);
+      item.title = bits.join(' · ');
     }
     
     // Mark items seen in the last 5 seconds
@@ -12207,7 +11960,7 @@ async function updateData() {
       }
       const droneLat = det.drone_lat, droneLng = det.drone_long;
       const pilotLat = det.pilot_lat, pilotLng = det.pilot_long;
-      const validDrone = (droneLat !== 0 && droneLng !== 0);
+      const validDrone = !!(droneLat && droneLng);
       // State-change popup logic
       const alias     = aliases[mac];
       // New state calculation: consider time-based staleness
@@ -12232,7 +11985,7 @@ async function updateData() {
 
       // Only fire popup on transition from inactive to active, after initial load, and within stale threshold
       // ALSO handle no-GPS drones here in centralized popup logic
-      const hasGps = validDrone || (pilotLat !== 0 && pilotLng !== 0);
+      const hasGps = validDrone || !!(pilotLat && pilotLng);
       const hasRecentTransmission = det.last_update && (currentTime - det.last_update <= 5);
       const isNoGpsDrone = !hasGps && hasRecentTransmission;
       
@@ -12262,7 +12015,7 @@ async function updateData() {
       // Persist for next update
       previousActive[mac] = activeNow;
 
-      const validPilot = (pilotLat !== 0 && pilotLng !== 0);
+      const validPilot = !!(pilotLat && pilotLng);
       
       // Handle no-GPS drones that are still transmitting (mapping only, no popup)
       if (isNoGpsDrone) {
@@ -13644,7 +13397,6 @@ def handle_connect():
     emit_serial_status()
     emit_paths()
     emit_cumulative_log()
-    emit_faa_cache()
 
 # Helper functions to emit all real-time data
 
@@ -13688,18 +13440,6 @@ def emit_cumulative_log():
         socketio.emit('cumulative_log', get_cumulative_log_for_emit(), )
     except Exception as e:
         logger.debug(f"Error emitting cumulative log: {e}")
-
-def emit_faa_cache():
-    try:
-        # Convert FAA_CACHE to JSON-serializable format
-        serializable_cache = {}
-        for key, value in FAA_CACHE.items():
-            # Convert tuple keys to strings
-            str_key = str(key) if isinstance(key, tuple) else key
-            serializable_cache[str_key] = value
-        socketio.emit('faa_cache', serializable_cache, )
-    except Exception as e:
-        logger.debug(f"Error emitting FAA cache: {e}")
 
 # Helper to get paths for emit
 

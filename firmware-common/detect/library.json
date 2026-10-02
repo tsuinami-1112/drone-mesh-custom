@@ -1,0 +1,12 @@
+{
+  "name": "detect",
+  "version": "1.0.0",
+  "description": "Passive drone detection parsers shared by the Drone Mesh Mapper firmware variants: Open Drone ID (BLE 4, BLE 5 Long Range, WiFi NAN, WiFi Beacon), DJI DroneID, MAVLink over open WiFi, WiFi/BLE fingerprints.",
+  "keywords": "drone, remote id, opendroneid, astm f3411, asd-stan 4709, mavlink, dji",
+  "license": "MIT",
+  "frameworks": "*",
+  "platforms": "*",
+  "build": {
+    "srcDir": "src"
+  }
+}

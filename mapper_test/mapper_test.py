@@ -12,7 +12,7 @@ Features:
 - Realistic altitude variations
 - Pilot locations
 - Signal strength simulation (RSSI)
-- Basic ID and FAA data simulation
+- Basic ID (Remote ID UAS ID) simulation
 - Continuous flight path updates
 
 Usage:
@@ -54,15 +54,12 @@ class DroneSimulator:
         self.current_position = self._generate_start_position()
         self.target_position = self._generate_target_position()
         self.pilot_position = self._generate_pilot_position()
-        self.altitude = random.randint(50, 400)  # FAA allowed range
+        self.altitude = random.randint(50, 400)  # metres, a typical hobby/commercial band
         self.speed = random.uniform(5, 25)  # m/s (roughly 11-56 mph)
         self.direction = random.uniform(0, 360)  # degrees
         self.last_update = time.time()
         self.flight_pattern = self._choose_flight_pattern()
-        
-        # FAA data simulation
-        self.faa_data = self._generate_faa_data()
-        
+
     def _generate_start_position(self) -> Dict[str, float]:
         """Generate a random starting position within Arizona desert bounds"""
         lat = random.uniform(TEST_AREA_BOUNDS['south'], TEST_AREA_BOUNDS['north'])
@@ -94,24 +91,6 @@ class DroneSimulator:
         """Choose a flight pattern for this drone"""
         patterns = ['linear', 'circular', 'waypoint', 'search_pattern', 'hover']
         return random.choice(patterns)
-    
-    def _generate_faa_data(self) -> Dict:
-        """Generate realistic FAA registration data"""
-        manufacturers = ["DJI", "Autel", "Parrot", "Skydio", "Yuneec"]
-        models = ["Mavic 3", "Air 2S", "Mini 3 Pro", "Phantom 4", "Inspire 2", "EVO II", "ANAFI", "X2"]
-        
-        return {
-            "registrant_name": f"Test Pilot {self.drone_id}",
-            "registrant_type": "Individual",
-            "manufacturer": random.choice(manufacturers),
-            "model": random.choice(models),
-            "registration_date": "2023-01-15",
-            "expiration_date": "2026-01-15",
-            "status": "Active",
-            "serial_number": f"TST{self.drone_id:03d}{random.randint(1000, 9999)}",
-            "weight": random.uniform(0.5, 25.0),  # kg
-            "purpose": random.choice(["Recreation", "Commercial", "Educational", "Research"])
-        }
     
     def _calculate_distance(self, pos1: Dict[str, float], pos2: Dict[str, float]) -> float:
         """Calculate distance between two positions in meters"""
@@ -145,7 +124,7 @@ class DroneSimulator:
         
         # Update altitude with small variations
         self.altitude += random.uniform(-2, 2)
-        self.altitude = max(30, min(400, self.altitude))  # Keep within legal limits
+        self.altitude = max(30, min(400, self.altitude))  # Keep within a plausible band
     
     def _update_linear_flight(self, dt: float):
         """Linear flight pattern - fly towards target"""
@@ -243,7 +222,6 @@ class DroneSimulator:
             "pilot_lat": round(self.pilot_position['lat'], 6),
             "pilot_long": round(self.pilot_position['lng'], 6),
             "basic_id": self.basic_id,
-            "faa_data": self.faa_data,
             "last_update": current_time,
             "status": "active"
         }
@@ -398,7 +376,6 @@ class ArizonaDesertTestSuite:
             print(f"  Start Position: {drone.current_position['lat']:.6f}, {drone.current_position['lng']:.6f}")
             print(f"  Pilot Position: {drone.pilot_position['lat']:.6f}, {drone.pilot_position['lng']:.6f}")
             print(f"  Flight Pattern: {drone.flight_pattern}")
-            print(f"  FAA Registration: {drone.faa_data['manufacturer']} {drone.faa_data['model']}")
             print()
 
 def main():
