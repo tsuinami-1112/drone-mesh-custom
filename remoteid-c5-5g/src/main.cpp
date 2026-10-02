@@ -1,15 +1,26 @@
 /*
- * RemoteID Mesh Detect — Dual-Band Edition
+ * RemoteID Mesh Detect - Dual-Band Edition
  *
  * Supports ESP32-C5 (dual-band 2.4GHz + 5GHz WiFi 6) and ESP32-S3 (2.4GHz only)
- * Detects drones broadcasting RemoteID via WiFi (NAN/Beacon) and Bluetooth LE
+ *
+ * Detects drones over:
+ *   - Open Drone ID (ASTM F3411 / ASD-STAN EN 4709-002): BLE 4 legacy, BLE 5
+ *     Long Range extended advertisements, WiFi NAN, WiFi Beacon - on 2.4 GHz
+ *     channel 6 and the 5 GHz UNII-3 channels (149-165) Remote ID may use
+ *   - DJI proprietary DroneID beacons (WiFi-link DJI aircraft)
+ *   - MAVLink telemetry on open WiFi networks
+ *   - WiFi / BLE fingerprints of drones and controllers without Remote ID
+ *
+ * All parsing is in the shared library ../../firmware-common/detect.
  *
  * Output:
- *   USB Serial  — JSON lines for mesh-mapper.py
- *   Serial1 UART (TX=GPIO5, RX=GPIO6) — compact messages for Heltec/Meshtastic relay
+ *   USB Serial  - JSON lines for mesh-mapper.py (field "ch" carries the channel;
+ *                 36+ means 5 GHz, 0 means BLE)
+ *   Serial1 UART (TX=GPIO5, RX=GPIO6) - compact messages for Heltec/Meshtastic relay
  *
- * For ESP32-C5: Dual-band scanning with fast channel hopping across 2.4+5GHz
- * For ESP32-S3: Single-band 2.4GHz scanning (original behavior)
+ * Channel plan: most of the time on 2.4 GHz channel 6 (the Remote ID channel),
+ * with short visits to the 5 GHz Remote ID channels and to 2.4 GHz channels 1
+ * and 11 (WiFi-link drone APs, telemetry bridges).
  */
 
 #if !defined(ARDUINO_ARCH_ESP32)
@@ -23,18 +34,21 @@
 #include <esp_wifi.h>
 #include <esp_event.h>
 #include <nvs_flash.h>
-#include "opendroneid.h"
-#include "odid_wifi.h"
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include "detect.h"
+
+#if !CONFIG_BT_NIMBLE_EXT_ADV
+  #error "BLE 5 Long Range needs -D CONFIG_BT_NIMBLE_EXT_ADV=1 in build_flags (see platformio.ini)"
+#endif
 
 // ============================================================================
-// UART Pins — same wiring as remoteid-mesh-dualcore (Heltec LoRa V3)
+// UART Pins - same wiring as remoteid-mesh-dualcore (Heltec LoRa V3)
 // ============================================================================
 
-const int SERIAL1_TX_PIN = 5;   // GPIO5 → Heltec RX
-const int SERIAL1_RX_PIN = 6;   // GPIO6 → Heltec TX
+const int SERIAL1_TX_PIN = 5;   // GPIO5 -> Heltec RX
+const int SERIAL1_RX_PIN = 6;   // GPIO6 -> Heltec TX
 
 // ============================================================================
 // Board-specific configuration
@@ -54,203 +68,136 @@ const int SERIAL1_RX_PIN = 6;   // GPIO6 → Heltec TX
 #endif
 
 // ============================================================================
-// Dual-Band Channel Configuration
+// Detection / channel configuration (override with -D in build_flags)
 // ============================================================================
 
 #define CHANNEL_2_4GHZ 6
 
-// 5GHz RemoteID channels (UNII-3 band — commonly used for RemoteID)
-static const uint8_t channels_5ghz[] = {149, 153, 157, 161, 165};
-#define NUM_5GHZ_CHANNELS (sizeof(channels_5ghz) / sizeof(channels_5ghz[0]))
+#ifndef DETECT_HOME_DWELL_MS
+#define DETECT_HOME_DWELL_MS 400     // on channel 6 between excursions
+#endif
+#ifndef DETECT_AWAY_DWELL_MS
+#define DETECT_AWAY_DWELL_MS 120     // per other channel (> one beacon interval)
+#endif
+#ifndef DETECT_MAVLINK
+#define DETECT_MAVLINK 1
+#endif
+#ifndef DETECT_FINGERPRINT
+#define DETECT_FINGERPRINT 1
+#endif
+#define FP_MIN_INTERVAL_MS 30000
+#define USB_JSON_MAX 768
 
-// Dwell time per channel (ms). Total cycle ≈ DWELL_TIME * (1 + NUM_5GHZ_CHANNELS) ≈ 300ms
-#define DWELL_TIME_MS 50
-
-// ============================================================================
-// WiFi Band Enum
-// ============================================================================
-
-enum WiFiBand {
-  BAND_UNKNOWN = 0,
-  BAND_2_4GHZ  = 1,
-  BAND_5GHZ    = 2,
-  BAND_BLE     = 3
-};
-
-// ============================================================================
-// Data Structures
-// ============================================================================
-
-struct id_data {
-  uint8_t  mac[6];
-  int      rssi;
-  uint32_t last_seen;
-  char     op_id[ODID_ID_SIZE + 1];
-  char     uav_id[ODID_ID_SIZE + 1];
-  double   lat_d;
-  double   long_d;
-  double   base_lat_d;
-  double   base_long_d;
-  int      altitude_msl;
-  int      height_agl;
-  int      speed;
-  int      heading;
-  int      flag;
-  WiFiBand band;
-  uint8_t  channel;
-};
+// Channels visited between stays on channel 6. 5 GHz UNII-3 is where Remote
+// ID is allowed to live on 5 GHz; 1 and 11 are the other common 2.4 GHz AP
+// channels.
+#if DUAL_BAND_ENABLED
+static const uint8_t away_channels[] = { 149, 1, 153, 11, 157, 161, 165 };
+#else
+static const uint8_t away_channels[] = { 1, 11, 2, 7, 3, 8, 4, 9, 5, 10, 12, 13 };
+#endif
+#define NUM_AWAY_CHANNELS (sizeof(away_channels) / sizeof(away_channels[0]))
 
 // ============================================================================
-// Function Prototypes
-// ============================================================================
-
-void callback(void *, wifi_promiscuous_pkt_type_t);
-void send_json_fast(const id_data *UAV);
-void print_compact_message(const id_data *UAV);
-
-// ============================================================================
-// Global Variables
+// Global state
 // ============================================================================
 
 #define MAX_UAVS 8
-id_data uavs[MAX_UAVS] = {0};
-NimBLEScan* pBLEScan = nullptr;
-ODID_UAS_Data UAS_data;
-unsigned long last_status = 0;
-
-// Current channel tracking (for dual-band)
-volatile uint8_t current_channel = CHANNEL_2_4GHZ;
-volatile WiFiBand current_band = BAND_2_4GHZ;
-static portMUX_TYPE channelMux = portMUX_INITIALIZER_UNLOCKED;
-
+static DetectRecord uavs[MAX_UAVS];
+static portMUX_TYPE uavMux = portMUX_INITIALIZER_UNLOCKED;
+static NimBLEScan* pBLEScan = nullptr;
+static unsigned long last_status = 0;
 static QueueHandle_t printQueue;
 
 // ============================================================================
 // UAV Tracking
 // ============================================================================
 
-id_data* next_uav(const uint8_t* mac) {
+static DetectRecord* next_uav(const uint8_t* mac) {
   for (int i = 0; i < MAX_UAVS; i++) {
-    if (memcmp(uavs[i].mac, mac, 6) == 0)
+    if (uavs[i].src != DET_SRC_NONE && memcmp(uavs[i].mac, mac, 6) == 0)
       return &uavs[i];
   }
+  DetectRecord* slot = nullptr;
   for (int i = 0; i < MAX_UAVS; i++) {
-    if (uavs[i].mac[0] == 0)
-      return &uavs[i];
+    if (uavs[i].src == DET_SRC_NONE) { slot = &uavs[i]; break; }
   }
-  // Evict oldest entry
-  uint32_t oldest_time = UINT32_MAX;
-  int oldest_idx = 0;
-  for (int i = 0; i < MAX_UAVS; i++) {
-    if (uavs[i].last_seen < oldest_time) {
-      oldest_time = uavs[i].last_seen;
-      oldest_idx = i;
+  if (!slot) {
+    uint32_t oldest_time = UINT32_MAX;
+    int oldest_idx = 0;
+    for (int i = 0; i < MAX_UAVS; i++) {
+      if (uavs[i].last_seen < oldest_time) {
+        oldest_time = uavs[i].last_seen;
+        oldest_idx = i;
+      }
     }
+    slot = &uavs[oldest_idx];
   }
-  return &uavs[oldest_idx];
+  detect_record_init(slot);
+  memcpy(slot->mac, mac, 6);
+  return slot;
+}
+
+static void queueDetection(DetectRecord* rec) {
+  uint32_t now = millis();
+  rec->last_seen = now;
+  if (detect_is_heuristic(rec->src)) {
+#if !DETECT_FINGERPRINT
+    return;
+#endif
+    if (!detect_throttle(rec->mac, now, FP_MIN_INTERVAL_MS)) return;
+  }
+  DetectRecord tmp;
+  portENTER_CRITICAL(&uavMux);
+  DetectRecord* slot = next_uav(rec->mac);
+  detect_record_merge(slot, rec);
+  tmp = *slot;
+  portEXIT_CRITICAL(&uavMux);
+  if (printQueue) {
+    BaseType_t woken = pdFALSE;
+    xQueueSendFromISR(printQueue, &tmp, &woken);
+    if (woken) portYIELD_FROM_ISR();
+  }
 }
 
 // ============================================================================
-// BLE Scanning Callbacks (NimBLE 2.1.0)
+// BLE Scanning Callbacks (NimBLE 2.x, extended advertising enabled)
 // ============================================================================
 
 class MyAdvertisedDeviceCallbacks : public NimBLEScanCallbacks {
 public:
   void onResult(const NimBLEAdvertisedDevice* device) override {
-    const std::vector<uint8_t>& payloadVec = device->getPayload();
-    int len = (int)payloadVec.size();
-    if (len <= 0) return;
-
-    const uint8_t* payload = payloadVec.data();
-    // RemoteID BLE advertisement: Service UUID 0xFFFA, type 0x0D
-    if (len > 5 && payload[1] == 0x16 && payload[2] == 0xFA &&
-        payload[3] == 0xFF && payload[4] == 0x0D) {
-      const uint8_t* mac = device->getAddress().getBase()->val;
-      id_data* UAV = next_uav(mac);
-      UAV->last_seen = millis();
-      UAV->rssi = device->getRSSI();
-      memcpy(UAV->mac, (const uint8_t*)mac, 6);
-      UAV->band = BAND_BLE;
-      UAV->channel = 0;
-
-      const uint8_t* odid = &payload[6];
-      switch (odid[0] & 0xF0) {
-        case 0x00: {
-          ODID_BasicID_data basic;
-          decodeBasicIDMessage(&basic, (ODID_BasicID_encoded*) odid);
-          strncpy(UAV->uav_id, (char*) basic.UASID, ODID_ID_SIZE);
-          break;
-        }
-        case 0x10: {
-          ODID_Location_data loc;
-          decodeLocationMessage(&loc, (ODID_Location_encoded*) odid);
-          UAV->lat_d = loc.Latitude;
-          UAV->long_d = loc.Longitude;
-          UAV->altitude_msl = (int) loc.AltitudeGeo;
-          UAV->height_agl = (int) loc.Height;
-          UAV->speed = (int) loc.SpeedHorizontal;
-          UAV->heading = (int) loc.Direction;
-          break;
-        }
-        case 0x40: {
-          ODID_System_data sys;
-          decodeSystemMessage(&sys, (ODID_System_encoded*) odid);
-          UAV->base_lat_d = sys.OperatorLatitude;
-          UAV->base_long_d = sys.OperatorLongitude;
-          break;
-        }
-        case 0x50: {
-          ODID_OperatorID_data op;
-          decodeOperatorIDMessage(&op, (ODID_OperatorID_encoded*) odid);
-          strncpy(UAV->op_id, (char*) op.OperatorId, ODID_ID_SIZE);
-          break;
-        }
-      }
-      UAV->flag = 1;
-      {
-        id_data tmp = *UAV;
-        BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-        xQueueSendFromISR(printQueue, &tmp, &xHigherPriorityTaskWoken);
-        if (xHigherPriorityTaskWoken) portYIELD_FROM_ISR();
-      }
-    }
+    const std::vector<uint8_t>& payload = device->getPayload();
+    if (payload.size() < 5) return;
+    uint8_t mac[6];
+    const uint8_t* val = device->getAddress().getBase()->val;   // LSB first on the wire
+    for (int i = 0; i < 6; i++) mac[i] = val[5 - i];
+    DetectRecord rec;
+    if (!detect_ble_adv(mac, payload.data(), (int)payload.size(), device->getRSSI(),
+                        !device->isLegacyAdvertisement(), &rec)) return;
+    queueDetection(&rec);
   }
 };
 
 // ============================================================================
-// JSON Output (USB Serial → mesh-mapper.py)
+// JSON Output (USB Serial -> mesh-mapper.py)
 // ============================================================================
 
-const char* bandToString(WiFiBand band) {
-  switch (band) {
-    case BAND_2_4GHZ: return "2.4GHz";
-    case BAND_5GHZ:   return "5GHz";
-    case BAND_BLE:    return "BLE";
-    default:          return "unknown";
-  }
+static void send_json_fast(const DetectRecord* rec) {
+  char json[USB_JSON_MAX];
+  if (detect_build_json(json, sizeof(json), rec, nullptr) > 0) Serial.println(json);
 }
 
-void send_json_fast(const id_data *UAV) {
-  char mac_str[18];
-  snprintf(mac_str, sizeof(mac_str), "%02x:%02x:%02x:%02x:%02x:%02x",
-           UAV->mac[0], UAV->mac[1], UAV->mac[2],
-           UAV->mac[3], UAV->mac[4], UAV->mac[5]);
-  char json_msg[320];
-  snprintf(json_msg, sizeof(json_msg),
-    "{\"mac\":\"%s\",\"rssi\":%d,\"band\":\"%s\",\"channel\":%d,"
-    "\"drone_lat\":%.6f,\"drone_long\":%.6f,\"drone_altitude\":%d,"
-    "\"pilot_lat\":%.6f,\"pilot_long\":%.6f,\"basic_id\":\"%s\"}",
-    mac_str, UAV->rssi, bandToString(UAV->band), UAV->channel,
-    UAV->lat_d, UAV->long_d, UAV->altitude_msl,
-    UAV->base_lat_d, UAV->base_long_d, UAV->uav_id);
-  Serial.println(json_msg);
+static const char* bandOf(const DetectRecord* rec) {
+  if (rec->channel == 0) return "BLE";
+  return rec->channel >= 36 ? "5GHz" : "2.4GHz";
 }
 
 // ============================================================================
-// Compact Message Output (Serial1 UART → Heltec/Meshtastic)
+// Compact Message Output (Serial1 UART -> Heltec/Meshtastic)
 // ============================================================================
 
-void print_compact_message(const id_data *UAV) {
+static void print_compact_message(const DetectRecord* rec) {
   static unsigned long lastSendTime = 0;
   const unsigned long sendInterval = 5000;
   const int MAX_MESH_SIZE = 230;
@@ -260,29 +207,33 @@ void print_compact_message(const id_data *UAV) {
 
   char mac_str[18];
   snprintf(mac_str, sizeof(mac_str), "%02x:%02x:%02x:%02x:%02x:%02x",
-           UAV->mac[0], UAV->mac[1], UAV->mac[2],
-           UAV->mac[3], UAV->mac[4], UAV->mac[5]);
+           rec->mac[0], rec->mac[1], rec->mac[2], rec->mac[3], rec->mac[4], rec->mac[5]);
 
   char mesh_msg[MAX_MESH_SIZE];
-  int msg_len = 0;
-  msg_len += snprintf(mesh_msg + msg_len, sizeof(mesh_msg) - msg_len,
-                      "Drone[%s]: %s RSSI:%d",
-                      bandToString(UAV->band), mac_str, UAV->rssi);
-  if (msg_len < MAX_MESH_SIZE && UAV->lat_d != 0.0 && UAV->long_d != 0.0) {
-    msg_len += snprintf(mesh_msg + msg_len, sizeof(mesh_msg) - msg_len,
-                        " https://maps.google.com/?q=%.6f,%.6f",
-                        UAV->lat_d, UAV->long_d);
+  int n = 0;
+  if (detect_is_heuristic(rec->src)) {
+    n += snprintf(mesh_msg + n, sizeof(mesh_msg) - n, "Possible drone[%s] (%s %s) %s RSSI:%d",
+                  bandOf(rec), rec->vendor, rec->model[0] ? rec->model : rec->ssid, mac_str, rec->rssi);
+  } else {
+    n += snprintf(mesh_msg + n, sizeof(mesh_msg) - n, "Drone[%s]: %s RSSI:%d", bandOf(rec), mac_str, rec->rssi);
+    if (n < MAX_MESH_SIZE && rec->uas_id[0])
+      n += snprintf(mesh_msg + n, sizeof(mesh_msg) - n, " ID:%s", rec->uas_id);
+    if (n < MAX_MESH_SIZE && rec->op_id[0])
+      n += snprintf(mesh_msg + n, sizeof(mesh_msg) - n, " OP:%s", rec->op_id);
+    if (n < MAX_MESH_SIZE && (rec->lat != 0.0 || rec->lon != 0.0))
+      n += snprintf(mesh_msg + n, sizeof(mesh_msg) - n, " https://maps.google.com/?q=%.6f,%.6f",
+                    rec->lat, rec->lon);
   }
-  if (Serial1.availableForWrite() >= msg_len) {
+  if (n > 0 && n < MAX_MESH_SIZE && Serial1.availableForWrite() >= n) {
     Serial1.println(mesh_msg);
   }
 
-  delay(1000);
-  if (UAV->base_lat_d != 0.0 && UAV->base_long_d != 0.0) {
+  if (rec->pilot_lat != 0.0 || rec->pilot_lon != 0.0) {
+    delay(1000);
     char pilot_msg[MAX_MESH_SIZE];
     int pilot_len = snprintf(pilot_msg, sizeof(pilot_msg),
                              "Pilot: https://maps.google.com/?q=%.6f,%.6f",
-                             UAV->base_lat_d, UAV->base_long_d);
+                             rec->pilot_lat, rec->pilot_lon);
     if (Serial1.availableForWrite() >= pilot_len) {
       Serial1.println(pilot_msg);
     }
@@ -290,73 +241,33 @@ void print_compact_message(const id_data *UAV) {
 }
 
 // ============================================================================
-// Channel Hopping Task (C5 dual-band only)
+// Channel Hopping Task
 // ============================================================================
 
-#if DUAL_BAND_ENABLED
-void channelHopTask(void *parameter) {
-  uint8_t channel_index = 0;
-  bool on_5ghz = false;
-
-  Serial.println("[DUAL-BAND] Channel hopping active");
-  Serial.printf("[DUAL-BAND] 2.4GHz ch%d + 5GHz ch", CHANNEL_2_4GHZ);
-  for (int i = 0; i < (int)NUM_5GHZ_CHANNELS; i++) {
-    Serial.printf("%d%s", channels_5ghz[i], (i < (int)NUM_5GHZ_CHANNELS - 1) ? "," : "\n");
-  }
+void channelHopTask(void* parameter) {
+  size_t idx = 0;
+  Serial.printf("[HOP] ch%d for %dms, then one of {", CHANNEL_2_4GHZ, DETECT_HOME_DWELL_MS);
+  for (size_t i = 0; i < NUM_AWAY_CHANNELS; i++)
+    Serial.printf("%d%s", away_channels[i], (i < NUM_AWAY_CHANNELS - 1) ? "," : "");
+  Serial.printf("} for %dms\n", DETECT_AWAY_DWELL_MS);
 
   for (;;) {
-    uint8_t next_channel;
-    WiFiBand next_band;
-
-    if (!on_5ghz) {
-      // Jump to first 5GHz channel
-      next_channel = channels_5ghz[0];
-      next_band = BAND_5GHZ;
-      channel_index = 0;
-      on_5ghz = true;
-    } else {
-      channel_index++;
-      if (channel_index >= NUM_5GHZ_CHANNELS) {
-        // Return to 2.4GHz
-        next_channel = CHANNEL_2_4GHZ;
-        next_band = BAND_2_4GHZ;
-        on_5ghz = false;
-      } else {
-        next_channel = channels_5ghz[channel_index];
-        next_band = BAND_5GHZ;
-      }
-    }
-
-    portENTER_CRITICAL(&channelMux);
-    current_channel = next_channel;
-    current_band = next_band;
-    portEXIT_CRITICAL(&channelMux);
-
-    esp_wifi_set_channel(next_channel, WIFI_SECOND_CHAN_NONE);
-    vTaskDelay(pdMS_TO_TICKS(DWELL_TIME_MS));
-  }
-}
-#endif
-
-// ============================================================================
-// BLE Scan Task
-// ============================================================================
-
-void bleScanTask(void *parameter) {
-  for (;;) {
-    NimBLEScanResults foundDevices = pBLEScan->getResults(1000, false);
-    pBLEScan->clearResults();
-    delay(100);
+    esp_wifi_set_channel(CHANNEL_2_4GHZ, WIFI_SECOND_CHAN_NONE);
+    vTaskDelay(pdMS_TO_TICKS(DETECT_HOME_DWELL_MS));
+    esp_wifi_set_channel(away_channels[idx], WIFI_SECOND_CHAN_NONE);
+    idx = (idx + 1) % NUM_AWAY_CHANNELS;
+    vTaskDelay(pdMS_TO_TICKS(DETECT_AWAY_DWELL_MS));
   }
 }
 
 // ============================================================================
-// WiFi Process Task (keeps promiscuous callback alive)
+// BLE supervisor task - keeps the continuous scan running
 // ============================================================================
 
-void wifiProcessTask(void *parameter) {
+void bleScanTask(void* parameter) {
   for (;;) {
-    delay(10);
+    if (pBLEScan && !pBLEScan->isScanning()) pBLEScan->start(0, false, true);
+    delay(1000);
   }
 }
 
@@ -364,109 +275,35 @@ void wifiProcessTask(void *parameter) {
 // WiFi Promiscuous Mode Callback
 // ============================================================================
 
-static void processODIDData(id_data* UAV) {
-  if (UAS_data.BasicIDValid[0])
-    strncpy(UAV->uav_id, (char *)UAS_data.BasicID[0].UASID, ODID_ID_SIZE);
-  if (UAS_data.LocationValid) {
-    UAV->lat_d = UAS_data.Location.Latitude;
-    UAV->long_d = UAS_data.Location.Longitude;
-    UAV->altitude_msl = (int)UAS_data.Location.AltitudeGeo;
-    UAV->height_agl = (int)UAS_data.Location.Height;
-    UAV->speed = (int)UAS_data.Location.SpeedHorizontal;
-    UAV->heading = (int)UAS_data.Location.Direction;
+void callback(void* buffer, wifi_promiscuous_pkt_type_t type) {
+  wifi_promiscuous_pkt_t* packet = (wifi_promiscuous_pkt_t*)buffer;
+  int len = packet->rx_ctrl.sig_len;
+  if (len <= 0) return;
+  uint8_t channel = (uint8_t)packet->rx_ctrl.channel;
+  DetectRecord rec;
+  bool hit = false;
+  if (type == WIFI_PKT_MGMT) {
+    hit = detect_wifi_mgmt(packet->payload, len, packet->rx_ctrl.rssi, channel, &rec);
   }
-  if (UAS_data.SystemValid) {
-    UAV->base_lat_d = UAS_data.System.OperatorLatitude;
-    UAV->base_long_d = UAS_data.System.OperatorLongitude;
+#if DETECT_MAVLINK
+  else if (type == WIFI_PKT_DATA) {
+    if (len < 72 || len > 600 || (packet->payload[1] & 0x40)) return;   // encrypted / not telemetry-sized
+    hit = detect_wifi_data(packet->payload, len, packet->rx_ctrl.rssi, channel, &rec);
   }
-  if (UAS_data.OperatorIDValid)
-    strncpy(UAV->op_id, (char *)UAS_data.OperatorID.OperatorId, ODID_ID_SIZE);
-}
-
-static void storeAndQueue(id_data* UAV) {
-  id_data* storedUAV = next_uav(UAV->mac);
-  *storedUAV = *UAV;
-  storedUAV->flag = 1;
-  {
-    id_data tmp = *storedUAV;
-    BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-    xQueueSendFromISR(printQueue, &tmp, &xHigherPriorityTaskWoken);
-    if (xHigherPriorityTaskWoken) portYIELD_FROM_ISR();
-  }
-}
-
-void callback(void *buffer, wifi_promiscuous_pkt_type_t type) {
-  if (type != WIFI_PKT_MGMT) return;
-
-  wifi_promiscuous_pkt_t *packet = (wifi_promiscuous_pkt_t *)buffer;
-  uint8_t *payload = packet->payload;
-  int length = packet->rx_ctrl.sig_len;
-
-  // Get current channel/band info (thread-safe)
-  uint8_t detect_channel;
-  WiFiBand detect_band;
-  portENTER_CRITICAL_ISR(&channelMux);
-  detect_channel = current_channel;
-  detect_band = current_band;
-  portEXIT_CRITICAL_ISR(&channelMux);
-
-  // NAN Action Frame (WiFi Aware RemoteID)
-  static const uint8_t nan_dest[6] = {0x51, 0x6f, 0x9a, 0x01, 0x00, 0x00};
-  if (memcmp(nan_dest, &payload[4], 6) == 0) {
-    char nan_mac[6] = {0};
-    if (odid_wifi_receive_message_pack_nan_action_frame(&UAS_data, nan_mac, payload, length) == 0) {
-      id_data UAV;
-      memset(&UAV, 0, sizeof(UAV));
-      memcpy(UAV.mac, &payload[10], 6);
-      UAV.rssi = packet->rx_ctrl.rssi;
-      UAV.last_seen = millis();
-      UAV.band = detect_band;
-      UAV.channel = detect_channel;
-      processODIDData(&UAV);
-      storeAndQueue(&UAV);
-    }
-  }
-  // Beacon Frame with RemoteID Vendor Specific IE
-  else if (payload[0] == 0x80) {
-    int offset = 36;
-    while (offset < length) {
-      int typ = payload[offset];
-      int len = payload[offset + 1];
-
-      if ((typ == 0xdd) &&
-          (((payload[offset + 2] == 0x90 && payload[offset + 3] == 0x3a && payload[offset + 4] == 0xe6)) ||
-           ((payload[offset + 2] == 0xfa && payload[offset + 3] == 0x0b && payload[offset + 4] == 0xbc)))) {
-        int j = offset + 7;
-        if (j < length) {
-          memset(&UAS_data, 0, sizeof(UAS_data));
-          odid_message_process_pack(&UAS_data, &payload[j], length - j);
-
-          id_data UAV;
-          memset(&UAV, 0, sizeof(UAV));
-          memcpy(UAV.mac, &payload[10], 6);
-          UAV.rssi = packet->rx_ctrl.rssi;
-          UAV.last_seen = millis();
-          UAV.band = detect_band;
-          UAV.channel = detect_channel;
-          processODIDData(&UAV);
-          storeAndQueue(&UAV);
-        }
-      }
-      offset += len + 2;
-    }
-  }
+#endif
+  if (hit) queueDetection(&rec);
 }
 
 // ============================================================================
-// Printer Task — outputs on both USB Serial and UART (mesh)
+// Printer Task - outputs on both USB Serial and UART (mesh)
 // ============================================================================
 
-void printerTask(void *param) {
-  id_data UAV;
+void printerTask(void* param) {
+  DetectRecord rec;
   for (;;) {
-    if (xQueueReceive(printQueue, &UAV, portMAX_DELAY)) {
-      send_json_fast(&UAV);
-      print_compact_message(&UAV);
+    if (xQueueReceive(printQueue, &rec, portMAX_DELAY)) {
+      send_json_fast(&rec);
+      print_compact_message(&rec);
     }
   }
 }
@@ -481,7 +318,7 @@ void initializeSerial() {
   delay(100);
 
   Serial.println("\n========================================");
-  Serial.println("    RemoteID Mesh Detect — Dual-Band");
+  Serial.println("    RemoteID Mesh Detect - Dual-Band");
   Serial.println("========================================");
   Serial.printf("Board: %s\n", BOARD_NAME);
 #if DUAL_BAND_ENABLED
@@ -489,8 +326,8 @@ void initializeSerial() {
 #else
   Serial.println("Mode:  SINGLE-BAND (2.4GHz WiFi only)");
 #endif
-  Serial.println("Proto: WiFi NAN, WiFi Beacon, BLE");
-  Serial.printf("UART:  TX=GPIO%d, RX=GPIO%d → Heltec\n", SERIAL1_TX_PIN, SERIAL1_RX_PIN);
+  Serial.println("Proto: Remote ID (BLE4, BLE5 LR, NAN, Beacon), DJI DroneID, MAVLink, fingerprints");
+  Serial.printf("UART:  TX=GPIO%d, RX=GPIO%d -> Heltec\n", SERIAL1_TX_PIN, SERIAL1_RX_PIN);
   Serial.println("========================================\n");
 }
 
@@ -500,44 +337,48 @@ void setup() {
 
   nvs_flash_init();
 
+  // Everything the radio callbacks touch must exist before a radio is armed.
+  printQueue = xQueueCreate(MAX_UAVS * 2, sizeof(DetectRecord));
+  memset(uavs, 0, sizeof(uavs));
+
   // WiFi promiscuous mode
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
+  wifi_promiscuous_filter_t filt;
+  filt.filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT;
+#if DETECT_MAVLINK
+  filt.filter_mask |= WIFI_PROMIS_FILTER_MASK_DATA;
+#endif
+  esp_wifi_set_promiscuous_filter(&filt);
   esp_wifi_set_promiscuous(true);
   esp_wifi_set_promiscuous_rx_cb(&callback);
   esp_wifi_set_channel(CHANNEL_2_4GHZ, WIFI_SECOND_CHAN_NONE);
-
-#if DUAL_BAND_ENABLED
   Serial.printf("WiFi promiscuous mode (starting 2.4GHz ch%d, hopping enabled)\n", CHANNEL_2_4GHZ);
-#else
-  Serial.printf("WiFi promiscuous mode (fixed ch%d)\n", CHANNEL_2_4GHZ);
-#endif
 
-  // BLE init (NimBLE 2.1.0)
+  // BLE: passive scan on both the 1M PHY (BLE 4 legacy) and the coded PHY
+  // (BLE 5 Long Range), duplicates reported (new Remote ID data every second)
   NimBLEDevice::init("DroneID");
   pBLEScan = NimBLEDevice::getScan();
-  pBLEScan->setScanCallbacks(new MyAdvertisedDeviceCallbacks());
-  pBLEScan->setActiveScan(true);
-  Serial.println("BLE scanning initialized (NimBLE)");
+  pBLEScan->setScanCallbacks(new MyAdvertisedDeviceCallbacks(), true);
+  pBLEScan->setActiveScan(false);
+  pBLEScan->setMaxResults(0);
+  pBLEScan->setInterval(100);
+  pBLEScan->setWindow(100);
+  pBLEScan->setPhy(NimBLEScan::Phy::SCAN_ALL);
+  pBLEScan->setPeriod(0);
+  pBLEScan->start(0, false, true);
+  Serial.println("BLE scanning initialized (NimBLE, 1M + coded PHY)");
 
-  // Print queue
-  printQueue = xQueueCreate(MAX_UAVS, sizeof(id_data));
-
-  // FreeRTOS tasks — C5 is single-core, S3 is dual-core
+  // FreeRTOS tasks - C5 is single-core, S3 is dual-core
 #if SINGLE_CORE
-  xTaskCreate(bleScanTask, "BLEScanTask", 10000, NULL, 1, NULL);
-  xTaskCreate(wifiProcessTask, "WiFiProcessTask", 10000, NULL, 1, NULL);
+  xTaskCreate(bleScanTask, "BLEScanTask", 4096, NULL, 1, NULL);
   xTaskCreate(printerTask, "PrinterTask", 10000, NULL, 1, NULL);
-  #if DUAL_BAND_ENABLED
   xTaskCreate(channelHopTask, "ChannelHopTask", 4096, NULL, 2, NULL);
-  #endif
 #else
-  xTaskCreatePinnedToCore(bleScanTask, "BLEScanTask", 10000, NULL, 1, NULL, 1);
-  xTaskCreatePinnedToCore(wifiProcessTask, "WiFiProcessTask", 10000, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(bleScanTask, "BLEScanTask", 4096, NULL, 1, NULL, 1);
+  xTaskCreatePinnedToCore(channelHopTask, "ChannelHopTask", 4096, NULL, 1, NULL, 0);
   xTaskCreatePinnedToCore(printerTask, "PrinterTask", 10000, NULL, 1, NULL, 1);
 #endif
-
-  memset(uavs, 0, sizeof(uavs));
 
   Serial.println("\n[+] Scanning for drones...\n");
 }
@@ -551,10 +392,11 @@ void loop() {
 
   if ((current_millis - last_status) > 60000UL) {
 #if DUAL_BAND_ENABLED
-    Serial.println("{\"status\":\"active\",\"mode\":\"dual-band\",\"bands\":[\"2.4GHz\",\"5GHz\",\"BLE\"]}");
+    Serial.println("{\"heartbeat\":\"active\",\"mode\":\"dual-band\",\"bands\":[\"2.4GHz\",\"5GHz\",\"BLE\"]}");
 #else
-    Serial.println("{\"status\":\"active\",\"mode\":\"single-band\",\"bands\":[\"2.4GHz\",\"BLE\"]}");
+    Serial.println("{\"heartbeat\":\"active\",\"mode\":\"single-band\",\"bands\":[\"2.4GHz\",\"BLE\"]}");
 #endif
     last_status = current_millis;
   }
+  delay(10);
 }

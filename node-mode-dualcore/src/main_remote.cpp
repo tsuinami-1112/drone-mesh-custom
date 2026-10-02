@@ -1,11 +1,21 @@
 /*
  * =============================================================================
- * REMOTE NODE - Drone Remote ID Detector + Mesh Sender
+ * REMOTE NODE - Drone Detector + Mesh Sender
  * colonelpanichacks
  *
  * Dual-core ESP32S3 firmware:
- *   Core 0: WiFi promiscuous packet sniffing (Open Drone ID NAN/Beacon)
- *   Core 1: BLE scanning (Open Drone ID BLE advertisements)
+ *   Core 0: WiFi promiscuous sniffing - Open Drone ID (NAN action frames and
+ *           Beacon vendor IEs), DJI DroneID beacons, MAVLink telemetry on open
+ *           networks, drone/controller access-point fingerprints. Hops across
+ *           the 2.4 GHz channels, weighted towards channel 6 (the Remote ID
+ *           channel).
+ *   Core 1: BLE scanning - Open Drone ID over BLE 4 legacy advertisements AND
+ *           BLE 5 Long Range (coded PHY) extended advertisements, which the
+ *           European / Japanese add-on Remote ID modules use. Plus BLE device
+ *           name fingerprints of controllers.
+ *
+ * All protocol parsing lives in the shared library ../../firmware-common/detect
+ * (unit-tested on a desktop); this file is radio set-up, aggregation and I/O.
  *
  * Detected drone JSON is sent to:
  *   - USB Serial (for local monitoring / direct mesh-mapper.py connection)
@@ -18,10 +28,21 @@
  * never back up printerTask and stall mesh sending. Same disease the home
  * node was hardened against; see main_home.cpp's header for the full story.
  *
- * JSON format (matches mesh-mapper.py API, includes node_id for dedup):
- *   {"mac":"xx:xx:xx:xx:xx:xx","rssi":-50,"drone_lat":0.0,"drone_long":0.0,
- *    "drone_altitude":0,"pilot_lat":0.0,"pilot_long":0.0,"basic_id":"...",
- *    "node_id":"A1B2"}
+ * JSON format (matches mesh-mapper.py; fields are omitted when unknown):
+ *   {"mac":"xx:xx:xx:xx:xx:xx","rssi":-50,"node_id":"A1B2",
+ *    "drone_lat":0.0,"drone_long":0.0,"drone_altitude":0,
+ *    "pilot_lat":0.0,"pilot_long":0.0,"basic_id":"...","op_id":"...",
+ *    "id_type":1,"src":"odid_ble5","ua_type":2,"eu_cat":1,"eu_class":2, ...}
+ *   See firmware-common/README.md for the full field list.
+ *
+ * Build-time knobs (platformio.ini build_flags, all optional):
+ *   -DDETECT_WIFI_HOP=0        stay on channel 6 only (maximum Remote ID
+ *                              duty cycle, no DJI WiFi-link / toy-drone APs
+ *                              on other channels)
+ *   -DDETECT_HOME_DWELL_MS=700 time on channel 6 between excursions
+ *   -DDETECT_AWAY_DWELL_MS=250 time on each other channel
+ *   -DDETECT_MAVLINK=0         do not capture data frames
+ *   -DDETECT_FINGERPRINT=0     drop heuristic (no Remote ID) hits
  * =============================================================================
  */
 
@@ -31,18 +52,51 @@
 
 #include <Arduino.h>
 #include <HardwareSerial.h>
-#include <BLEDevice.h>
-#include <BLEUtils.h>
-#include <BLEScan.h>
+#include <NimBLEDevice.h>
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include <esp_mac.h>
 #include <nvs_flash.h>
-#include "opendroneid.h"
-#include "odid_wifi.h"
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include "detect.h"
+
+#if !CONFIG_BT_NIMBLE_EXT_ADV
+  #error "BLE 5 Long Range needs -D CONFIG_BT_NIMBLE_EXT_ADV=1 in build_flags (see platformio.ini)"
+#endif
+
+// =============================================================================
+// Detection configuration
+// =============================================================================
+#ifndef DETECT_WIFI_HOP
+#define DETECT_WIFI_HOP 1
+#endif
+#ifndef DETECT_HOME_CHANNEL
+#define DETECT_HOME_CHANNEL 6       // ASTM / ASD-STAN Remote ID WiFi channel
+#endif
+#ifndef DETECT_HOME_DWELL_MS
+#define DETECT_HOME_DWELL_MS 700
+#endif
+#ifndef DETECT_AWAY_DWELL_MS
+#define DETECT_AWAY_DWELL_MS 250    // > 2 beacon intervals of a WiFi-link drone AP
+#endif
+#ifndef DETECT_MAVLINK
+#define DETECT_MAVLINK 1
+#endif
+#ifndef DETECT_FINGERPRINT
+#define DETECT_FINGERPRINT 1
+#endif
+
+// Heuristic (fingerprint) hits repeat with every beacon, ~10x per second per
+// network. One report per device per 30 s is plenty for a "possible drone"
+// flag and keeps them off the LoRa airtime budget.
+#define FP_MIN_INTERVAL_MS 30000
+
+// A Meshtastic text message carries at most ~233 bytes. The JSON builder
+// drops low-priority fields to fit; USB gets the full record.
+#define MESH_JSON_MAX 230
+#define USB_JSON_MAX  768
 
 // =============================================================================
 // Pin Definitions
@@ -157,316 +211,130 @@ static void txFlush() {
 
 // =============================================================================
 // UAV Tracking
+//
+// One slot per aircraft MAC. Remote ID spreads identity and position over
+// separate messages (and BLE 4 sends one message per advertisement), so each
+// frame is merged into the slot and a snapshot of the slot is what gets sent.
+// The WiFi callback (core 0) and the BLE callback (NimBLE host task) both
+// touch the table, hence the spinlock.
 // =============================================================================
-struct uav_data {
-  uint8_t  mac[6];
-  int      rssi;
-  uint32_t last_seen;
-  char     op_id[ODID_ID_SIZE + 1];
-  char     uav_id[ODID_ID_SIZE + 1];
-  double   lat_d;
-  double   long_d;
-  double   base_lat_d;
-  double   base_long_d;
-  int      altitude_msl;
-  int      height_agl;
-  int      speed;
-  int      heading;
-  int      flag;
-};
-
 #define MAX_UAVS 32
-static uav_data uavs[MAX_UAVS] = {0};
-static BLEScan* pBLEScan = nullptr;
-static ODID_UAS_Data UAS_data;
+static DetectRecord uavs[MAX_UAVS];
+static portMUX_TYPE uavMux = portMUX_INITIALIZER_UNLOCKED;
+static NimBLEScan* pBLEScan = nullptr;
 static unsigned long last_status = 0;
 
-// Thread-safe print queue (BLE callback + WiFi ISR -> printer task)
+// Thread-safe print queue (BLE callback + WiFi callback -> printer task)
 static QueueHandle_t printQueue;
 
-// Forward declarations
-void callback(void *, wifi_promiscuous_pkt_type_t);
-
-// =============================================================================
-// UAV Slot Management
-// =============================================================================
-static uav_data* next_uav(uint8_t* mac) {
+static DetectRecord* next_uav(const uint8_t* mac) {
   // First: find existing entry for this MAC
   for (int i = 0; i < MAX_UAVS; i++) {
-    if (memcmp(uavs[i].mac, mac, 6) == 0)
+    if (uavs[i].src != DET_SRC_NONE && memcmp(uavs[i].mac, mac, 6) == 0)
       return &uavs[i];
   }
   // Second: find empty slot
+  DetectRecord* slot = nullptr;
   for (int i = 0; i < MAX_UAVS; i++) {
-    if (uavs[i].mac[0] == 0)
-      return &uavs[i];
+    if (uavs[i].src == DET_SRC_NONE) { slot = &uavs[i]; break; }
   }
   // Fallback: evict oldest entry
-  uint32_t oldest_time = UINT32_MAX;
-  int oldest_idx = 0;
-  for (int i = 0; i < MAX_UAVS; i++) {
-    if (uavs[i].last_seen < oldest_time) {
-      oldest_time = uavs[i].last_seen;
-      oldest_idx = i;
+  if (!slot) {
+    uint32_t oldest_time = UINT32_MAX;
+    int oldest_idx = 0;
+    for (int i = 0; i < MAX_UAVS; i++) {
+      if (uavs[i].last_seen < oldest_time) {
+        oldest_time = uavs[i].last_seen;
+        oldest_idx = i;
+      }
     }
+    slot = &uavs[oldest_idx];
   }
-  return &uavs[oldest_idx];
+  detect_record_init(slot);
+  memcpy(slot->mac, mac, 6);
+  return slot;
+}
+
+// Called from the WiFi promiscuous callback and the BLE scan callback.
+static void queueDetection(DetectRecord* rec) {
+  uint32_t now = millis();
+  rec->last_seen = now;
+
+  if (detect_is_heuristic(rec->src)) {
+#if !DETECT_FINGERPRINT
+    return;
+#endif
+    if (!detect_throttle(rec->mac, now, FP_MIN_INTERVAL_MS)) return;
+  }
+
+  DetectRecord tmp;
+  portENTER_CRITICAL(&uavMux);
+  DetectRecord* slot = next_uav(rec->mac);
+  detect_record_merge(slot, rec);
+  tmp = *slot;
+  portEXIT_CRITICAL(&uavMux);
+
+  if (printQueue) {
+    BaseType_t woken = pdFALSE;
+    xQueueSendFromISR(printQueue, &tmp, &woken);
+    if (woken) portYIELD_FROM_ISR();
+  }
 }
 
 // =============================================================================
-// BLE Advertisement Callback - Open Drone ID over BLE
+// BLE scan callback - Open Drone ID (BLE 4 + BLE 5 Long Range) and names
 // =============================================================================
-class DroneIDCallback : public BLEAdvertisedDeviceCallbacks {
+class DroneScanCallbacks : public NimBLEScanCallbacks {
 public:
-  void onResult(BLEAdvertisedDevice device) override {
-    int len = device.getPayloadLength();
-    if (len <= 5) return;
+  void onResult(const NimBLEAdvertisedDevice* dev) override {
+    const std::vector<uint8_t>& ad = dev->getPayload();
+    if (ad.size() < 5) return;
 
-    uint8_t* payload = device.getPayload();
-    // Check for ODID BLE service data: type=0x16, UUID=0xFFFA, counter=0x0D
-    if (payload[1] != 0x16 || payload[2] != 0xFA ||
-        payload[3] != 0xFF || payload[4] != 0x0D) return;
+    // ble_addr_t stores the address least-significant byte first; reverse it
+    // so the MAC string reads the way the address is printed everywhere else.
+    uint8_t mac[6];
+    const uint8_t* val = dev->getAddress().getBase()->val;
+    for (int i = 0; i < 6; i++) mac[i] = val[5 - i];
 
-    uint8_t* mac = (uint8_t*)device.getAddress().getNative();
-    uav_data* UAV = next_uav(mac);
-    UAV->last_seen = millis();
-    UAV->rssi = device.getRSSI();
-    UAV->flag = 1;
-    memcpy(UAV->mac, mac, 6);
-
-    uint8_t* odid = &payload[6];
-    switch (odid[0] & 0xF0) {
-      case 0x00: {  // Basic ID
-        ODID_BasicID_data basic;
-        decodeBasicIDMessage(&basic, (ODID_BasicID_encoded*)odid);
-        strncpy(UAV->uav_id, (char*)basic.UASID, ODID_ID_SIZE);
-        break;
-      }
-      case 0x10: {  // Location
-        ODID_Location_data loc;
-        decodeLocationMessage(&loc, (ODID_Location_encoded*)odid);
-        UAV->lat_d = loc.Latitude;
-        UAV->long_d = loc.Longitude;
-        UAV->altitude_msl = (int)loc.AltitudeGeo;
-        UAV->height_agl = (int)loc.Height;
-        UAV->speed = (int)loc.SpeedHorizontal;
-        UAV->heading = (int)loc.Direction;
-        break;
-      }
-      case 0x40: {  // System (operator location)
-        ODID_System_data sys;
-        decodeSystemMessage(&sys, (ODID_System_encoded*)odid);
-        UAV->base_lat_d = sys.OperatorLatitude;
-        UAV->base_long_d = sys.OperatorLongitude;
-        break;
-      }
-      case 0x50: {  // Operator ID
-        ODID_OperatorID_data op;
-        decodeOperatorIDMessage(&op, (ODID_OperatorID_encoded*)odid);
-        strncpy(UAV->op_id, (char*)op.OperatorId, ODID_ID_SIZE);
-        break;
-      }
-    }
-
-    // Queue for printing (non-blocking, ISR-safe)
-    uav_data tmp = *UAV;
-    if (printQueue) {
-      BaseType_t woken = pdFALSE;
-      xQueueSendFromISR(printQueue, &tmp, &woken);
-      if (woken) portYIELD_FROM_ISR();
-    }
+    DetectRecord rec;
+    bool extended = !dev->isLegacyAdvertisement();   // BLE 5 extended advert (Long Range)
+    if (!detect_ble_adv(mac, ad.data(), (int)ad.size(), dev->getRSSI(), extended, &rec)) return;
+    queueDetection(&rec);
   }
 };
 
 // =============================================================================
-// WiFi Promiscuous Callback - Open Drone ID over WiFi (NAN + Beacon)
+// WiFi Promiscuous Callback - management frames (Remote ID NAN + Beacon, DJI
+// DroneID, SSID/OUI fingerprints) and data frames (MAVLink on open networks)
 // =============================================================================
-void callback(void *buffer, wifi_promiscuous_pkt_type_t type) {
-  if (type != WIFI_PKT_MGMT) return;
+static void wifiCallback(void* buffer, wifi_promiscuous_pkt_type_t type) {
+  wifi_promiscuous_pkt_t* packet = (wifi_promiscuous_pkt_t*)buffer;
+  int len = packet->rx_ctrl.sig_len;
+  if (len <= 0) return;
+  uint8_t channel = (uint8_t)packet->rx_ctrl.channel;
 
-  wifi_promiscuous_pkt_t *packet = (wifi_promiscuous_pkt_t *)buffer;
-  uint8_t *payload = packet->payload;
-  int length = packet->rx_ctrl.sig_len;
-
-  // --- NAN Action Frame (WiFi Aware / Neighbor Awareness Networking) ---
-  static const uint8_t nan_dest[6] = {0x51, 0x6f, 0x9a, 0x01, 0x00, 0x00};
-  if (memcmp(nan_dest, &payload[4], 6) == 0) {
-    // Zero first, same as the beacon path below: a NAN frame missing a
-    // message type must not inherit stale fields from the previous frame.
-    memset(&UAS_data, 0, sizeof(UAS_data));
-    if (odid_wifi_receive_message_pack_nan_action_frame(&UAS_data, nullptr, payload, length) == 0) {
-      uav_data UAV;
-      memset(&UAV, 0, sizeof(UAV));
-      memcpy(UAV.mac, &payload[10], 6);
-      UAV.rssi = packet->rx_ctrl.rssi;
-      UAV.last_seen = millis();
-
-      if (UAS_data.BasicIDValid[0])
-        strncpy(UAV.uav_id, (char *)UAS_data.BasicID[0].UASID, ODID_ID_SIZE);
-      if (UAS_data.LocationValid) {
-        UAV.lat_d = UAS_data.Location.Latitude;
-        UAV.long_d = UAS_data.Location.Longitude;
-        UAV.altitude_msl = (int)UAS_data.Location.AltitudeGeo;
-        UAV.height_agl = (int)UAS_data.Location.Height;
-        UAV.speed = (int)UAS_data.Location.SpeedHorizontal;
-        UAV.heading = (int)UAS_data.Location.Direction;
-      }
-      if (UAS_data.SystemValid) {
-        UAV.base_lat_d = UAS_data.System.OperatorLatitude;
-        UAV.base_long_d = UAS_data.System.OperatorLongitude;
-      }
-      if (UAS_data.OperatorIDValid)
-        strncpy(UAV.op_id, (char *)UAS_data.OperatorID.OperatorId, ODID_ID_SIZE);
-
-      uav_data* stored = next_uav(UAV.mac);
-      *stored = UAV;
-      stored->flag = 1;
-
-      uav_data tmp = *stored;
-      if (printQueue) {
-        BaseType_t woken = pdFALSE;
-        xQueueSendFromISR(printQueue, &tmp, &woken);
-        if (woken) portYIELD_FROM_ISR();
-      }
-    }
-    return;
+  DetectRecord rec;
+  bool hit = false;
+  if (type == WIFI_PKT_MGMT) {
+    hit = detect_wifi_mgmt(packet->payload, len, packet->rx_ctrl.rssi, channel, &rec);
   }
-
-  // --- Beacon Frame with ODID vendor-specific IE ---
-  if (payload[0] == 0x80) {
-    int offset = 36;
-    while (offset < length) {
-      int typ = payload[offset];
-      int len = payload[offset + 1];
-      if (offset + len + 2 > length) break;  // bounds check
-
-      if ((typ == 0xdd) &&
-          (((payload[offset + 2] == 0x90 && payload[offset + 3] == 0x3a && payload[offset + 4] == 0xe6)) ||
-           ((payload[offset + 2] == 0xfa && payload[offset + 3] == 0x0b && payload[offset + 4] == 0xbc)))) {
-        int j = offset + 7;
-        if (j < length) {
-          memset(&UAS_data, 0, sizeof(UAS_data));
-          odid_message_process_pack(&UAS_data, &payload[j], length - j);
-
-          uav_data UAV;
-          memset(&UAV, 0, sizeof(UAV));
-          memcpy(UAV.mac, &payload[10], 6);
-          UAV.rssi = packet->rx_ctrl.rssi;
-          UAV.last_seen = millis();
-
-          if (UAS_data.BasicIDValid[0])
-            strncpy(UAV.uav_id, (char *)UAS_data.BasicID[0].UASID, ODID_ID_SIZE);
-          if (UAS_data.LocationValid) {
-            UAV.lat_d = UAS_data.Location.Latitude;
-            UAV.long_d = UAS_data.Location.Longitude;
-            UAV.altitude_msl = (int)UAS_data.Location.AltitudeGeo;
-            UAV.height_agl = (int)UAS_data.Location.Height;
-            UAV.speed = (int)UAS_data.Location.SpeedHorizontal;
-            UAV.heading = (int)UAS_data.Location.Direction;
-          }
-          if (UAS_data.SystemValid) {
-            UAV.base_lat_d = UAS_data.System.OperatorLatitude;
-            UAV.base_long_d = UAS_data.System.OperatorLongitude;
-          }
-          if (UAS_data.OperatorIDValid)
-            strncpy(UAV.op_id, (char *)UAS_data.OperatorID.OperatorId, ODID_ID_SIZE);
-
-          uav_data* stored = next_uav(UAV.mac);
-          *stored = UAV;
-          stored->flag = 1;
-
-          uav_data tmp = *stored;
-          if (printQueue) {
-            BaseType_t woken = pdFALSE;
-            xQueueSendFromISR(printQueue, &tmp, &woken);
-            if (woken) portYIELD_FROM_ISR();
-          }
-        }
-      }
-      offset += len + 2;
-    }
+#if DETECT_MAVLINK
+  else if (type == WIFI_PKT_DATA) {
+    // Nearly all data frames are encrypted (Protected bit) or far larger than
+    // a telemetry datagram; reject those before touching the parser.
+    if (len < 72 || len > 600 || (packet->payload[1] & 0x40)) return;
+    hit = detect_wifi_data(packet->payload, len, packet->rx_ctrl.rssi, channel, &rec);
   }
-}
-
-// =============================================================================
-// JSON Builder (shared format for USB + mesh, includes node_id)
-// =============================================================================
-// Coordinate text at full 6-decimal precision - identical value to what this
-// firmware has always sent - with only trailing zeros and a trailing dot
-// removed. "34.050000" -> "34.05" is the same number in fewer bytes, so this
-// is lossless: no rounding, no reduced precision.
-static int fmtCoord(char* out, int outSize, double v) {
-  int n = snprintf(out, outSize, "%.6f", v);
-  if (n <= 0 || n >= outSize) return n;
-  int e = n - 1;
-  while (e > 0 && out[e] == '0') e--;
-  if (e > 0 && out[e] == '.') e--;
-  out[e + 1] = '\0';
-  return e + 1;
-}
-
-static int buildJson(char *buf, size_t bufSize, const uav_data *UAV) {
-  char mac_str[18];
-  snprintf(mac_str, sizeof(mac_str), "%02x:%02x:%02x:%02x:%02x:%02x",
-           UAV->mac[0], UAV->mac[1], UAV->mac[2],
-           UAV->mac[3], UAV->mac[4], UAV->mac[5]);
-
-  // The UAS ID is attacker-controlled over-the-air data. Keep only benign
-  // characters so a hostile broadcast cannot break the JSON line or inject
-  // extra fields into mesh-mapper.
-  char safe_id[ODID_ID_SIZE + 1];
-  int si = 0;
-  for (int i = 0; UAV->uav_id[i] && si < ODID_ID_SIZE; i++) {
-    char c = UAV->uav_id[i];
-    if (isalnum((unsigned char)c) || c == '.' || c == '_' || c == '-' || c == ':') {
-      safe_id[si++] = c;
-    }
-  }
-  safe_id[si] = '\0';
-
-  // Every byte here is LoRa airtime: a 233-byte packet costs ~2s on air at
-  // Meshtastic's default LONG_FAST. Both savings below are LOSSLESS - no
-  // value is rounded and no populated field is dropped:
-  //   - coordinates keep full 6-decimal precision, only trailing zeros go
-  //   - a field is omitted only when it carries nothing (pilot position not
-  //     broadcast, empty UAS ID); absent and zero mean the same thing here
-  // mesh-mapper reads every field with .get() and gates only on one of
-  // mac/drone_lat/pilot_lat/basic_id being present, so omission is safe.
-  char dlat[16], dlon[16];
-  fmtCoord(dlat, sizeof(dlat), UAV->lat_d);
-  fmtCoord(dlon, sizeof(dlon), UAV->long_d);
-
-  int n = snprintf(buf, bufSize,
-    "{\"mac\":\"%s\",\"rssi\":%d,\"drone_lat\":%s,\"drone_long\":%s,\"drone_altitude\":%d",
-    mac_str, UAV->rssi, dlat, dlon, UAV->altitude_msl);
-  if (n < 0 || n >= bufSize) return n;
-
-  // Pilot position is frequently absent - omitting it saves ~40 bytes.
-  if (UAV->base_lat_d != 0.0 || UAV->base_long_d != 0.0) {
-    char plat[16], plon[16];
-    fmtCoord(plat, sizeof(plat), UAV->base_lat_d);
-    fmtCoord(plon, sizeof(plon), UAV->base_long_d);
-    int m = snprintf(buf + n, bufSize - n,
-                     ",\"pilot_lat\":%s,\"pilot_long\":%s", plat, plon);
-    if (m < 0 || m >= bufSize - n) return n;
-    n += m;
-  }
-  if (safe_id[0]) {
-    int m = snprintf(buf + n, bufSize - n, ",\"basic_id\":\"%s\"", safe_id);
-    if (m < 0 || m >= bufSize - n) return n;
-    n += m;
-  }
-  int m = snprintf(buf + n, bufSize - n, ",\"node_id\":\"%s\"}", nodeId);
-  if (m < 0 || m >= bufSize - n) return n;
-  return n + m;
+#endif
+  if (hit) queueDetection(&rec);
 }
 
 // =============================================================================
 // JSON Output - Sends to USB Serial + UART (Heltec V3 mesh)
 // =============================================================================
-static void send_json(const uav_data *UAV) {
-  char json[300];
-  buildJson(json, sizeof(json), UAV);
+static void send_json(const DetectRecord* rec) {
+  char json[USB_JSON_MAX];
+  if (detect_build_json(json, sizeof(json), rec, nodeId) <= 0) return;
 
   // USB Serial (local monitoring / direct connection to mesh-mapper.py).
   // Queued, never blocking - a stalled host must not back up mesh sending.
@@ -486,21 +354,22 @@ static void send_json(const uav_data *UAV) {
 #define MESH_SEND_INTERVAL_MS 350
 #define MESH_QUEUE_DEPTH      4
 
-static char     meshPending[MESH_QUEUE_DEPTH][300];
+static char     meshPending[MESH_QUEUE_DEPTH][MESH_JSON_MAX + 8];
 static int      meshPendHead = 0;      // next slot to send
 static int      meshPendCount = 0;
 static uint32_t lastMeshSend = 0;
 static uint32_t meshDropped = 0;
 
 // Only ever called from printerTask, so no locking is needed.
-static void send_to_mesh(const uav_data *UAV) {
+static void send_to_mesh(const DetectRecord* rec) {
   int slot = (meshPendHead + meshPendCount) % MESH_QUEUE_DEPTH;
   if (meshPendCount == MESH_QUEUE_DEPTH) {
     meshPendHead = (meshPendHead + 1) % MESH_QUEUE_DEPTH;   // drop oldest
     meshPendCount--;
     meshDropped++;
   }
-  buildJson(meshPending[slot], sizeof(meshPending[slot]), UAV);
+  // The builder drops low-priority fields so the line fits one LoRa packet.
+  if (detect_build_json(meshPending[slot], MESH_JSON_MAX, rec, nodeId) <= 0) return;
   meshPendCount++;
 }
 
@@ -523,40 +392,56 @@ static void meshQueueDrain() {
 // FreeRTOS Tasks
 // =============================================================================
 
-// Printer task: dequeues UAV data and outputs JSON (runs on core 1)
-static void printerTask(void *param) {
-  uav_data UAV;
+// Printer task: dequeues records and outputs JSON (runs on core 1)
+static void printerTask(void* param) {
+  DetectRecord rec;
   for (;;) {
     // Bounded wait instead of portMAX_DELAY so queued mesh messages keep
     // draining even when no new detections arrive.
-    if (xQueueReceive(printQueue, &UAV, pdMS_TO_TICKS(100))) {
-      send_json(&UAV);
-      send_to_mesh(&UAV);
+    if (xQueueReceive(printQueue, &rec, pdMS_TO_TICKS(100))) {
+      send_json(&rec);
+      send_to_mesh(&rec);
     }
     meshQueueDrain();
     txFlush();   // runs at least every 100ms even with zero detections
   }
 }
 
-// BLE scan task (runs on core 1)
-static void bleScanTask(void *param) {
+// BLE supervisor: the scan runs continuously from callbacks; restart it if
+// the controller ever stops it (runs on core 1)
+static void bleScanTask(void* param) {
   for (;;) {
-    pBLEScan->start(1, false);
-    pBLEScan->clearResults();
-    delay(100);
+    if (pBLEScan && !pBLEScan->isScanning()) {
+      pBLEScan->start(0, false, true);   // 0 = forever
+    }
+    delay(1000);
   }
 }
 
-// WiFi processing task - just keeps the task alive (runs on core 0)
-static void wifiProcessTask(void *param) {
+// WiFi channel plan (runs on core 0). Remote ID lives on channel 6, so most
+// of the time is spent there; the other channels are visited briefly to catch
+// DJI WiFi-link aircraft, toy-drone / FPV access points and MAVLink bridges,
+// which sit on whatever channel their AP picked. 12/13 are legal receive
+// channels in Europe and Japan.
+static void wifiHopTask(void* param) {
+  static const uint8_t away[] = { 1, 11, 2, 7, 3, 8, 4, 9, 5, 10, 12, 13 };
+  size_t idx = 0;
   for (;;) {
-    delay(10);
+#if DETECT_WIFI_HOP
+    esp_wifi_set_channel(DETECT_HOME_CHANNEL, WIFI_SECOND_CHAN_NONE);
+    vTaskDelay(pdMS_TO_TICKS(DETECT_HOME_DWELL_MS));
+    esp_wifi_set_channel(away[idx], WIFI_SECOND_CHAN_NONE);
+    idx = (idx + 1) % (sizeof(away) / sizeof(away[0]));
+    vTaskDelay(pdMS_TO_TICKS(DETECT_AWAY_DWELL_MS));
+#else
+    vTaskDelay(pdMS_TO_TICKS(1000));
+#endif
   }
 }
 
 // UART forward task: anything the Heltec sends back gets echoed to USB
 // (mesh acknowledgments, Meshtastic debug output, etc.)
-static void uartForwardTask(void *param) {
+static void uartForwardTask(void* param) {
   static char lineBuf[512];
   static int linePos = 0;
 
@@ -606,7 +491,12 @@ void setup() {
 
   txPrintln("");
   txPrintln("Mesh Detect - Node Mode / REMOTE");
-  txPrintf("Node ID: %s   WiFi + BLE -> mesh\n", nodeId);
+  txPrintf("Node ID: %s   Remote ID (BLE4/BLE5-LR/NAN/Beacon) + DJI DroneID + MAVLink + fingerprints -> mesh\n", nodeId);
+#if DETECT_WIFI_HOP
+  txPrintf("WiFi: ch%d %dms, other channels %dms each\n", DETECT_HOME_CHANNEL, DETECT_HOME_DWELL_MS, DETECT_AWAY_DWELL_MS);
+#else
+  txPrintf("WiFi: fixed ch%d\n", DETECT_HOME_CHANNEL);
+#endif
 
   nvs_flash_init();
 
@@ -615,29 +505,43 @@ void setup() {
   // the callback pushes to printQueue - creating the queue afterwards left a
   // window where a frame arriving on a busy channel hit a null handle and
   // panicked at boot.
-  printQueue = xQueueCreate(MAX_UAVS * 2, sizeof(uav_data));
+  printQueue = xQueueCreate(MAX_UAVS * 2, sizeof(DetectRecord));
   memset(uavs, 0, sizeof(uavs));
 
-  // WiFi promiscuous mode for ODID NAN/Beacon frames
+  // WiFi promiscuous mode. Management frames carry Remote ID / DJI / SSIDs;
+  // data frames are only needed for MAVLink on open networks.
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
+  wifi_promiscuous_filter_t filt;
+  filt.filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT;
+#if DETECT_MAVLINK
+  filt.filter_mask |= WIFI_PROMIS_FILTER_MASK_DATA;
+#endif
+  esp_wifi_set_promiscuous_filter(&filt);
   esp_wifi_set_promiscuous(true);
-  esp_wifi_set_promiscuous_rx_cb(&callback);
-  esp_wifi_set_channel(6, WIFI_SECOND_CHAN_NONE);
+  esp_wifi_set_promiscuous_rx_cb(&wifiCallback);
+  esp_wifi_set_channel(DETECT_HOME_CHANNEL, WIFI_SECOND_CHAN_NONE);
 
-  // BLE scanner for ODID BLE advertisements
-  BLEDevice::init("DroneID");
-  pBLEScan = BLEDevice::getScan();
-  pBLEScan->setAdvertisedDeviceCallbacks(new DroneIDCallback());
-  pBLEScan->setActiveScan(true);
+  // BLE scanner: passive (Remote ID is non-connectable, non-scannable), with
+  // duplicates reported because the same address re-broadcasts new data every
+  // second, on both the 1M PHY (BLE 4 legacy) and the coded PHY (BLE 5 Long
+  // Range). Legacy adverts are still reported in extended-scan mode.
+  NimBLEDevice::init("DroneID");
+  pBLEScan = NimBLEDevice::getScan();
+  pBLEScan->setScanCallbacks(new DroneScanCallbacks(), /*wantDuplicates=*/true);
+  pBLEScan->setActiveScan(false);
+  pBLEScan->setMaxResults(0);           // callbacks only, nothing buffered
   pBLEScan->setInterval(100);
-  pBLEScan->setWindow(99);
+  pBLEScan->setWindow(100);
+  pBLEScan->setPhy(NimBLEScan::Phy::SCAN_ALL);
+  pBLEScan->setPeriod(0);
+  pBLEScan->start(0, false, true);
 
   // Launch FreeRTOS tasks on separate cores
-  xTaskCreatePinnedToCore(bleScanTask,     "BLE",     10000, NULL, 1, NULL, 1);
-  xTaskCreatePinnedToCore(wifiProcessTask, "WiFi",    10000, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(bleScanTask,     "BLE",     4096,  NULL, 1, NULL, 1);
+  xTaskCreatePinnedToCore(wifiHopTask,     "WiFiHop", 4096,  NULL, 1, NULL, 0);
   xTaskCreatePinnedToCore(printerTask,     "Print",   10000, NULL, 1, NULL, 1);
-  xTaskCreatePinnedToCore(uartForwardTask, "UART_FW",  4096, NULL, 1, NULL, 1);
+  xTaskCreatePinnedToCore(uartForwardTask, "UART_FW", 4096,  NULL, 1, NULL, 1);
 
   txPrintln("Scanning.");
   txPrintln("");

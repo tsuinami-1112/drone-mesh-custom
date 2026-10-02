@@ -23,7 +23,7 @@
 
 ## Overview
 
-Captures FAA Remote ID broadcasts (BLE + WiFi) from drones using ESP32 nodes, relays detections over a Meshtastic LoRa mesh, and renders them in real time on a Leaflet web map. Optional FAA registration lookups, persistent multi-session tracking, KML/CSV/GeoJSON export, and **a fully self-contained offline mode** - UI, fonts, JS, and tiles all served from disk so you can pull the ethernet and still operate.
+Captures drone Remote ID broadcasts (Open Drone ID per ASTM F3411 and ASD-STAN EN 4709-002, over BLE + WiFi) using ESP32 nodes, relays detections over a Meshtastic LoRa mesh, and renders them in real time on a Leaflet web map. Works in any country: it decodes what the drone broadcasts and never depends on a national registry. Persistent multi-session tracking, KML/CSV/GeoJSON export, and **a fully self-contained offline mode** - UI, fonts, JS, and tiles all served from disk so you can pull the ethernet and still operate.
 
 ---
 
@@ -90,23 +90,76 @@ python3 mesh-mapper.py
 | `--no-auto-start` | off | Don't auto-connect to saved ports |
 
 ### Firmware
-Pick the variant that matches your board. All build with PlatformIO:
+Pick the variant that matches your board. All build with PlatformIO, and all
+share one detection library (`firmware-common/detect`) that PlatformIO pulls in
+through `lib_extra_dirs`:
 
 | Path | Target | Notes |
 |---|---|---|
-| `node-mode-dualcore/` | ESP32-S3 dual-core | Remote node + home dedup node (`pio run -e remote` / `-e home`) |
-| `remoteid-mesh-dualcore/` | ESP32-S3 | BLE + WiFi concurrent detection, mesh relay |
-| `remoteid-mesh/` | ESP32-S3 / single-core | Original variant, GPIO6/7 pinout |
-| `remoteid-c5-5g/` | ESP32-C5 | UNII-3 5GHz WiFi RID (channels 149/153/157/161/165) |
+| `node-mode-dualcore/` | ESP32-S3 dual-core | Remote node + home dedup node (`pio run -e remote_node` / `-e home_node`) |
+| `remoteid-mesh-dualcore/` | ESP32-S3 / ESP32-C6 | BLE + WiFi concurrent detection, mesh relay |
+| `remoteid-mesh/` | ESP32-C3 / ESP32-S3 | WiFi-only original variant, GPIO6/7 pinout |
+| `remoteid-c5-5g/` | ESP32-C5 (+ S3 fallback) | Dual band: 2.4 GHz plus the UNII-3 5GHz Remote ID channels (149-165) |
 
 ```bash
 cd remoteid-mesh-dualcore
 pio run -t upload
+
+# parsers are unit-tested on the host, no board needed
+cd ../firmware-common/test && make
 ```
+
+The BLE variants use `h2zero/NimBLE-Arduino` with extended advertising enabled
+(`-D CONFIG_BT_NIMBLE_EXT_ADV=1`): the core's built-in BLE library cannot scan
+the coded PHY, and BLE 5 Long Range is what most European and Japanese
+add-on Remote ID modules transmit. Per-variant detection knobs
+(`-DDETECT_WIFI_HOP=0`, `-DDETECT_MAVLINK=0`, `-DDETECT_FINGERPRINT=0`, dwell
+times) are documented at the top of each `platformio.ini`.
+
+> The prebuilt binaries under `flasher/` and `firmware/` predate the detection
+> expansion. Until they are rebuilt from these sources they only decode US-style
+> Remote ID on channel 6.
 
 ---
 
 ## Features
+
+### Detection coverage
+
+Everything below is passive and runs on the stock XIAO ESP32 radios, no extra
+hardware:
+
+| Layer | How | What you get |
+|---|---|---|
+| **Remote ID** - Open Drone ID per ASTM F3411 and ASD-STAN EN 4709-002 | BLE 4 legacy adverts, **BLE 5 Long Range** extended adverts, WiFi NAN action frames, WiFi Beacon vendor IEs | Serial number **and** registration ID (both Basic IDs), position, altitude, height, speed, heading, operator position, **Operator ID**, EU category/class, Self ID text, UA type |
+| **DJI DroneID** (proprietary) | Beacon vendor IE of WiFi-link DJI aircraft (Spark, Mavic Pro WiFi mode, Mavic Air, Mavic Mini / Mini SE) | Serial, position, home point, pilot phone position, model. Broadcast worldwide, independent of Remote ID rules |
+| **MAVLink** telemetry | UDP/TCP inside 802.11 data frames on **open** WiFi (ArduPilot / PX4 bridges, SITL, companion boards) | Position, altitude, heading, armed state, vehicle type, autopilot, and any OPEN_DRONE_ID_* messages on the link |
+| **Fingerprints** (heuristic) | SSID patterns, IEEE MAC prefixes (24/28/36-bit), BLE names and company IDs | "Possible drone" for aircraft and controllers that broadcast nothing: DJI/Ryze, Parrot, Skydio, Autel, Yuneec, Hubsan, Holy Stone, Potensic, Snaptain, Ruko, FIMI, PowerVision, HOVERAir, Walkera, toy quads, FPV goggles, telemetry bridges. Confidence-tagged, rate-limited, never with a position |
+
+The WiFi sniffer spends most of its time on channel 6 (the Remote ID channel)
+and makes short excursions across channels 1-13 to catch access points that
+sit elsewhere. Full details, the JSON schema and the limits are in
+[`firmware-common/README.md`](firmware-common/README.md).
+
+### Outside the United States
+
+The mapper decodes what the aircraft broadcasts and never consults a national
+registry, so it works the same in every country. The identity section of a
+drone's popup shows what matters where you are:
+
+| Region | What is broadcast | What the UI shows |
+|---|---|---|
+| **EU / EEA, Switzerland, Norway** (EN 4709-002 direct remote ID, classes C1-C3, C5, C6) | serial number, **Operator Registration Number** (`FIN87astrdge12k8`, the 3 secret characters are never broadcast), EU category and class, operator position; BLE 4, BLE 5 Long Range, NAN or Beacon | `OPERATOR ID`, `SERIAL NUMBER`, `EU CATEGORY` (Open C1 ...) |
+| **United Kingdom** (mandatory from 2026) | `GBR-OP-...` operator ID + serial | `OPERATOR ID`, `SERIAL NUMBER` |
+| **Japan** (since June 2022) | registration `JU...` as Basic ID type 2 **plus** the serial as type 1, authentication, BLE 5 LR / Beacon / NAN | `REGISTRATION ID` and `SERIAL NUMBER` side by side |
+| **USA** | serial or session ID, operator position | `SERIAL NUMBER` / `SESSION ID` |
+| **China** | proprietary GB 42590 / GB 46750 formats, not decoded; DJI aircraft still show through DJI DroneID and fingerprints | `DJI DroneID`, `WiFi fingerprint` |
+| **Everywhere** | WiFi-link DJI aircraft, toy and FPV quads, telemetry bridges | DJI DroneID and fingerprint entries (dashed amber in the list) |
+
+Fingerprint hits are heuristics: a DJI MAC prefix is also an Osmo camera, and
+a phone that once joined a Tello keeps probing for it. They are shown with
+their confidence and without a position so they cannot be mistaken for a
+decoded Remote ID track.
 
 ### Real-time Mapping
 - Live drone + pilot positions, broadcast rings, custom markers
@@ -116,6 +169,7 @@ pio run -t upload
 
 ### Data Management
 - Detection history with timestamps + RSSI
+- Identity fields (UAS IDs, operator ID, make/model, source) carried forward across position-only frames and persisted to CSV
 - Device aliases (friendly names per MAC)
 - Export to CSV, KML (Google Earth), GeoJSON
 - Cumulative long-term log
@@ -131,7 +185,6 @@ pio run -t upload
 - Map / detection list / status panels in one view
 
 ### External
-- FAA Remote ID registration lookup with 3-tier cache
 - Webhook callbacks on detection transitions
 - Service worker tile cache for the live UI
 
@@ -215,7 +268,11 @@ Built-in operational areas. Selecting one pans + auto-fills the cache name:
 | New England | [-74, 40, -66, 47.5] |
 | Appalachian Trail corridor | [-85, 30, -76, 39] |
 | Florida / Texas / Hawaii / Alaska | ... |
-| United Kingdom / Germany (west) / Japan | ... |
+| United Kingdom & Ireland, Europe (whole), Benelux, Germany, France, Spain & Portugal, Italy, Poland, Nordics, Switzerland & Alps, Turkey | ... |
+| Japan, South Korea, Taiwan, Singapore, India | ... |
+| Australia (south-east), New Zealand | ... |
+| Canada (Ontario & Quebec / British Columbia), Mexico, Brazil (south-east), Argentina & Chile | ... |
+| South Africa, United Arab Emirates | ... |
 
 Add more by editing the `<select id="regionPreset">` block in `mesh-mapper.py`.
 
@@ -371,11 +428,9 @@ dump1090-fa --net --net-bo-port 30005 --device-type hackrf
 | `GET` | `/api/serial_status` | ESP32 connection status |
 | `GET` | `/api/selected_ports` | Currently configured ports |
 
-### FAA & Webhooks
+### Webhooks
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/faa/<identifier>` | FAA registration lookup |
-| `POST` | `/api/query_faa` | Manual FAA query |
 | `POST` | `/api/set_webhook_url` | Configure webhook endpoint |
 | `GET` | `/api/get_webhook_url` | Get current webhook URL |
 | `POST` | `/api/webhook_popup` | Webhook notification handler |
@@ -425,7 +480,7 @@ WebSocket event: `adsb` - pushed every poll cycle when enabled.
 
 ### WebSocket Events
 Pushed to connected clients in real time:
-`detections`, `paths`, `serial_status`, `aliases`, `cumulative_log`, `faa_cache`
+`detections`, `paths`, `serial_status`, `aliases`, `cumulative_log`
 
 ---
 
@@ -491,10 +546,12 @@ tail -f mapper.log             # what's it saying?
 ```
 
 ### No drone detections
-- Confirm firmware is flashed and running (`pio device monitor`)
-- Verify the WiFi channel matches what your local drones broadcast on (default ch 6)
+- Confirm firmware is flashed and running (`pio device monitor`); the boot banner lists the enabled layers
+- Remote ID lives on WiFi channel 6; the node hops away from it briefly to find other access points. Build with `-DDETECT_WIFI_HOP=0` to stay on channel 6 if you only care about Remote ID
+- A BLE 5 Long Range-only module can take a few seconds to be heard: the controller alternates between the 1M and coded PHY, and the WiFi sniffer shares the radio
 - Check that the Heltec is in serial mode at 115200, RX=19, TX=20
-- Some drones don't broadcast Remote ID - required in many jurisdictions but not universal
+- Many drones broadcast no Remote ID at all. Those show up, if at all, as dashed amber "possible drone" fingerprint entries without a position
+- DJI aircraft only broadcast Remote ID with the motors running and only in regions where DJI has enabled it; the proprietary DJI DroneID beacon exists only on WiFi-link models
 
 ### Tile cache job stuck
 - Check `/api/cache_jobs/<id>` for `errors` count - likely upstream rate-limiting
@@ -529,11 +586,14 @@ drone-mesh-mapper/
 |-- tools/
 |   `-- cache_tiles.py          # CLI tile pre-cacher
 |-- RPI/                        # Raspberry Pi installer scripts
+|-- firmware-common/            # Shared detection library + host unit tests
+|   |-- detect/                 #   Open Drone ID, DJI DroneID, MAVLink, fingerprints
+|   `-- test/                   #   make -> builds with gcc and runs synthetic-frame tests
 |-- node-mode-dualcore/         # ESP32-S3 dual-role firmware
-|-- remoteid-mesh-dualcore/     # ESP32-S3 BLE+WiFi firmware
-|-- remoteid-mesh/              # Single-core mesh firmware
-|-- remoteid-c5-5g/             # ESP32-C5 5GHz firmware
-`-- firmware/                   # Additional firmware variants
+|-- remoteid-mesh-dualcore/     # ESP32-S3 / C6 BLE+WiFi firmware
+|-- remoteid-mesh/              # WiFi-only firmware (C3 / S3)
+|-- remoteid-c5-5g/             # ESP32-C5 dual-band firmware
+`-- firmware/                   # Prebuilt binaries (predate the detection expansion)
 ```
 
 ---
@@ -553,6 +613,9 @@ MIT - see [LICENSE](LICENSE).
 - **Cemaxecuter** / **alphafox02** - original RID firmware
 - **Luke Switzer** - firmware contributions
 - **OpenDroneID** community - protocol & specs (Apache 2.0)
+- **Kismet** - the DJI DroneID beacon dissector this project's decoder follows
+- **MAVLink** project - message definitions and CRC_EXTRA tables
+- **h2zero / NimBLE-Arduino** - BLE 5 extended advertising on the ESP32
 - **OpenStreetMap**, **Esri**, **CARTO**, **OpenTopoMap** - tile providers
 - **MapLibre GL** + **Leaflet** + **Nominatim** - open mapping stack
 - **ADS-B receivers** - built on the shoulders of [dump1090](https://github.com/MalcolmRobb/dump1090) (Malcolm Robb / mutability), [readsb](https://github.com/wiedehopf/readsb) + [tar1090](https://github.com/wiedehopf/tar1090) (wiedehopf), and [pyModeS](https://github.com/junzis/pyModeS) (junzis) for Mode-S/CPR decode. The Beast TCP path uses pyModeS directly; the JSON path is compatible with all of the above. Network sources: [adsb.lol](https://adsb.lol), [adsb.fi](https://adsb.fi), [airplanes.live](https://airplanes.live), [OpenSky](https://opensky-network.org), [ADSBexchange](https://adsbexchange.com).
