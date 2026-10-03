@@ -32,6 +32,7 @@ aliases.json
 drone_tags.json
 geofences.json
 webhook_url.json
+stations.json
 adsb_config.json
 cache_jobs.json
 
