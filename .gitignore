@@ -13,6 +13,9 @@ node-mode-dualcore/.pio/build/
 remoteid-mesh-dualcore/.pio/build/
 remoteid-mesh/.pio/build/
 remoteid-c5-5g/.pio/build/
+level1-c5phy/.pio/build/
+level1-c5phy/test/host/test_level1
+level1-c5phy/test/host/json_samples.txt
 
 # ── Host unit tests of the shared detection library ────────
 firmware-common/test/test_detect
