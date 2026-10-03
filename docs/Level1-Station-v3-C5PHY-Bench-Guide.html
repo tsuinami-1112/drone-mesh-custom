@@ -1,0 +1,686 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Level 1 Station v3 — Bench Guide</title>
+<meta name="description" content="Bench build and verification guide for the Level 1 station v3 (XIAO ESP32-C5 Wi-Fi PHY as the 5.8 GHz analog FPV receiver), firmware level1-c5phy.">
+<style>
+  @page { size: A4; margin: 0; }
+  :root {
+    --ink: #1b1d20; --muted: #5b6066; --faint: #8a9096;
+    --rule: #cfd4da; --rule-light: #e3e6ea; --head-bg: #eef1f4; --box-bg: #f4f5f6;
+    --rf: #1f8a7a; --iq: #d0541b; --pwr: #a08a1a; --logic: #24272b; --opt: #6a6f75;
+  }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: Helvetica, Arial, "Liberation Sans", "DejaVu Sans", sans-serif;
+    font-size: 12px; line-height: 1.38; color: var(--ink); background: #fff;
+    -webkit-print-color-adjust: exact; print-color-adjust: exact;
+  }
+  code, pre, .mono, kbd {
+    font-family: "Liberation Mono", "DejaVu Sans Mono", Menlo, Consolas, "Courier New", monospace;
+  }
+  code { font-size: 0.92em; }
+  p { margin: 0 0 6px 0; }
+  b, strong { font-weight: bold; }
+
+  /* ---- page boxes: one fixed A4 box per sheet, header at the top, footer pinned ---- */
+  .sheet { width: 210mm; height: 297mm; box-sizing: border-box; padding: 12mm 14mm 16mm 14mm; position: relative;
+           overflow: hidden; background: #fff; page-break-after: always; break-after: page; }
+  .sheet:last-of-type { page-break-after: auto; break-after: auto; }
+  .runhead { font-size: 9px; color: var(--muted); margin-bottom: 14px; }
+  .foot { position: absolute; bottom: 7mm; left: 14mm; right: 14mm; display: flex; justify-content: space-between;
+          font-size: 9px; color: var(--muted); }
+  @media screen {
+    body { background: #e4e6e9; padding: 8mm 0; }
+    .sheet { margin: 0 auto 8mm; box-shadow: 0 1px 8px rgba(0,0,0,.22); }
+  }
+  @media print { body { background: #fff; padding: 0; } .sheet { margin: 0; box-shadow: none; } }
+
+  /* ---- typography ---- */
+  .kicker { font-size: 10px; letter-spacing: 2.6px; text-transform: uppercase; color: #3a3e43; margin: 0 0 4px; }
+  h1 { font-size: 28px; line-height: 1.1; margin: 0 0 7px; letter-spacing: -0.3px; }
+  .lead { font-size: 14px; line-height: 1.4; color: #24272b; margin: 0 0 10px; }
+  h2 { font-size: 20px; line-height: 1.15; margin: 0 0 11px; padding-bottom: 6px; border-bottom: 2px solid #2a2d31; }
+  h3 { font-size: 11.5px; letter-spacing: 1.6px; text-transform: uppercase; margin: 12px 0 5px; }
+  h4 { font-size: 11px; letter-spacing: 1.1px; text-transform: uppercase; margin: 10px 0 3px; }
+  .cap { font-size: 11px; color: var(--muted); margin: 4px 0 0; }
+  .small { font-size: 10.5px; line-height: 1.35; color: #2e3237; }
+  .grey { color: var(--faint); }
+
+  /* ---- tables ---- */
+  table { border-collapse: collapse; width: 100%; margin: 3px 0 5px; }
+  th, td { border: 1px solid var(--rule); padding: 2px 5px; text-align: left; vertical-align: top; font-size: 11.5px; line-height: 1.32; }
+  th { background: var(--head-bg); font-size: 10px; letter-spacing: 0.6px; text-transform: uppercase; color: #2a2d31; }
+  table.tight th, table.tight td { font-size: 11px; line-height: 1.3; }
+  table.tight th { font-size: 9.6px; }
+  td.n, th.n { text-align: right; white-space: nowrap; }
+  td.c, th.c { text-align: center; }
+  table.meta td { padding: 3.5px 7px; font-size: 11.5px; }
+  table.meta td.k { background: var(--head-bg); font-weight: bold; width: 11%; }
+  table.meta td.v code { font-size: 11px; }
+  table.rec td { height: 29px; }
+  table.rec td.k { background: var(--head-bg); font-weight: bold; width: 17%; vertical-align: top; }
+  table.cal td, table.cal th { text-align: center; }
+  table.cal td:first-child, table.cal th:first-child { text-align: left; }
+  table.cal td { height: 20px; }
+  tr.dim td { color: var(--faint); }
+
+  /* ---- widgets ---- */
+  .cb { display: inline-block; width: 11px; height: 11px; border: 1.3px solid #2a2d31; border-radius: 2px;
+        vertical-align: -1.5px; box-sizing: border-box; background: #fff; }
+  td .cb { vertical-align: -2px; }
+  ul.chk { list-style: none; margin: 0; padding: 0; }
+  ul.chk li { display: flex; gap: 9px; align-items: flex-start; padding: 3.5px 0; border-bottom: 1px solid var(--rule-light); }
+  ul.chk li .cb { flex: none; margin-top: 2px; width: 12px; height: 12px; }
+  ul.chk li .t { flex: 1 1 auto; }
+  .bl { display: inline-block; width: 62px; height: 11px; border-bottom: 1px solid #555; vertical-align: baseline; margin: 0 3px; }
+  .bl.w { width: 120px; } .bl.xw { width: 190px; } .bl.s { width: 40px; }
+  .opt { display: inline-block; font-size: 7.5px; font-weight: bold; letter-spacing: 0.9px; color: var(--opt);
+         border: 1px dashed #8a8f95; border-radius: 2px; padding: 0 3px; line-height: 11px; vertical-align: 1.5px; margin-right: 4px; }
+  .callout { border-left: 3px solid #2a2d31; background: var(--box-bg); padding: 7px 10px; margin: 9px 0 0; font-size: 11px; line-height: 1.38; }
+  .callout p:last-child { margin-bottom: 0; }
+  pre.code { background: #f6f7f8; border: 1px solid #dadde1; padding: 6px 9px; margin: 5px 0 7px; font-size: 10.6px; line-height: 1.38;
+             white-space: pre-wrap; word-break: break-all; overflow-wrap: anywhere; }
+  pre.code.nowrap { white-space: pre; word-break: normal; }
+  .cols { display: flex; gap: 20px; align-items: flex-start; }
+  .cols > .col { flex: 1 1 0; min-width: 0; }
+  .cols > .col.fig { flex: 0 0 318px; }
+  .fig svg { width: 100%; height: auto; display: block; }
+  .diagram { margin: 6px 0 2px; }
+  .diagram svg { width: 100%; height: auto; display: block; }
+  svg text { font-family: Helvetica, Arial, "Liberation Sans", sans-serif; fill: #1b1d20; }
+  svg text.m { font-family: "Liberation Mono", "DejaVu Sans Mono", monospace; }
+  svg .box { fill: #fff; stroke: #2a2d31; stroke-width: 1.1; }
+  svg .sub { fill: #fff; stroke: #4a4f55; stroke-width: 0.9; }
+  svg .optbox { fill: #fbfbf9; stroke: #6a6f75; stroke-width: 1.1; stroke-dasharray: 4 2.5; }
+  svg .rf { stroke: var(--rf); stroke-width: 1.3; fill: none; }
+  svg .iq { stroke: var(--iq); stroke-width: 1.2; fill: none; }
+  svg .pw { stroke: var(--pwr); stroke-width: 1.1; fill: none; stroke-dasharray: 4 2.5; }
+  svg .lg { stroke: var(--logic); stroke-width: 1.0; fill: none; }
+  svg text.rf { fill: var(--rf); stroke: none; } svg text.iq { fill: var(--iq); stroke: none; }
+  svg text.pw { fill: var(--pwr); stroke: none; } svg text.mu { fill: #5b6066; }
+  svg text.b { font-weight: bold; }
+</style>
+</head>
+<body>
+
+<!-- ===================================================== SHEET 1 — COVER -->
+<section class="sheet">
+  <div class="runhead">Level 1 Station v3 — Bench Guide</div>
+  <div class="body">
+    <p class="kicker">drone-mesh-5plus · Level 1 station · Bench guide</p>
+    <h1>Level 1 Station v3 — C5 PHY prototype</h1>
+    <p class="lead">The XIAO ESP32-C5's own 5 GHz Wi-Fi radio as the analog FPV receiver: sector direction finding and a software video check, with no RX5808 and no sync separator. Bench build and verification guide.</p>
+
+    <table class="meta">
+      <tr><td class="k">Document</td><td class="v"><code>docs/Level1-Station-v3-C5PHY-Bench-Guide.html</code></td><td class="k">Firmware</td><td class="v"><code>level1-c5phy/</code></td></tr>
+      <tr><td class="k">Branch</td><td class="v"><code>level1</code></td><td class="k">Date</td><td class="v">2026-10-03</td></tr>
+      <tr><td class="k">Status</td><td class="v"><b>Firmware builds and links (Arduino core 3.3.12 / ESP-IDF 5.5.5) — nothing bench validated</b></td><td class="k">Station</td><td class="v"><span class="bl w"></span></td></tr>
+    </table>
+
+    <h3>Signal chain at a glance</h3>
+    <div class="diagram">
+    <svg viewBox="0 0 688 152" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Signal chain: four patches, SP4T switch, optional LNA and band-pass filter, XIAO ESP32-C5 receiver, Heltec V3 to the mesh; solar power feeding the 5 V rail">
+      <defs>
+        <marker id="s_rf" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0.5 L8,4 L0,7.5 Z" fill="#1f8a7a"/></marker>
+        <marker id="s_lg" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0.5 L8,4 L0,7.5 Z" fill="#24272b"/></marker>
+        <marker id="s_pw" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0.5 L8,4 L0,7.5 Z" fill="#a08a1a"/></marker>
+      </defs>
+      <!-- patch -->
+      <rect class="box" x="1" y="30" width="100" height="52"/>
+      <text class="b" x="51" y="48" font-size="8" text-anchor="middle">4 × patch</text>
+      <text x="51" y="60" font-size="7" text-anchor="middle">N E S W</text>
+      <text x="51" y="71" font-size="7" text-anchor="middle">8 dBi, 70°</text>
+      <line class="rf" x1="101" y1="56" x2="119" y2="56" marker-end="url(#s_rf)"/>
+      <!-- SP4T -->
+      <rect class="box" x="120" y="30" width="84" height="52"/>
+      <text class="b" x="162" y="48" font-size="8" text-anchor="middle">SP4T</text>
+      <text x="162" y="60" font-size="7" text-anchor="middle">RF switch</text>
+      <text class="m" x="162" y="71" font-size="7" text-anchor="middle">D2 D8 D9</text>
+      <line class="rf" x1="204" y1="56" x2="222" y2="56" marker-end="url(#s_rf)"/>
+      <text class="rf" x="213" y="51" font-size="6" text-anchor="middle">u.FL</text>
+      <!-- LNA (optional) -->
+      <rect class="optbox" x="223" y="30" width="92" height="52"/>
+      <text class="b" x="269" y="46" font-size="8" text-anchor="middle">LNA + BPF</text>
+      <text x="269" y="58" font-size="7" text-anchor="middle">20 dB · optional</text>
+      <text class="mu" x="269" y="69" font-size="6.3" text-anchor="middle">5.6–6.0 GHz · 3.3 V / 5 V</text>
+      <text class="mu" x="269" y="78" font-size="5.8" text-anchor="middle">≈ 60–90 mA</text>
+      <line class="rf" x1="315" y1="56" x2="333" y2="56" marker-end="url(#s_rf)"/>
+      <text class="rf" x="324" y="51" font-size="6" text-anchor="middle">u.FL</text>
+      <!-- XIAO -->
+      <rect class="box" x="334" y="8" width="246" height="100"/>
+      <text class="b" x="457" y="22" font-size="8" text-anchor="middle">XIAO ESP32-C5 — the receiver</text>
+      <text x="457" y="37" font-size="7" text-anchor="middle">5 GHz Wi-Fi PHY · receive-only · BW40 · fixed gain</text>
+      <text x="457" y="49" font-size="7" text-anchor="middle">raw I/Q → 8 GPIO lanes → PARLIO 40 MS/s</text>
+      <text x="457" y="61" font-size="7" text-anchor="middle">power · FM coherence → dBm per sector</text>
+      <text x="457" y="73" font-size="7" text-anchor="middle">FM demod → H-sync → PAL / NTSC · fingerprint</text>
+      <text class="m" x="457" y="94" font-size="6.8" text-anchor="middle">D4 TX · D5 RX → Heltec</text>
+      <line class="lg" x1="580" y1="56" x2="598" y2="56" marker-end="url(#s_lg)"/>
+      <!-- Heltec -->
+      <rect class="box" x="599" y="30" width="66" height="52"/>
+      <text class="b" x="632" y="48" font-size="8" text-anchor="middle">Heltec V3</text>
+      <text x="632" y="60" font-size="7" text-anchor="middle">Meshtastic</text>
+      <text x="632" y="71" font-size="6.5" text-anchor="middle">JSON ≤ 191 B</text>
+      <line class="lg" x1="665" y1="56" x2="686" y2="56" marker-end="url(#s_lg)"/>
+      <text class="mu" x="676" y="50" font-size="6" text-anchor="middle">mesh</text>
+      <!-- power -->
+      <rect class="box" x="1" y="112" width="203" height="36"/>
+      <text class="b" x="102" y="126" font-size="7.5" text-anchor="middle">20 W solar → 50 Wh Li-ion</text>
+      <text x="102" y="138" font-size="7" text-anchor="middle">MPPT charger → 5 V rail</text>
+      <polyline class="pw" points="204,130 632,130 632,84" marker-end="url(#s_pw)"/>
+      <polyline class="pw" points="457,130 457,110" marker-end="url(#s_pw)"/>
+      <polyline class="pw" points="269,130 269,84" marker-end="url(#s_pw)"/>
+      <text class="pw" x="274" y="106" font-size="5.8">3V3 / 5 V</text>
+      <text class="pw" x="462" y="142" font-size="6.5">5 V · station total ≈ 1.0 W (≈ 1.3 W with the LNA)</text>
+    </svg>
+    </div>
+    <p class="cap">Simplified chain; the dashed LNA + band-pass stage is optional. The full block diagram with pin numbers, the I/Q path inside the C5 and the power tree is on sheet 2.</p>
+
+    <h3>Parts, at a glance</h3>
+    <table>
+      <tr><th class="n">Qty</th><th style="width:30%">Item</th><th>Key spec / part</th><th class="c">Have</th><th class="n">≈ Cost</th></tr>
+      <tr><td class="n">1</td><td>XIAO ESP32-C5</td><td>receiver <b>and</b> MCU; only its U.FL antenna port is used</td><td class="c"><span class="cb"></span></td><td class="n">$10</td></tr>
+      <tr><td class="n">4</td><td>Patch antenna</td><td>5.8 GHz, 8 dBi, ~70°, SMA</td><td class="c"><span class="cb"></span></td><td class="n">$32</td></tr>
+      <tr><td class="n">1</td><td>SP4T RF switch</td><td>SKY13322-375LF / PE42442</td><td class="c"><span class="cb"></span></td><td class="n">$3</td></tr>
+      <tr><td class="n">4</td><td>u.FL–SMA pigtail</td><td><b>equal length</b>, ≤ 15 cm</td><td class="c"><span class="cb"></span></td><td class="n">$8</td></tr>
+      <tr><td class="n">1</td><td>u.FL–u.FL pigtail</td><td>switch common → XIAO, ≤ 5 cm</td><td class="c"><span class="cb"></span></td><td class="n">$2</td></tr>
+      <tr><td class="n">1</td><td>LNA + band-pass filter (optional)</td><td><span class="opt">Optional</span>5.8 GHz, ~20 dB, 3.3/5 V</td><td class="c"><span class="cb"></span></td><td class="n">$12</td></tr>
+      <tr><td class="n">1</td><td>Heltec LoRa 32 V3</td><td>Meshtastic, TEXTMSG 115200</td><td class="c"><span class="cb"></span></td><td class="n">$20</td></tr>
+      <tr><td class="n">1</td><td>Solar panel</td><td>20 W, 18 V nominal</td><td class="c"><span class="cb"></span></td><td class="n">$25</td></tr>
+      <tr><td class="n">1</td><td>Charger / power manager</td><td>MPPT, 5 V / 1 A out</td><td class="c"><span class="cb"></span></td><td class="n">$15</td></tr>
+      <tr><td class="n">4</td><td>18650 Li-ion</td><td>3500 mAh, 1S4P ≈ 50 Wh</td><td class="c"><span class="cb"></span></td><td class="n">$24</td></tr>
+      <tr><td class="n">1</td><td>IP65 enclosure + brackets</td><td>≈200×150×100 mm, 10–15° wedge</td><td class="c"><span class="cb"></span></td><td class="n">$28</td></tr>
+      <tr><td class="n">—</td><td>Passives</td><td>2 kΩ ×3, 100 nF ×2, 1000 µF</td><td class="c"><span class="cb"></span></td><td class="n">$2</td></tr>
+      <tr><td class="n">—</td><td>5.8 GHz VTX + camera (bench only)</td><td>NTSC <b>and</b> PAL cameras; a step attenuator</td><td class="c"><span class="cb"></span></td><td class="n">—</td></tr>
+      <tr class="dim"><td class="n">0</td><td>Not needed any more</td><td>RX5808, LMH1980/LM1881 sync separator, video coupling parts, RX5808 pigtail</td><td class="c">—</td><td class="n">−$13</td></tr>
+    </table>
+
+    <div class="callout"><p><b>Before you start:</b> nothing in this station has run on hardware yet. The receiver is the C5's Wi-Fi PHY driven through undocumented calls that the C5VRX project proved on ESP-IDF 6.0; this firmware re-implements them on the fleet's Arduino/ESP-IDF 5.5 toolchain. The procedure on sheets 6–8 is ordered so that each stage proves the next one is worth doing: receiver alive, channel coverage, selectivity, video (NTSC then PAL), sensitivity against an RX5808 station, then the switch and the pattern. Two rules that are easy to break: the eight I/Q lane pads (D0, D1, D3, D10 and the GPIO2–5 back pads) must stay unconnected, and every flash starts with a full erase. Full BOM on sheet 5.</p></div>
+  </div>
+  <div class="foot"><span>drone-mesh-5plus · level1 · 2026-10-03 · firmware builds and links, nothing bench validated</span><span>Page 1 of 8</span></div>
+</section>
+
+<!-- ===================================================== SHEET 2 — FULL BLOCK DIAGRAM -->
+<section class="sheet">
+  <div class="runhead">Level 1 Station v3 — Bench Guide</div>
+  <div class="body">
+    <h2>1 · Full block diagram</h2>
+
+    <div class="diagram">
+    <svg viewBox="0 0 688 298" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Full block diagram of the v3 station with pin numbers, the I/Q path inside the C5, the optional LNA and the power tree">
+      <defs>
+        <marker id="b_rf" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0.5 L8,4 L0,7.5 Z" fill="#1f8a7a"/></marker>
+        <marker id="b_iq" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0.5 L8,4 L0,7.5 Z" fill="#d0541b"/></marker>
+        <marker id="b_pw" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0.5 L8,4 L0,7.5 Z" fill="#a08a1a"/></marker>
+        <marker id="b_pws" viewBox="0 0 8 8" refX="1" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M8,0.5 L0,4 L8,7.5 Z" fill="#a08a1a"/></marker>
+        <marker id="b_lg" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0.5 L8,4 L0,7.5 Z" fill="#24272b"/></marker>
+        <marker id="b_lgs" viewBox="0 0 8 8" refX="1" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M8,0.5 L0,4 L8,7.5 Z" fill="#24272b"/></marker>
+      </defs>
+
+      <!-- patches -->
+      <g>
+        <rect class="box" x="8" y="14" width="92" height="28"/>
+        <text class="b" x="54" y="26" font-size="7.3" text-anchor="middle">Patch N (0°)</text>
+        <text class="mu" x="54" y="36" font-size="6.2" text-anchor="middle">8 dBi · ~70° beam</text>
+        <rect class="box" x="8" y="54" width="92" height="28"/>
+        <text class="b" x="54" y="66" font-size="7.3" text-anchor="middle">Patch E (90°)</text>
+        <text class="mu" x="54" y="76" font-size="6.2" text-anchor="middle">8 dBi · ~70° beam</text>
+        <rect class="box" x="8" y="94" width="92" height="28"/>
+        <text class="b" x="54" y="106" font-size="7.3" text-anchor="middle">Patch S (180°)</text>
+        <text class="mu" x="54" y="116" font-size="6.2" text-anchor="middle">8 dBi · ~70° beam</text>
+        <rect class="box" x="8" y="134" width="92" height="28"/>
+        <text class="b" x="54" y="146" font-size="7.3" text-anchor="middle">Patch W (270°)</text>
+        <text class="mu" x="54" y="156" font-size="6.2" text-anchor="middle">8 dBi · ~70° beam</text>
+      </g>
+      <polyline class="rf" points="100,28 118,28 118,62 139,62" marker-end="url(#b_rf)"/>
+      <polyline class="rf" points="100,68 124,68 124,78 139,78" marker-end="url(#b_rf)"/>
+      <polyline class="rf" points="100,108 124,108 124,94 139,94" marker-end="url(#b_rf)"/>
+      <polyline class="rf" points="100,148 118,148 118,110 139,110" marker-end="url(#b_rf)"/>
+      <text class="rf" x="121" y="9" font-size="6" text-anchor="middle">equal-length coax</text>
+
+      <!-- SP4T -->
+      <rect class="box" x="140" y="46" width="100" height="84"/>
+      <text class="b" x="190" y="58" font-size="7.3" text-anchor="middle">SP4T RF switch</text>
+      <text x="190" y="69" font-size="6.2" text-anchor="middle">SKY13322-375LF /</text>
+      <text x="190" y="78" font-size="6.2" text-anchor="middle">PE42442 · 0.1–6 GHz</text>
+      <text x="190" y="88" font-size="6.2" text-anchor="middle">IL ≈ 0.5 dB · 3.3 V logic</text>
+      <text x="190" y="98" font-size="6.2" text-anchor="middle">switch settle &lt; 1 µs</text>
+      <text class="rf" x="190" y="122" font-size="6" text-anchor="middle">RF common</text>
+      <line class="rf" x1="240" y1="88" x2="261" y2="88" marker-end="url(#b_rf)"/>
+      <text class="rf" x="251" y="83" font-size="5.8" text-anchor="middle">u.FL</text>
+      <text class="rf" x="251" y="98" font-size="5.6" text-anchor="middle">≤ 5 cm</text>
+
+      <!-- LNA optional -->
+      <rect class="optbox" x="262" y="68" width="76" height="40"/>
+      <text class="b" x="300" y="80" font-size="7.3" text-anchor="middle">LNA + BPF</text>
+      <text x="300" y="90" font-size="6.2" text-anchor="middle">20 dB · optional</text>
+      <text class="mu" x="300" y="100" font-size="5.8" text-anchor="middle">5.6–6.0 GHz · 3.3 V / 5 V</text>
+      <line class="rf" x1="338" y1="88" x2="351" y2="88" marker-end="url(#b_rf)"/>
+
+      <!-- XIAO -->
+      <rect class="box" x="352" y="8" width="242" height="200"/>
+      <text class="b" x="473" y="21" font-size="8" text-anchor="middle">XIAO ESP32-C5 — receiver and MCU</text>
+      <text class="mu" x="473" y="31" font-size="6.2" text-anchor="middle">the 5 GHz Wi-Fi PHY is the 5.8 GHz analog FM front end</text>
+      <!-- PHY -->
+      <rect class="sub" x="360" y="40" width="100" height="52"/>
+      <text class="b" x="410" y="51" font-size="6.8" text-anchor="middle">5 GHz Wi-Fi PHY</text>
+      <text x="410" y="60" font-size="5.8" text-anchor="middle">receive-only: TX queues disabled</text>
+      <text x="410" y="69" font-size="5.8" text-anchor="middle">BW40 · packet AGC off</text>
+      <text x="410" y="78" font-size="5.8" text-anchor="middle">gain forced 62 → 2 (≈1 dB/step)</text>
+      <text class="m" x="410" y="87" font-size="5.6" text-anchor="middle">phy_set_freq → exact FPV MHz</text>
+      <!-- IQ bus -->
+      <rect class="sub" x="496" y="40" width="90" height="52"/>
+      <text class="b" x="541" y="51" font-size="6.8" text-anchor="middle">I/Q diagnostic bus</text>
+      <text x="541" y="60" font-size="5.8" text-anchor="middle">4-bit I + 4-bit Q · 80 MS/s</text>
+      <text x="541" y="69" font-size="5.8" text-anchor="middle">8 GPIO-matrix lanes:</text>
+      <text class="m" x="541" y="78" font-size="5.6" text-anchor="middle">D0 D1 D3 D10 GPIO2-5</text>
+      <text class="iq" x="541" y="87" font-size="5.8" text-anchor="middle">pads must stay unconnected</text>
+      <line class="iq" x1="460" y1="72" x2="495" y2="72" marker-end="url(#b_iq)"/>
+      <text class="iq m" x="478" y="67" font-size="5.4" text-anchor="middle">MODEM_DIAG</text>
+      <!-- PARLIO -->
+      <rect class="sub" x="496" y="112" width="90" height="36"/>
+      <text class="b" x="541" y="123" font-size="6.8" text-anchor="middle">PARLIO RX + DMA</text>
+      <text x="541" y="133" font-size="5.8" text-anchor="middle">40 MS/s · 16 KiB window</text>
+      <text x="541" y="142" font-size="5.8" text-anchor="middle">= 410 µs = 6.4 video lines</text>
+      <line class="iq" x1="541" y1="92" x2="541" y2="111" marker-end="url(#b_iq)"/>
+      <text class="iq" x="536" y="104" font-size="5.4" text-anchor="end">via the pad, back in</text>
+      <!-- Firmware -->
+      <rect class="sub" x="360" y="104" width="106" height="72"/>
+      <text class="b" x="413" y="115" font-size="6.8" text-anchor="middle">Firmware (level1-c5phy)</text>
+      <text x="413" y="124" font-size="5.8" text-anchor="middle">power → level dB → dBm</text>
+      <text x="413" y="133" font-size="5.8" text-anchor="middle">FM coherence ≥ 40 % = carrier</text>
+      <text x="413" y="142" font-size="5.8" text-anchor="middle">carrier offset → freq_peak</text>
+      <text x="413" y="151" font-size="5.8" text-anchor="middle">FM demod → H-sync → PAL/NTSC</text>
+      <text x="413" y="160" font-size="5.8" text-anchor="middle">4 sectors → bearing · fp</text>
+      <text x="413" y="169" font-size="5.8" text-anchor="middle">sweep 40 ch × 4 sectors ≈ 2 s</text>
+      <line class="iq" x1="496" y1="130" x2="467" y2="130" marker-end="url(#b_iq)"/>
+      <text class="iq" x="481" y="125" font-size="5.2" text-anchor="middle">0.4 ms</text>
+      <text class="iq" x="481" y="139" font-size="5.2" text-anchor="middle">/ capture</text>
+      <!-- pins -->
+      <text class="m" x="360" y="190" font-size="6.3">D2 D8 D9 SEL</text>
+      <text class="m" x="360" y="201" font-size="6.3">D6 D7 free (UART0)</text>
+      <text class="m" x="586" y="190" font-size="6.3" text-anchor="end">D4 TX →</text>
+      <text class="m" x="586" y="201" font-size="6.3" text-anchor="end">← D5 RX</text>
+
+      <!-- logic: sector select -->
+      <polyline class="lg" points="352,187 200,187 200,131" marker-end="url(#b_lg)"/>
+      <text x="206" y="183" font-size="5.8">sector select, 4 × per channel</text>
+
+      <!-- Heltec -->
+      <rect class="box" x="622" y="136" width="66" height="62"/>
+      <text class="b" x="655" y="148" font-size="6.4" text-anchor="middle">Heltec LoRa 32 V3</text>
+      <text x="655" y="159" font-size="5.8" text-anchor="middle">Meshtastic, TEXTMSG</text>
+      <text class="m" x="655" y="170" font-size="5.6" text-anchor="middle">name = NODE_ID</text>
+      <text class="pw" x="655" y="182" font-size="5.8" text-anchor="middle">5 V · ~80 mA</text>
+      <text x="655" y="193" font-size="5.8" text-anchor="middle">JSON ≤ 191 B</text>
+      <line class="lg" x1="595" y1="172" x2="621" y2="172" marker-start="url(#b_lgs)" marker-end="url(#b_lg)"/>
+      <text x="608" y="160" font-size="5.4" text-anchor="middle">UART</text>
+      <text x="608" y="167" font-size="5.4" text-anchor="middle">115200</text>
+      <line class="lg" x1="655" y1="136" x2="655" y2="129" marker-end="url(#b_lg)"/>
+      <text x="655" y="117" font-size="5.8" text-anchor="middle">LoRa mesh →</text>
+      <text x="655" y="125" font-size="5.8" text-anchor="middle">home node → mapper</text>
+
+      <!-- power tree -->
+      <rect class="box" x="60" y="236" width="100" height="40"/>
+      <text class="b" x="110" y="248" font-size="6.8" text-anchor="middle">Solar panel</text>
+      <text x="110" y="258" font-size="5.8" text-anchor="middle">20 W · 18 V nominal</text>
+      <text x="110" y="268" font-size="5.8" text-anchor="middle">south-facing, 30–45° tilt</text>
+      <rect class="box" x="196" y="236" width="126" height="40"/>
+      <text class="b" x="259" y="248" font-size="6.8" text-anchor="middle">Charger / power manager</text>
+      <text x="259" y="258" font-size="5.8" text-anchor="middle">MPPT Li-ion, 5 V / 1 A out</text>
+      <text x="259" y="268" font-size="5.8" text-anchor="middle">(e.g. DFRobot DFR0559)</text>
+      <rect class="box" x="358" y="236" width="100" height="40"/>
+      <text class="b" x="408" y="248" font-size="6.8" text-anchor="middle">Battery</text>
+      <text x="408" y="258" font-size="5.8" text-anchor="middle">4 × 18650 3500 mAh</text>
+      <text x="408" y="268" font-size="5.8" text-anchor="middle">1S4P ≈ 50 Wh</text>
+      <line class="pw" x1="160" y1="256" x2="195" y2="256" marker-end="url(#b_pw)"/>
+      <line class="pw" x1="323" y1="256" x2="357" y2="256" marker-start="url(#b_pws)" marker-end="url(#b_pw)"/>
+      <!-- 5 V rail -->
+      <polyline class="pw" points="259,236 259,224 655,224 655,199" marker-end="url(#b_pw)"/>
+      <polyline class="pw" points="473,224 473,209" marker-end="url(#b_pw)"/>
+      <text class="pw" x="481" y="221" font-size="5.8">5 V rail (≈1.0 W total, ≈1.3 W with the LNA)</text>
+      <!-- 3V3 -->
+      <polyline class="pw" points="400,208 400,214 172,214 172,131" marker-end="url(#b_pw)"/>
+      <text class="pw" x="178" y="210" font-size="5.8">3V3 from XIAO LDO → SP4T VDD</text>
+      <!-- LNA feed -->
+      <polyline class="pw" points="300,214 300,109" marker-end="url(#b_pw)"/>
+      <text class="pw" x="304" y="150" font-size="5.6">3V3 or 5 V</text>
+      <text class="pw" x="304" y="158" font-size="5.6">→ LNA VCC</text>
+
+      <!-- legend -->
+      <g font-size="6">
+        <line class="rf" x1="318" y1="290" x2="340" y2="290"/><text x="344" y="292">RF 5.8 GHz</text>
+        <line class="iq" x1="396" y1="290" x2="418" y2="290"/><text x="422" y="292">raw I/Q</text>
+        <line class="pw" x1="462" y1="290" x2="484" y2="290"/><text x="488" y="292">power</text>
+        <line class="lg" x1="518" y1="290" x2="540" y2="290"/><text x="544" y="292">logic</text>
+        <rect class="optbox" x="572" y="284" width="22" height="12"/><text x="598" y="292">optional stage</text>
+      </g>
+    </svg>
+    </div>
+
+    <p>Four patches feed an SP4T switch whose common port goes into the XIAO's U.FL antenna connector, directly or through the optional 20 dB LNA + band-pass module. Inside the C5 the Wi-Fi PHY is held receive-only on the FPV frequency; its raw I/Q leaves on the modem's diagnostic bus, travels out through eight GPIO pads and back into the PARLIO peripheral, and the firmware measures power, FM coherence and horizontal sync on 16 KiB windows. The XIAO's 3V3 regulator feeds the switch (and the LNA, or the 5 V rail does); the 5 V rail feeds the XIAO and the Heltec. The LNA sits after the switch, so all four sectors share one gain: no per-sector gain mismatch, and the bearing constant K is unaffected.</p>
+
+    <h3>Wiring list</h3>
+    <table class="tight">
+      <tr><th style="width:13.5%">From</th><th style="width:16%">To</th><th style="width:12.5%">XIAO pin</th><th class="n" style="width:8%">C5 GPIO</th><th>Notes</th><th class="c" style="width:4%">✓</th></tr>
+      <tr><td>Switch V1</td><td>XIAO</td><td><code>D2</code></td><td class="n">25</td><td>2 kΩ series</td><td class="c"><span class="cb"></span></td></tr>
+      <tr><td>Switch V2</td><td>XIAO</td><td><code>D8</code></td><td class="n">8</td><td>2 kΩ series</td><td class="c"><span class="cb"></span></td></tr>
+      <tr><td>Switch V3</td><td>XIAO</td><td><code>D9</code></td><td class="n">9</td><td>spare if the switch decodes 2 lines</td><td class="c"><span class="cb"></span></td></tr>
+      <tr><td>XIAO TX</td><td>Heltec RX</td><td><code>D4</code></td><td class="n">23</td><td>UART 115200 — the same pins as every station tier</td><td class="c"><span class="cb"></span></td></tr>
+      <tr><td>XIAO RX</td><td>Heltec TX</td><td><code>D5</code></td><td class="n">24</td><td>UART 115200</td><td class="c"><span class="cb"></span></td></tr>
+      <tr><td>Patches N/E/S/W</td><td>Switch RF1–4</td><td>—</td><td class="n">—</td><td><b>equal-length coax</b> ≤ 15 cm</td><td class="c"><span class="cb"></span></td></tr>
+      <tr><td>Switch common</td><td>XIAO U.FL</td><td>—</td><td class="n">—</td><td>u.FL–u.FL ≤ 5 cm; the stock antenna comes off</td><td class="c"><span class="cb"></span></td></tr>
+      <tr><td>Switch common</td><td>LNA IN</td><td>—</td><td class="n">—</td><td><span class="opt">Optional</span>u.FL–u.FL or SMA pigtail ≤ 5 cm</td><td class="c"><span class="cb"></span></td></tr>
+      <tr><td>LNA OUT</td><td>XIAO U.FL</td><td>—</td><td class="n">—</td><td><span class="opt">Optional</span>≤ 5 cm; replaces the direct switch → XIAO pigtail</td><td class="c"><span class="cb"></span></td></tr>
+      <tr><td>LNA VCC</td><td>3V3 or 5 V rail</td><td>—</td><td class="n">—</td><td><span class="opt">Optional</span>as the module requires; 100 nF + 10 µF at the module</td><td class="c"><span class="cb"></span></td></tr>
+      <tr><td>LNA GND</td><td>star point</td><td>—</td><td class="n">—</td><td><span class="opt">Optional</span>keep the module away from the Heltec's LoRa antenna</td><td class="c"><span class="cb"></span></td></tr>
+      <tr><td>I/Q lane pads</td><td><b>nothing</b></td><td><code>D0 D1 D3 D10</code></td><td class="n">1 0 7 10</td><td>must float: no resistor, no probe, no PCB trace</td><td class="c"><span class="cb"></span></td></tr>
+      <tr><td>I/Q back pads</td><td><b>nothing</b></td><td><code>GPIO2 3 4 5</code></td><td class="n">2 3 4 5</td><td>must float (underside JTAG pads)</td><td class="c"><span class="cb"></span></td></tr>
+      <tr><td>D6 / D7</td><td>free</td><td><code>D6 D7</code></td><td class="n">11 12</td><td>UART0 (boot messages); free for a debug console</td><td class="c"><span class="cb"></span></td></tr>
+      <tr><td>5 V rail</td><td>XIAO 5V, Heltec 5V</td><td>—</td><td class="n">—</td><td>1000 µF at the Heltec</td><td class="c"><span class="cb"></span></td></tr>
+      <tr><td>XIAO 3V3</td><td>Switch VDD</td><td>—</td><td class="n">—</td><td>100 nF at the switch</td><td class="c"><span class="cb"></span></td></tr>
+      <tr><td>GND</td><td>all</td><td>—</td><td class="n">—</td><td>single star point</td><td class="c"><span class="cb"></span></td></tr>
+    </table>
+
+    <div class="callout"><p><b>GPIO numbers are from the Arduino core's <code>XIAO_ESP32C5</code> variant</b>, used through <code>config.h</code>; wire by the D-labels on the silkscreen. The variant's D4 = GPIO23 / D5 = GPIO24 is now corroborated: C5VRX measured their resistor DAC on the XIAO's D4–D9 pads as GPIO 23, 24, 11, 12, 8, 9. The I/Q lanes are GPIO numbers (1, 0, 2, 7, 10, 5, 3, 4 in PARLIO data order), the set C5VRX proved on hardware. They need real pads: each MODEM_DIAG bit is driven out through the pad and read back by PARLIO from the same pad, so a load on the pad corrupts the samples.</p></div>
+  </div>
+  <div class="foot"><span>drone-mesh-5plus · level1 · 2026-10-03 · firmware builds and links, nothing bench validated</span><span>Page 2 of 8</span></div>
+</section>
+
+<!-- ===================================================== SHEET 3 — SECTOR LAYOUT AND RECEIVER -->
+<section class="sheet">
+  <div class="runhead">Level 1 Station v3 — Bench Guide</div>
+  <div class="body">
+    <h2>2 · Sector layout and receiver</h2>
+
+    <div class="cols">
+      <div class="col fig">
+        <svg viewBox="0 0 320 272" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Top view of the station box with four 70-degree sector petals N E S W, a VTX at about 40 degrees, and the example sector powers">
+          <defs>
+            <marker id="f_ar" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0.5 L8,4 L0,7.5 Z" fill="#24272b"/></marker>
+          </defs>
+          <!-- petals: 70° each, radius 80 from the face centre; box centre (150,140), half 42 -->
+          <g fill="#e2f0ec" stroke="#5f9f92" stroke-width="0.9" stroke-dasharray="3 2">
+            <path d="M150,98 L104.1,32.5 A80,80 0 0 1 195.9,32.5 Z"/>
+            <path d="M150,98 L104.1,32.5 A80,80 0 0 1 195.9,32.5 Z" transform="rotate(90 150 140)"/>
+            <path d="M150,98 L104.1,32.5 A80,80 0 0 1 195.9,32.5 Z" transform="rotate(180 150 140)"/>
+            <path d="M150,98 L104.1,32.5 A80,80 0 0 1 195.9,32.5 Z" transform="rotate(270 150 140)"/>
+          </g>
+          <!-- box -->
+          <rect x="108" y="98" width="84" height="84" fill="#fff" stroke="#2a2d31" stroke-width="1.2"/>
+          <text x="150" y="154" font-size="6.5" text-anchor="middle" fill="#5b6066">IP65 box</text>
+          <text x="150" y="165" font-size="6.5" text-anchor="middle">XIAO C5 = receiver</text>
+          <text x="150" y="175" font-size="6.5" text-anchor="middle">switch · Heltec</text>
+          <!-- patches on the faces -->
+          <rect x="134" y="94" width="32" height="6" fill="#2a2d31"/>
+          <rect x="190" y="124" width="6" height="32" fill="#2a2d31"/>
+          <rect x="134" y="180" width="32" height="6" fill="#2a2d31"/>
+          <rect x="104" y="124" width="6" height="32" fill="#2a2d31"/>
+          <text class="b" x="150" y="89" font-size="7" text-anchor="middle">N 0°</text>
+          <text class="b" x="201" y="143" font-size="7">E 90°</text>
+          <text class="b" x="150" y="196" font-size="7" text-anchor="middle">S 180°</text>
+          <text class="b" x="99" y="143" font-size="7" text-anchor="end">W 270°</text>
+          <!-- VTX at ~40° -->
+          <line x1="150" y1="140" x2="222" y2="54" stroke="#24272b" stroke-width="0.9" stroke-dasharray="3 2" marker-end="url(#f_ar)"/>
+          <text class="b" x="226" y="52" font-size="7">VTX</text>
+          <line x1="150" y1="140" x2="150" y2="104" stroke="#24272b" stroke-width="0.6"/>
+          <path d="M150,116 A24,24 0 0 1 165.4,121.6" fill="none" stroke="#24272b" stroke-width="0.7"/>
+          <text x="171" y="134" font-size="6.2">θ ≈ 40°</text>
+          <!-- readout -->
+          <g class="m" font-size="6.3" font-family="Liberation Mono, DejaVu Sans Mono, monospace">
+            <text x="206" y="200">N −62 dBm ◀ strongest</text>
+            <text x="206" y="210">E −68 dBm ◀ neighbour</text>
+            <text x="206" y="220">S −84 dBm</text>
+            <text x="206" y="230">W −79 dBm</text>
+            <text x="206" y="246">bearing ≈ 0° + K·(P_E − P_W)</text>
+            <text x="206" y="256">→ ~40° ± σ</text>
+          </g>
+          <text class="mu" x="6" y="266" font-size="6.2">top view · patches tilted 10–15° up</text>
+        </svg>
+        <p class="cap">Top view. Each patch covers about 70°, so an emitter always sits inside one sector and near the edge of a neighbour. Unchanged from v2.</p>
+      </div>
+      <div class="col">
+        <h3 style="margin-top:0">Method</h3>
+        <p>Amplitude comparison. Take the strongest sector <code>k</code> and its two neighbours; with powers in dB the bearing is</p>
+        <pre class="code nowrap">bearing = az[k] + K · (P[k+1] − P[k−1])</pre>
+        <p>K, in degrees per dB, comes from the measured patch pattern. A bench sweep of a VTX around the box every 15° fills the lookup table. Report <code>bearing_deg</code> and <code>bearing_sigma_deg</code>; sigma grows when the two neighbours are nearly equal, or the peak is weak.</p>
+        <h3>Per-channel scan loop</h3>
+        <pre class="code nowrap" style="font-size:10.2px; line-height:1.36">rf_tune(channel); delay(8 ms)
+for sector in N,E,S,W:
+    select(sector); wait 200 µs
+    gain = 62
+    for w in 1..3 (1 on a quiet channel):
+        capture 16 KiB @ 40 MS/s     (0.4 ms)
+        metrics                       (~2 ms)
+        if clip &gt; 3 %: gain -= 12; retake
+    level = min(windows); q = median
+hit = level[best] &gt;= 8 dB and q[best] &gt;= 40 %</pre>
+        <p class="small">Sweep ≈ 40 × (10 + 4 × 8 ms) ≈ 1.7 s at the full window count. The gain steps keep strong carriers unclipped and weak ones at full gain; the minimum over windows drops Wi-Fi bursts.</p>
+      </div>
+    </div>
+
+    <h3>How the C5 becomes the receiver</h3>
+    <table>
+      <tr><th style="width:11%">Step</th><th>What happens</th><th style="width:19%">Where</th></tr>
+      <tr><td><b>Bring-up</b></td><td>Wi-Fi driver in station mode with disconnected power management off; 5 GHz only, no power save, BW40; promiscuous with an empty filter; the five MAC transmit queues hardware-disabled; packet AGC off; PLL-tracking timer stopped. The radio can no longer transmit.</td><td><code>c5phy_rf.cpp</code><br><code>rf_start</code></td></tr>
+      <tr><td><b>Tune</b></td><td>Park on the nearest public 5 GHz centre the regulatory table accepts (<code>esp_wifi_set_channel</code>), then <code>phy_set_freq</code> to the exact FPV MHz; re-arm the diagnostic stream, re-assert AGC-off / BW40 / gain. Band A is exactly Wi-Fi ch 149–173.</td><td><code>c5phy_rf.cpp</code><br><code>rf_tune</code></td></tr>
+      <tr><td><b>Capture</b></td><td>PARLIO reads the 8 lanes at 40 MS/s (every second modem sample) into one 16 KiB DMA window: 410 µs, one byte per sample, I high nibble, Q low nibble.</td><td><code>iq_capture.cpp</code><br><code>iq_capture_window</code></td></tr>
+      <tr><td><b>Measure</b></td><td>Mean power; share of samples with power ≥ 8 whose phase step is within ±45° of the previous one (<code>q_phase</code>; an offset of ≤ 5 MHz); clipping; mean phase step → carrier offset; envelope variance (noise or not); phase-step variance (video swing or bare CW).</td><td><code>demod.c</code><br><code>iq_metrics</code></td></tr>
+      <tr><td><b>Level</b></td><td><code>level_db = (62 − gain) × 1 dB + 10·log10(p_mean / 2.0)</code>; 2.0 is the noise power at gain 62 (C5VRX measurement). <code>rssi_dbm = −95 + level_db</code> until calibrated on sheet 7.</td><td><code>main.cpp</code><br><code>measure_sector</code></td></tr>
+      <tr><td><b>Hit</b></td><td>Level ≥ 8 dB <b>and</b> coherence ≥ 40 % on the strongest sector. The coherence gate is the selectivity: a carrier 10 MHz off steps 90° per sample and never counts, so a neighbour inside the 40 MHz filter raises the level but is not a hit here.</td><td><code>main.cpp</code><br><code>scan_channel</code></td></tr>
+      <tr><td><b>Video</b></td><td>On the strongest due peaks after the sweep: FM-demodulate 8 windows and look for horizontal sync repeating at the PAL or NTSC line period. Sheet 4.</td><td><code>demod.c</code> <code>video_window</code><br><code>main.cpp</code> <code>video_check</code></td></tr>
+    </table>
+    <p class="cap"><code>demod.c</code>, <code>bearing.c</code> and <code>report.c</code> are plain C, unit-tested on a desktop with synthetic 4-bit I/Q (<code>test/host</code>, <code>make</code>).</p>
+  </div>
+  <div class="foot"><span>drone-mesh-5plus · level1 · 2026-10-03 · firmware builds and links, nothing bench validated</span><span>Page 3 of 8</span></div>
+</section>
+
+<!-- ===================================================== SHEET 4 — VIDEO CHECK AND SERIAL OUTPUT -->
+<section class="sheet">
+  <div class="runhead">Level 1 Station v3 — Bench Guide</div>
+  <div class="body">
+    <h2>3 · Video check and serial output</h2>
+
+    <h3 style="margin-top:0">Video check</h3>
+    <p>On the strongest due peaks after the sweep: hold the channel and the sector, demodulate 8 windows 5 ms apart (phase step between samples = instantaneous frequency), find sync-tip pulses 3.2–7.2 µs wide below a threshold set from the window's own percentiles, and measure the spacing of consecutive pulses.</p>
+    <table>
+      <tr><th style="width:34%">Line period</th><th style="width:11%">Line rate</th><th style="width:10%">Verdict</th><th>Meaning</th></tr>
+      <tr><td><code>64.0 µs (2560 samples)</code></td><td><code>15 625 Hz</code></td><td><b>PAL</b></td><td>real analog video carrier</td></tr>
+      <tr><td><code>63.56 µs (2542 samples)</code></td><td><code>15 734 Hz</code></td><td><b>NTSC</b></td><td>real analog video carrier</td></tr>
+      <tr><td>sync-shaped pulses, no repeating period</td><td>—</td><td><b>none</b></td><td>not video-shaped: noise, Wi-Fi, an unmodulated carrier</td></tr>
+      <tr><td>swing under 4 units/sample</td><td>—</td><td><b>none</b></td><td>no FM deviation on this channel</td></tr>
+    </table>
+    <p class="small">A window counts with ≥ 2 consecutive periods and a sync score ≥ 70 (width closeness 0–40 + period closeness 0–60); the carrier is video when ≥ 3 of 8 windows count. <code>sync_q</code> is the share of windows that counted. The <b>field rate is not measured</b> (a 410 µs window never sees a vertical interval): <code>field_hz</code> is the nominal 50/60 of the detected standard. The fingerprint <code>fp</code> is <code>&lt;video&gt;/&lt;sync_hz&gt;/&lt;freq_peak&gt;</code>, e.g. <code>NTSC/15736/5734</code>, where <code>freq_peak</code> is the tuned frequency plus the measured carrier offset — no synthesizer sweep needed.</p>
+
+    <h3>Expected serial output</h3>
+    <p>Boot line on USB at 115200. <code>"rf":true</code> is the PHY receive-only and the PARLIO reader running; <code>false</code> is followed by an <code>{"info":"error",…}</code> line naming the failed call. The bench console (<code>?</code> status, <code>h R3</code> / <code>h 5732</code> hold, <code>s 0–3</code> sector, <code>g 30</code> / <code>g a</code> gain, <code>v</code> video check, <code>t &lt;bits&gt;</code> drive the switch lines, <code>b 0|1</code> analog filter BW20/BW40, <code>x</code> resume) prints <code>{"info":"bench",…}</code> lines with <code>level_db</code>, <code>rssi_dbm</code>, <code>gain</code>, <code>p_mean</code>, <code>q_phase</code>, <code>clip</code>, <code>cfo_khz</code>, <code>mod</code>, <code>noise</code>, <code>step_std</code>, <code>nf_dbm</code>.</p>
+<pre class="code">{"info":"c5phy v3 station ready","node_id":"A1B2","receiver":"c5phy","hw":"v3","channels":40,"sectors":4,"heading":0,"fe_gain_db":0.0,"threshold_dbm":-87.0,"threshold_level_db":8.0,"q_min":40,"peak_pick":1,"video":1,"bw40":1,"gain_max":62,"window_us":409,"mesh_uart":"D4 TX / D5 RX 115200","phy_set_freq":true,"rf":true}</pre>
+    <p>Detection line on USB, one per hit per sweep — the v2 contract with <code>receiver</code>/<code>hw</code> changed and diagnostics added:</p>
+<pre class="code">{"type":"analog_fm","receiver":"c5phy","hw":"v3","mac":"AF:00:52:03:16:64","freq_mhz":5732,"band":"R","ch":3,"rssi":-68,"rssi_dbm":-68.1,"rssi_raw":536,"rssi_min":-70,"rssi_max":-66,"rssi_n":3,"level_db":26.9,"gain":50,"q_phase":71,"cfo_khz":1840,"carrier":"fm","sectors":[-68.1,-74.4,-91.0,-85.2],"sector":0,"bearing_deg":32,"bearing_sigma_deg":15,"heading":0,"freq_peak":5734,"video":"NTSC","sync_hz":15736,"field_hz":60,"sync_q":88,"sync_score":91,"video_windows":8,"fp":"NTSC/15736/5734","basic_id":"5.8G-R3-5732MHz","node_id":"RX01","seq":42}</pre>
+    <p>The mesh copy (Serial1 to the Heltec, ≤ 191 bytes, at most one per emitter per <code>MESH_REPORT_INTERVAL_MS</code>):</p>
+<pre class="code">{"type":"analog_fm","mac":"AF:00:52:03:16:64","node_id":"RX01","freq_mhz":5732,"band":"R","ch":3,"rssi":-68,"bearing_deg":32,"bearing_sigma_deg":15,"video":"NTSC","fp":"NTSC/15736/5734"}</pre>
+    <p>Heartbeat every 60 s on USB, 120 s on the mesh:</p>
+<pre class="code">{"heartbeat":true,"node_id":"RX01","receiver":"c5phy","hw":"v3","scanning":true,"channels":40,"sectors":4,"heading":0,"threshold_dbm":-87.0,"threshold_level_db":8.0,"video_seen":7,"gain_max":62,"bw40":1,"fe_gain_db":0.0,"tune_fail":0,"cap_err":0,"sweeps":1830,"usb_drop":0,"mesh_drop":0,"nf_dbm":-98,"temp_c":41.2,"uptime_s":3600,"seq":42}</pre>
+
+    <div class="callout"><p><code>rssi</code> is dBm like every other station tier; <code>rssi_raw</code> is the 10-bit RX5808-style value of the v2 contract. <code>bearing_deg</code> is relative to the box's face N — the mapper rotates it by the station heading set in its LEVEL 1 STATIONS panel, where each station's position is also set; two stations' crossing bearings give a position fix with an error radius. A station registers itself in the mapper from its first heartbeat. <code>tune_fail</code> counts channels the regulatory table refused, <code>cap_err</code> failed I/Q captures, <code>nf_dbm</code> the station's own noise-floor estimate from the quietest sector of the last sweep.</p></div>
+  </div>
+  <div class="foot"><span>drone-mesh-5plus · level1 · 2026-10-03 · firmware builds and links, nothing bench validated</span><span>Page 4 of 8</span></div>
+</section>
+
+<!-- ===================================================== SHEET 5 — FULL BILL OF MATERIALS -->
+<section class="sheet">
+  <div class="runhead">Level 1 Station v3 — Bench Guide</div>
+  <div class="body">
+    <h2>4 · Full bill of materials</h2>
+    <p>Single-unit planning prices, quantities per station. Total ≈ $170 all-in, ≈ $182 with the optional LNA; ≈ $80 / $92 electronics only (v2: ≈ $190 / $95).</p>
+
+    <h3>RF front end</h3>
+    <table class="tight">
+      <tr><th class="n">#</th><th style="width:27%">Part</th><th class="n">Qty</th><th>Notes</th><th class="c">✓</th><th class="n">≈ $</th></tr>
+      <tr><td class="n">1</td><td>Seeed XIAO ESP32-C5</td><td class="n">1</td><td>Receiver and MCU; only its U.FL port carries RF, the stock antenna is not used.</td><td class="c"><span class="cb"></span></td><td class="n">10</td></tr>
+      <tr><td class="n">2</td><td>5.8 GHz patch, 8 dBi, ~70°, SMA</td><td class="n">4</td><td>Linear is polarisation-agnostic (−3 dB vs RHCP); RHCP +3 dB common case, −20 dB on LHCP. One batch, never mixed.</td><td class="c"><span class="cb"></span></td><td class="n">32</td></tr>
+      <tr><td class="n">3</td><td>SP4T RF switch, 0.1–6 GHz, 3.3 V control</td><td class="n">1</td><td>SKY13322-375LF or PE42442: ~0.5 dB loss, sub-µs. Check control lines and truth table; eval board first (~$40).</td><td class="c"><span class="cb"></span></td><td class="n">3</td></tr>
+      <tr><td class="n">4</td><td>u.FL–SMA pigtails, equal length ≤ 15 cm</td><td class="n">4</td><td>Matched length keeps sector losses matched — the bearing depends on it.</td><td class="c"><span class="cb"></span></td><td class="n">8</td></tr>
+      <tr><td class="n">5</td><td>u.FL–u.FL pigtail ≤ 5 cm</td><td class="n">1</td><td>Switch common port to the XIAO's U.FL. Shortest run. Two with the LNA (switch → LNA IN, LNA OUT → XIAO).</td><td class="c"><span class="cb"></span></td><td class="n">2</td></tr>
+      <tr><td class="n">6</td><td>SMA bulkhead feedthroughs</td><td class="n">4</td><td>One per enclosure face.</td><td class="c"><span class="cb"></span></td><td class="n">8</td></tr>
+      <tr><td class="n">7</td><td><span class="opt">Optional</span>5.8 GHz LNA + band-pass filter module, ~20 dB (optional)</td><td class="n">1</td><td>~5.6–6.0 GHz passband, SMA or u.FL, 3.3 V or 5 V per module, ≈ 60–90 mA; between the switch common port and the XIAO's U.FL. Fit it when the stage 5 sensitivity floor is worse than the v2 RX5808 station's or when range is short; its filter also protects the front end from a nearby 5 GHz AP (the PHY's own filter is 40 MHz wide).</td><td class="c"><span class="cb"></span></td><td class="n">12</td></tr>
+    </table>
+
+    <h3>MCU, mesh, power, mechanical</h3>
+    <table class="tight">
+      <tr><th class="n">#</th><th style="width:27%">Part</th><th class="n">Qty</th><th>Notes</th><th class="c">✓</th><th class="n">≈ $</th></tr>
+      <tr><td class="n">8</td><td>Heltec WiFi LoRa 32 V3 + antenna</td><td class="n">1</td><td>Meshtastic, TEXTMSG 115200, node name = <code>NODE_ID</code>; D4/D5 as on every tier.</td><td class="c"><span class="cb"></span></td><td class="n">20</td></tr>
+      <tr><td class="n">9</td><td>Solar panel 20 W, 18 V</td><td class="n">1</td><td>South-facing, 30–45° tilt. 10 W covers summer only.</td><td class="c"><span class="cb"></span></td><td class="n">25</td></tr>
+      <tr><td class="n">10</td><td>MPPT charger, 5 V / 1 A out</td><td class="n">1</td><td>DFRobot DFR0559 or Waveshare Solar Power Manager.</td><td class="c"><span class="cb"></span></td><td class="n">15</td></tr>
+      <tr><td class="n">11</td><td>18650 Li-ion 3500 mAh, 1S4P holder</td><td class="n">4</td><td>≈ 50 Wh. Protected cells or a BMS board.</td><td class="c"><span class="cb"></span></td><td class="n">24</td></tr>
+      <tr><td class="n">12</td><td>1000 µF low-ESR cap at the Heltec</td><td class="n">1</td><td>LoRa TX bursts.</td><td class="c"><span class="cb"></span></td><td class="n">1</td></tr>
+      <tr><td class="n">13</td><td>IP65 enclosure ≈ 200×150×100 mm</td><td class="n">1</td><td>Patches on the four vertical faces at 0/90/180/270°, tilted 10–15° up.</td><td class="c"><span class="cb"></span></td><td class="n">15</td></tr>
+      <tr><td class="n">14</td><td>Cable gland, desiccant</td><td class="n">1</td><td></td><td class="c"><span class="cb"></span></td><td class="n">3</td></tr>
+      <tr><td class="n">15</td><td>Pole bracket + four patch wedges</td><td class="n">1 set</td><td>Face N to true north and record the heading; a mis-oriented box rotates every bearing.</td><td class="c"><span class="cb"></span></td><td class="n">10</td></tr>
+      <tr><td class="n">16</td><td>2 kΩ ×3, 100 nF ×2</td><td class="n">—</td><td>Switch control series resistors and supply decoupling (+ 100 nF and 10 µF at the LNA if fitted).</td><td class="c"><span class="cb"></span></td><td class="n">1</td></tr>
+    </table>
+
+    <h3>Removed from the v2 station</h3>
+    <table class="tight">
+      <tr><th style="width:31%">V2 part</th><th>Replaced by</th></tr>
+      <tr class="dim"><td>RX5808 receiver, SPI-modded</td><td>The C5's Wi-Fi PHY: public-centre bootstrap + <code>phy_set_freq</code> for tuning; raw I/Q power at a fixed gain for RSSI.</td></tr>
+      <tr class="dim"><td>LMH1980 / LM1881 sync separator, 0.1 µF, 75 Ω</td><td>Software: FM discriminator on the same I/Q, H-sync search, PAL/NTSC from the line period.</td></tr>
+      <tr class="dim"><td>RX5808 pigtail, 10 µF, SPI and sync wiring</td><td>Nothing. D0/D10 become I/Q lanes, D6/D7 free pins, D8/D9 carry the switch.</td></tr>
+    </table>
+
+    <div class="callout"><p><b>Carrier PCB rules.</b> XIAO C5 footprint with D0, D1, D3, D10 and the underside GPIO2–5 pads <b>unrouted</b> (no test points); SP4T with four u.FL launches and a u.FL to the XIAO (or a u.FL pair bridging the optional LNA); control lines on D2/D8/D9 via 2 kΩ; UART header on D4/D5; decoupling. Nothing else. Make it after stage 6.</p></div>
+  </div>
+  <div class="foot"><span>drone-mesh-5plus · level1 · 2026-10-03 · firmware builds and links, nothing bench validated</span><span>Page 5 of 8</span></div>
+</section>
+
+<!-- ===================================================== SHEET 6 — BENCH 0–3 -->
+<section class="sheet">
+  <div class="runhead">Level 1 Station v3 — Bench Guide</div>
+  <div class="body">
+    <h2>5 · Bench procedure — is the receiver alive?</h2>
+    <p>Work top to bottom on a bare XIAO with the stock antenna on the U.FL; the switch and patches come in stage 6. Do not move to the next stage until the current one gives the stated result. Console commands are typed into the serial monitor and Enter-terminated: <code>?</code> status, <code>h R3</code> / <code>h 5732</code> hold, <code>s 0–3</code> sector, <code>g 30</code> / <code>g a</code> gain, <code>v</code> video check, <code>t &lt;bits&gt;</code> drive the switch lines, <code>b 0|1</code> analog filter BW20/BW40, <code>x</code> resume.</p>
+
+    <h4>Stage 0 — flash and boot</h4>
+    <ul class="chk">
+      <li><span class="cb"></span><div class="t"><code>pio run -e seeed_xiao_esp32c5 --target erase</code>, then <code>--target upload</code>. A <b>full erase precedes every flash</b>: stale PHY calibration data left C5VRX's receiver deaf after reflashes. Boot mode if it will not connect: hold BOOT, tap RESET, release BOOT.</div></li>
+      <li><span class="cb"></span><div class="t">Monitor at 115200. <b>Expected:</b> <code>{"info":"c5phy v3 station ready",…,"rf":true}</code>. If <code>"rf":false</code>, copy the <code>{"info":"error"}</code> line here: <span class="bl w"></span></div></li>
+      <li><span class="cb"></span><div class="t"><code>?</code> twice, 60 s apart. <b>Expected:</b> <code>captures</code> climbing (hundreds per second while scanning), <code>cap_err</code> 0. Measured: captures/min <span class="bl"></span> cap_err <span class="bl"></span></div></li>
+    </ul>
+
+    <h4>Stage 1 — receiver alive</h4>
+    <ul class="chk">
+      <li><span class="cb"></span><div class="t">No VTX on. <code>h A1</code>. <b>Expected:</b> <code>level_db</code> 0 ± 2, <code>p_mean</code> ≈ 2, <code>q_phase</code> under 15, <code>gain</code> 62, <code>clip</code> 0. Measured: level_db <span class="bl"></span> p_mean <span class="bl"></span> q_phase <span class="bl"></span></div></li>
+      <li><span class="cb"></span><div class="t">Note the station's own no-signal noise floor: <code>nf_dbm</code> <span class="bl"></span> dBm. <code>p_mean</code> far from 2 means <code>RF_NOISE_POWER</code> is not this board's value — write it down for the calibration.</div></li>
+      <li><span class="cb"></span><div class="t">Key a VTX on A1 (5865 MHz) a few metres away. <b>Expected:</b> <code>level_db</code> up by ≥ 30 dB, <code>gain</code> stepping below 62, <code>q_phase</code> ≥ 50, <code>mod</code> 1, <code>noise</code> 0, <code>cfo_khz</code> within ±2000. Measured: level_db <span class="bl"></span> gain <span class="bl"></span> q_phase <span class="bl"></span> cfo <span class="bl"></span></div></li>
+      <li><span class="cb"></span><div class="t">Move the VTX away or unkey it. <b>Expected:</b> the readings return to the no-signal values on the next line. <code>level_db</code> rising without <code>q_phase</code> rising means power but no FM coherence: an off-channel carrier (check <code>cfo_khz</code>) or scrambled lane order.</div></li>
+    </ul>
+
+    <h4>Stage 2 — channel coverage</h4>
+    <ul class="chk">
+      <li><span class="cb"></span><div class="t"><code>x</code> to resume scanning; wait for the first heartbeat (60 s). <b>Expected:</b> <code>tune_fail</code> 0, <code>channels</code> 40. Measured: tune_fail <span class="bl"></span></div></li>
+      <li><span class="cb"></span><div class="t">If not 0: <code>h</code> each band's channels and note the ones refused ("tune refused by regulatory table"): <span class="bl w"></span>. Set <code>RF_COUNTRY_CC</code> to the deployment country, reflash (erase first), repeat. Value used: <span class="bl"></span></div></li>
+      <li><span class="cb"></span><div class="t"><code>h E4</code> (5645, lowest) and <code>h E8</code> (5945, highest). <b>Expected:</b> both hold; <code>?</code> shows the bootstrap <code>wifi_ch</code> 132 and 177. Measured: <span class="bl"></span> / <span class="bl"></span></div></li>
+    </ul>
+
+    <h4>Stage 3 — selectivity</h4>
+    <ul class="chk">
+      <li><span class="cb"></span><div class="t">VTX on R3 (5732), scanning. <b>Expected:</b> a detection line for R3 within two sweeps; B1 (5733) and F1 (5740) may hit too and <code>PEAK_PICK</code> folds them into one. Channels reported: <span class="bl w"></span></div></li>
+      <li><span class="cb"></span><div class="t"><b>Expected:</b> no hit on any channel more than 40 MHz away. If one appears, <code>h</code> it and note <code>q_phase</code> <span class="bl"></span> (a hit needs ≥ 40) and <code>cfo_khz</code> <span class="bl"></span>.</div></li>
+      <li><span class="cb"></span><div class="t"><code>h R3</code> with the VTX on: <code>cfo_khz</code> <span class="bl"></span> → the detection line's <code>freq_peak</code> <span class="bl"></span> MHz. <b>Expected:</b> a stable value, the VTX's real offset.</div></li>
+      <li><span class="cb"></span><div class="t">Hold the FPV channel nearest a live 5 GHz access point (A-band channels 5745–5825 overlap Wi-Fi 149–165). <b>Expected:</b> raised <code>level_db</code> but <code>q_phase</code> under 40 and no hit while scanning. Measured: level_db <span class="bl"></span> q_phase <span class="bl"></span></div></li>
+    </ul>
+  </div>
+  <div class="foot"><span>drone-mesh-5plus · level1 · 2026-10-03 · firmware builds and links, nothing bench validated</span><span>Page 6 of 8</span></div>
+</section>
+
+<!-- ===================================================== SHEET 7 — BENCH 4–5 -->
+<section class="sheet">
+  <div class="runhead">Level 1 Station v3 — Bench Guide</div>
+  <div class="body">
+    <h2>6 · Bench procedure — video and sensitivity</h2>
+
+    <h4 style="margin-top:0">Stage 4 — video check</h4>
+    <ul class="chk">
+      <li><span class="cb"></span><div class="t">VTX with an <b>NTSC</b> camera, hold its channel, <code>v</code>. <b>Expected:</b> ≥ 3 of 8 windows <code>video:1</code>, <code>std:NTSC</code>, <code>line_hz</code> 15734 ± 10, <code>present:1</code>. Measured: <span class="bl"></span> / 8 windows, line_hz <span class="bl"></span></div></li>
+      <li><span class="cb"></span><div class="t">Same with a <b>PAL</b> camera. <b>Expected:</b> <code>std:PAL</code>, <code>line_hz</code> 15625 ± 10. Measured: <span class="bl"></span> / 8, line_hz <span class="bl"></span>. <b>PAL is unproven on this receiver</b>: if it fails, record every window's <code>swing</code>, <code>pulses</code>, <code>periods</code> and <code>period</code>.</div></li>
+      <li><span class="cb"></span><div class="t">VTX keyed with the camera unplugged. <b>Expected:</b> <code>present:0</code>; while scanning the detection line carries <code>"video":"none"</code> and <code>carrier</code> <code>cw</code> or <code>fm</code>.</div></li>
+      <li><span class="cb"></span><div class="t">Back to scanning with the camera on. <b>Expected:</b> the detection line shows <code>video</code>, <code>sync_hz</code> and <code>fp</code>. Copy <code>fp</code> here: <span class="bl w"></span></div></li>
+    </ul>
+
+    <h4>Stage 5 — sensitivity and dBm calibration</h4>
+    <ul class="chk">
+      <li><span class="cb"></span><div class="t">VTX through a step attenuator (or a power meter on its output) into the U.FL; hold the channel and fill the level record below at each input level.</div></li>
+      <li><span class="cb"></span><div class="t"><b>Expected:</b> <code>level_db</code> falls 1 dB per dB of attenuation over ~60 dB, <code>gain</code> rising back to 62 as the signal weakens, until the curve flattens at the floor. Measured slope: <span class="bl"></span> dB/dB &nbsp; floor: <span class="bl"></span> dBm</div></li>
+      <li><span class="cb"></span><div class="t">Same VTX, same attenuator, on a v2 RX5808 station: floor <span class="bl"></span> dBm. Difference v3 − v2: <span class="bl"></span> dB. <b>This number decides whether v3 replaces v2 or supplements it.</b></div></li>
+      <li><span class="cb"></span><div class="t"><span class="opt">Optional</span>With the LNA fitted: repeat the attenuator sweep. Floor improvement v3+LNA − v3: <span class="bl"></span> dB (expect 3–8 dB where the C5's own noise figure dominated); clipping onset at <span class="bl"></span> dBm input; <code>RF_NOISE_POWER</code> measured: <span class="bl"></span></div></li>
+      <li><span class="cb"></span><div class="t">Solve the two-point line and enter <code>RSSI_CAL_DBM_AT_NOISE</code> <span class="bl"></span>, <code>RSSI_CAL_SLOPE</code> <span class="bl"></span>, <code>RSSI_CAL_OFFSET_DB</code> (per station, antenna + cable) <span class="bl"></span>; reflash. Heartbeat <code>threshold_dbm</code> now reads <span class="bl"></span> (expect −85 to −90).</div></li>
+      <li><span class="cb"></span><div class="t">Quiet band, 60 s of <code>h A1</code>: highest <code>level_db</code> seen <span class="bl"></span> → set <code>DETECT_LEVEL_DB</code> at least 6 dB above it: <span class="bl"></span></div></li>
+    </ul>
+
+    <h3>Level calibration record</h3>
+    <p>Known level into the U.FL on a held channel. The slope should be 1 dB/dB; the two-point line sets <code>RSSI_CAL_DBM_AT_NOISE</code> and <code>RSSI_CAL_SLOPE</code> in <code>config.h</code>. Where the firmware has stepped the gain down, <code>level_db</code> already includes the <code>(62 − gain)</code> term.</p>
+    <table class="cal">
+      <tr><th style="width:42%">Input level (dBm)</th><th><code>−90</code></th><th><code>−80</code></th><th><code>−70</code></th><th><code>−60</code></th><th><code>−50</code></th><th><code>−40</code></th><th><code>−30</code></th></tr>
+      <tr><td>Measured <code>level_db</code></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+      <tr><td><code>gain</code> the firmware settled on</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+      <tr><td><code>q_phase</code> (%)</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+      <tr><td>Hit while scanning? (y/n)</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr>
+    </table>
+    <p class="small">No transmitter: <code>level_db</code> <span class="bl"></span> <code>p_mean</code> <span class="bl"></span> <code>nf_dbm</code> <span class="bl"></span>. VTX used: <span class="bl w"></span> power / attenuator: <span class="bl w"></span> LNA fitted (y/n): <span class="bl s"></span></p>
+
+    <div class="callout">
+      <p><b>Reading the numbers.</b> <code>level_db</code> is dB above the noise reference (mean I²+Q² of 2.0 at gain 62); <code>rssi_dbm = RSSI_CAL_DBM_AT_NOISE + level_db × RSSI_CAL_SLOPE + RSSI_CAL_OFFSET_DB − RF_FRONTEND_GAIN_DB</code>. The default −95 dBm is kTB over ~20 MHz plus a ~6 dB noise figure, not a measurement. A slope far from 1 dB/dB, or a floor much worse than the RX5808's, is a real result — record it, do not tune the constants to hide it.</p>
+      <p><b><span class="opt">Optional</span>With the LNA fitted</b>, run this calibration with the LNA in the chain and leave <code>RF_FRONTEND_GAIN_DB</code> at 0; <code>RF_FRONTEND_GAIN_DB = 20</code> only carries a calibration taken without the LNA over to a station that has one. Re-measure <code>RF_NOISE_POWER</code> (<code>p_mean</code> with no signal at gain 62): the LNA's output noise can exceed the C5's own floor. Expect the gain stepping (gain index 62 → lower) to engage ~20 dB earlier.</p>
+    </div>
+  </div>
+  <div class="foot"><span>drone-mesh-5plus · level1 · 2026-10-03 · firmware builds and links, nothing bench validated</span><span>Page 7 of 8</span></div>
+</section>
+
+<!-- ===================================================== SHEET 8 — BENCH 6–7, POWER, RECORD -->
+<section class="sheet">
+  <div class="runhead">Level 1 Station v3 — Bench Guide</div>
+  <div class="body">
+    <h2>7 · Bench procedure — switch, pattern, field, power</h2>
+
+    <h4 style="margin-top:0">Stage 6 — RF switch and pattern</h4>
+    <ul class="chk">
+      <li><span class="cb"></span><div class="t">Eval board powered from 3V3, one patch on RF1, common port → XIAO U.FL, control lines from D2/D8/D9 through 2 kΩ. Drive each combination (<code>t &lt;bits&gt;</code>) and record which RF port goes through. <b>Write the truth table here</b> (the firmware's V1 is D2): <code>V1V2V3 = 000 → RF__ &nbsp;&nbsp; 100 → RF__ &nbsp;&nbsp; 010 → RF__ &nbsp;&nbsp; 110 → RF__ &nbsp;→ SECTOR_SWITCH_TABLE</code></div></li>
+      <li><span class="cb"></span><div class="t">VTX on, hold its channel, <code>s 0</code> … <code>s 3</code>. <b>Expected:</b> <code>level_db</code> follows the sector the patch is on and settles within one line. Insertion loss against the patch wired direct to the U.FL: <span class="bl"></span> dB (expect ≈ 0.5); measured with the LNA in the path if fitted: <span class="bl"></span> dB (expect ≈ −19, a net gain)</div></li>
+      <li><span class="cb"></span><div class="t">Mount all four patches on the box, VTX at 30 m on a known bearing, clear line of sight. Rotate the box in 15° steps through a full turn, logging all four <code>sectors</code> values at each step.</div></li>
+      <li><span class="cb"></span><div class="t">Derive K in degrees per dB from the neighbour difference. Value: <span class="bl"></span> °/dB (default 3.0). Save the sweep to <code>docs/</code> as the station's bearing calibration.</div></li>
+    </ul>
+
+    <h4>Stage 7 — field acceptance</h4>
+    <ul class="chk">
+      <li><span class="cb"></span><div class="t">Two v3 stations 300–500 m apart, both positions and face-N headings set in the mapper's LEVEL 1 STATIONS panel, both named to match their Meshtastic nodes, D4/D5 wired to the Heltecs.</div></li>
+      <li><span class="cb"></span><div class="t">Walk a VTX between them on ten marked points. <b>Pass:</b> the 90 % circle contains the true position on at least 9 of 10. Score: <span class="bl"></span> / 10</div></li>
+      <li><span class="cb"></span><div class="t"><b>Pass:</b> <code>video</code> reads NTSC or PAL on every report for a live camera, never <code>none</code>; the mesh copy arrives with <code>fp</code>.</div></li>
+      <li><span class="cb"></span><div class="t">Leave both stations on solar for 72 h. <b>Pass:</b> no brownout, heartbeat gap never exceeds 5 min. Measured station current at 5 V: <span class="bl"></span> mA (expect ≈ 200; ≈ 270 with the LNA)</div></li>
+    </ul>
+
+    <h3>Power budget</h3>
+    <table>
+      <tr><th style="width:22%">Load</th><th class="n" style="width:15%">Current</th><th class="n" style="width:13%">Power</th><th>Notes</th></tr>
+      <tr><td>XIAO ESP32-C5, Wi-Fi PHY receiving continuously, 240 MHz</td><td class="n">~120 mA @ 3.3 V</td><td class="n">~0.45 W</td><td>via the 5 V rail and on-board LDO. The radio never sleeps and never transmits; PARLIO/DMA add little. Datasheet estimate — the stage 7 current measurement replaces it</td></tr>
+      <tr><td>SP4T switch</td><td class="n">&lt; 5 mA</td><td class="n">0.02 W</td><td>the entire DF add-on</td></tr>
+      <tr><td><span class="opt">Optional</span>LNA + filter (optional)</td><td class="n">60–90 mA @ 3.3/5 V</td><td class="n">≈ 0.3 W</td><td>fit only if stage 5 shows it pays</td></tr>
+      <tr><td>Heltec V3, Meshtastic, mostly RX</td><td class="n">~80 mA @ 5 V</td><td class="n">0.40 W</td><td>+ ~120 mA during LoRa TX bursts</td></tr>
+      <tr><td><b>Station total</b></td><td></td><td class="n" style="white-space:normal"><b>≈ 0.9–1.0 W,<br>≈ 1.2–1.3 W with the LNA</b></td><td><b>≈ 23–31 Wh/day.</b> The v2 solar sizing (20 W panel, 50 Wh battery, ~38 h of darkness at 1.3 W) still carries it, with less margin; a 10 W panel is then summer-only. The RX5808's 0.6 W is gone and the radio's ~0.4 W takes its place</td></tr>
+    </table>
+
+    <h3>Record</h3>
+    <table class="rec">
+      <tr><td class="k">Built by</td><td style="width:33%"></td><td class="k">Date</td><td></td></tr>
+      <tr><td class="k">Verified by</td><td></td><td class="k">Date</td><td></td></tr>
+      <tr><td class="k">Station ID</td><td></td><td class="k">True-north heading of face N</td><td></td></tr>
+      <tr><td class="k">Firmware commit</td><td></td><td class="k">Platform / libphy checked</td><td></td></tr>
+    </table>
+    <p class="cap">Copy the numbers from every stage into the station record; the v2 station's guide stays the reference for the switch truth table, pattern sweep and field acceptance details.</p>
+  </div>
+  <div class="foot"><span>drone-mesh-5plus · level1 · 2026-10-03 · firmware builds and links, nothing bench validated</span><span>Page 8 of 8</span></div>
+</section>
+
+</body>
+</html>
