@@ -110,12 +110,17 @@ the XIAO D-labels differ from board to board:
 On the XIAO ESP32-C6 and ESP32-C5, GPIO5 and GPIO6 are not among the
 D0-D10 edge pins. Check Seeed's pinout for those boards before wiring.
 
-### Prebuilt binaries
+### Prebuilt binaries and the web flasher
 
-The images under `flasher/` and `firmware/` predate the detection expansion
-and are no longer maintained (the web flasher has been retired). They only
-decode US-style Remote ID on channel 6. Build from source as the README
-describes.
+There is no web flasher for this firmware. `flasher/` holds a retired web
+flasher page that isn't published anywhere, and a web flasher from another
+project installs that project's firmware, not this one. Build and flash with
+PlatformIO as the [README](../README.md#build-and-flash-the-firmware)
+describes. It takes a few minutes the first time.
+
+The images under `flasher/firmware/` and `firmware/` predate the detection
+expansion and are no longer maintained. They only decode US-style Remote ID
+on channel 6. They're kept for reference: don't flash them onto new stations.
 
 ---
 
@@ -165,18 +170,56 @@ describes.
 
 ## Raspberry Pi installer
 
+`RPI/install_rpi.py` sets the mapper up on the computer the home station plugs
+into (a Raspberry Pi running Raspberry Pi OS, or any Debian-based Linux) and
+makes it start on every boot. It:
+
+1. downloads this repository from GitHub (the default branch) and unpacks it
+   into `~/mesh-mapper`
+2. creates a Python virtual environment in `~/mesh-mapper/.venv` and installs
+   `requirements.txt` into it
+3. adds an `@reboot` cron job for your user that starts the mapper from that
+   environment
+
 ```bash
-wget https://raw.githubusercontent.com/colonelpanichacks/drone-mesh-mapper/main/RPI/install_rpi.py
-python3 install_rpi.py --branch main          # stable
-python3 install_rpi.py --branch Dev           # latest
+wget https://raw.githubusercontent.com/tsuinami-1112/drone-mesh-custom/HEAD/RPI/install_rpi.py
+python3 install_rpi.py
 ```
 
-Optional flags: `--install-dir /opt/mesh-mapper`, `--no-cron`, `--force`.
+Run it as your normal user, not with `sudo`: the files and the cron job belong
+to whoever runs it. That user needs to be in the `dialout` group to open the
+XIAO's serial port. The installer warns you if it isn't; fix it with
+`sudo usermod -a -G dialout $USER` and log in again. If the installer reports
+that `venv` is missing, run `sudo apt install python3-venv` and run the
+installer again.
 
-> `RPI/install_rpi.py` still downloads `mesh-mapper.py` from the upstream
-> `colonelpanichacks/drone-mesh-mapper` repository, not from this one, so it
-> installs the upstream mapper without this repository's changes. Until it is
-> pointed here, use the manual install in the README.
+| Flag | Default | What it does |
+|---|---|---|
+| `--install-dir DIR` | `~/mesh-mapper` | Where to install |
+| `--branch NAME` | the default branch | Install from another branch of this repository |
+| `--no-cron` | off | Don't add the boot-time cron job |
+| `--force` | off | Update an existing install without asking |
+
+When it finishes, open `http://<the Pi's IP>:5000` from another device and
+pick the XIAO's serial port. The mapper logs to `~/mesh-mapper/mapper.log`.
+
+- **Update:** run the installer again. It replaces the program files and
+  keeps your detections, settings and cached map tiles. Then restart the
+  mapper (or reboot) so the new version is loaded.
+- **Restart after a crash:** the cron job only starts the mapper at boot. To
+  have it restarted whenever it exits, install with `--no-cron` and use the
+  systemd service from the [README Quick Start](../README.md#quick-start),
+  with `WorkingDirectory=/home/<user>/mesh-mapper` and
+  `ExecStart=/home/<user>/mesh-mapper/.venv/bin/python mesh-mapper.py`.
+- **Remove:** `crontab -e`, delete the `mesh-mapper.py` line, then delete
+  `~/mesh-mapper`.
+
+Not on a Debian-based system, or prefer to see each step? The manual install
+in the [README Quick Start](../README.md#quick-start) does the same thing by
+hand.
+
+`RPI/rpi_dependancies.py` is an older helper that installs the mapper's Python
+packages system-wide. The installer doesn't use it and you don't need it.
 
 ---
 
@@ -253,39 +296,27 @@ Built-in operational areas. Selecting one pans + auto-fills the cache name:
 
 Add more by editing the `<select id="regionPreset">` block in `mesh-mapper.py`.
 
-#### 3. From the CLI - `tools/cache_tiles.py`
+#### 3. From a script - the cache API
 
-> `tools/cache_tiles.py` is documented upstream but is **not included in this
-> repository**. Until it is added, use the UI panel above (the same cache job,
-> through `POST /api/cache_tiles`) or drop in a prebuilt file.
+There is no separate command-line cacher in this repository. The UI panel
+starts its jobs through the mapper's HTTP API, and you can call that directly
+while the mapper is running, for example from a headless Pi:
 
 ```bash
-# Single area, single source
-python tools/cache_tiles.py \
-    --bbox -122.6 37.6 -122.3 37.9 \
-    --zoom 0 16 \
-    --source esriWorldImagery \
-    --out tiles/bay_area.mbtiles
+# Esri imagery over a box [west, south, east, north], zoom 0-16, into tiles/bay_area.mbtiles
+curl -X POST http://localhost:5000/api/cache_tiles \
+     -H 'Content-Type: application/json' \
+     -d '{"name": "bay_area", "source": "esriWorldImagery",
+          "bbox": [-122.6, 37.6, -122.3, 37.9], "zmin": 0, "zmax": 16}'
 
-# Globe baseline, every source (8 mbtiles files)
-python tools/cache_tiles.py --preset world --source all --out tiles/
-
-# Multi-source for one bbox (writes one mbtiles per source)
-python tools/cache_tiles.py --preset world \
-    --source esriWorldImagery,cartoDarkMatter,openTopoMap \
-    --out tiles/
-
-# Just count tiles, don't fetch
-python tools/cache_tiles.py --preset world --source all --out tiles/ --dry-run
+curl http://localhost:5000/api/cache_jobs          # progress of every job
 ```
 
-| Preset | bbox | zooms | tiles/source |
-|---|---|---|---|
-| `world` | global | 0-6 | ~5,500 |
-| `world-z5` | global | 0-5 | ~1,400 |
-| `world-z8` | global | 0-8 | ~88,000 |
-
-The CLI is **resumable** - re-running skips tiles already in the MBTiles. Polite to free providers (50ms between fetches by default; tunable with `--rate`).
+`source` is one of `esriWorldImagery`, `esriWorldTopo`, `esriDarkGray`,
+`cartoDarkMatter`, `cartoPositron`, `osmStandard`, `osmHumanitarian`,
+`openTopoMap`. A job is limited to 2 million tiles and refused if the disk
+doesn't have room. Re-running a job into the same name skips tiles it
+already has.
 
 #### 4. Drop in a prebuilt file
 
@@ -311,29 +342,11 @@ Drop a vector `.mbtiles` (format: pbf) in `tiles/` and it appears tagged **[V]**
 
 ### Recommended "hit the woods" loadout
 
-Two raster mbtiles + one vector overview, totaling ~1 GB. With the UI panel:
-a **WORLD BASELINE** at z0-6 on CartoDB Dark Matter, then Esri World Imagery
-over your area of operations at z8-16 and OpenTopoMap over the same box at
-z8-14. The CLI equivalent (once `tools/cache_tiles.py` is available):
+About 1 GB in total. In the **CACHE THIS AREA** panel:
 
-```bash
-# 1. Globe-wide cyberpunk baseline (UI matches)
-python tools/cache_tiles.py --preset world --source cartoDarkMatter --out tiles/
-
-# 2. Satellite imagery for your AO
-python tools/cache_tiles.py \
-    --bbox -120.0 37.5 -119.0 38.5 \
-    --zoom 8 16 \
-    --source esriWorldImagery \
-    --out tiles/op_zone_sat.mbtiles
-
-# 3. Topo for terrain context
-python tools/cache_tiles.py \
-    --bbox -120.0 37.5 -119.0 38.5 \
-    --zoom 8 14 \
-    --source openTopoMap \
-    --out tiles/op_zone_topo.mbtiles
-```
+1. **WORLD BASELINE** at z0-6 on CartoDB Dark Matter (matches the UI)
+2. Esri World Imagery over your area of operations at z8-16
+3. OpenTopoMap over the same box at z8-14, for terrain
 
 Then pull the ethernet, refresh the page, switch the basemap dropdown - page renders entirely from disk.
 
@@ -520,7 +533,7 @@ drone-mesh-custom/
 |   |-- fonts/                  # Orbitron TTF + @font-face CSS
 |   `-- styles/                 # MapLibre vector styles
 |-- tiles/                      # MBTiles files (created on first run, auto-discovered)
-|-- RPI/                        # Raspberry Pi installer scripts (fetch the upstream mapper)
+|-- RPI/                        # Raspberry Pi installer (install_rpi.py)
 |-- firmware-common/            # Shared detection library + host unit tests
 |   |-- detect/                 #   Open Drone ID, DJI DroneID, MAVLink, fingerprints
 |   `-- test/                   #   make -> builds with gcc and runs synthetic-frame tests
@@ -530,5 +543,5 @@ drone-mesh-custom/
 |-- remoteid-c5-5g/             # ESP32-C5 dual-band firmware
 |-- mapper_test/                # Mapper test scripts
 |-- firmware/                   # Legacy prebuilt binaries (predate the detection expansion)
-`-- flasher/                    # Retired web flasher and its legacy images
+`-- flasher/                    # Retired web flasher page and its legacy images (not published)
 ```

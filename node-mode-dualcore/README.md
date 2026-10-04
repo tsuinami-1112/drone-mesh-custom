@@ -1,8 +1,8 @@
 # Drone Mesh Mapper - Node Mode
 
-**colonelpanichacks**
+Two firmwares for the Seeed XIAO ESP32S3 paired with a Heltec WiFi LoRa 32 V4 running Meshtastic. Remote nodes (field stations) detect drones. The home node receives detections from the mesh and feeds them to [`mesh-mapper.py`](../mesh-mapper.py) in this repository.
 
-Two firmwares for the Seeed XIAO ESP32S3 paired with a Heltec V3 running Meshtastic. Remote nodes detect drones. Home node receives detections from the mesh and feeds them to [mesh-mapper.py](https://github.com/colonelpanichacks/drone-mesh-mapper).
+Originally written by colonelpanichacks for [drone-mesh-mapper](https://github.com/colonelpanichacks/drone-mesh-mapper); this copy is maintained as part of drone-mesh-custom. For the full station build (parts, wiring, power, Meshtastic settings, flashing) start with the [main README](../README.md); this page covers how the two firmwares work.
 
 ---
 
@@ -11,9 +11,9 @@ Two firmwares for the Seeed XIAO ESP32S3 paired with a Heltec V3 running Meshtas
 ```
   ┌─────────────────────────────────────────────────────────────────┐
   │                        REMOTE NODE (field)                      │
-  │  XIAO ESP32S3 ──UART──> Heltec V3 (Meshtastic) ──LoRa──>      │
-  │  WiFi + BLE drone       GPIO5 TX -> Heltec RX                  │
-  │  detection               GPIO6 RX <- Heltec TX                 │
+  │  XIAO ESP32S3 ──UART──> Heltec V4 (Meshtastic) ──LoRa──>      │
+  │  WiFi + BLE drone       GPIO5 TX -> Heltec 47                  │
+  │  detection               GPIO6 RX <- Heltec 48                 │
   │  Remote ID (BLE4, BLE5 Long Range, NAN, Beacon),               │
   │  DJI DroneID, MAVLink, WiFi/BLE fingerprints                   │
   └─────────────────────────────────────────────────────────────────┘
@@ -23,9 +23,9 @@ Two firmwares for the Seeed XIAO ESP32S3 paired with a Heltec V3 running Meshtas
                                   │
   ┌─────────────────────────────────────────────────────────────────┐
   │                        HOME NODE (base)                         │
-  │  Heltec V3 (Meshtastic) ──UART──> XIAO ESP32S3 ──USB──>       │
-  │  receives mesh data       GPIO6 RX <- Heltec TX    computer    │
-  │                           GPIO5 TX -> Heltec RX    running     │
+  │  Heltec V4 (Meshtastic) ──UART──> XIAO ESP32S3 ──USB──>       │
+  │  receives mesh data       GPIO6 RX <- Heltec 48    computer    │
+  │                           GPIO5 TX -> Heltec 47    running     │
   │  NO detection.            dedup engine             mesh-mapper  │
   │  Just a smart bridge.                                           │
   └─────────────────────────────────────────────────────────────────┘
@@ -62,20 +62,25 @@ Remote nodes send Remote ID / DJI / MAVLink detections as fast as they happen wi
 | Component | Purpose |
 |---|---|
 | **Seeed XIAO ESP32S3** | Detection (remote) or bridge (home) |
-| **Heltec WiFi LoRa 32 V3** | Meshtastic mesh radio |
-| **3 wires** | TX, RX, GND between XIAO and Heltec |
+| **Heltec WiFi LoRa 32 V4** | Meshtastic mesh radio |
+| **3 or 4 wires** | TX, RX, GND between XIAO and Heltec, plus 3V3 on a remote node |
 
 ### Wiring
 
 ```
-XIAO ESP32S3          Heltec V3
+XIAO ESP32S3          Heltec V4
 ─────────────         ──────────
-GPIO5 (TX)  ───────>  RX
-GPIO6 (RX)  <───────  TX
-GND         ────────  GND
+GPIO5 (TX, D4) ────>  47  (Meshtastic serial RX)
+GPIO6 (RX, D5) <────  48  (Meshtastic serial TX)
+GND            ─────  GND
+3V3            ─────  3V3  (remote node only)
 ```
 
-Same wiring for both remote and home nodes. Only the firmware differs.
+A remote node runs the XIAO from the Heltec's 3V3 pin. On the home node,
+leave 3V3 unconnected: the XIAO is powered over USB from the mapper computer
+and the Heltec has its own USB supply. Full details, including power for a
+solar field station, are in the main README under
+[Build a station](../README.md#build-a-station).
 
 ---
 
@@ -138,7 +143,7 @@ Dual-core drone detection firmware.
 - **Core 0**: WiFi promiscuous mode. Open Drone ID NAN action frames and beacon vendor IEs, DJI DroneID beacon IEs, MAVLink telemetry in unencrypted data frames, SSID / MAC-prefix fingerprints. Hops across 2.4 GHz channels, weighted to channel 6.
 - **Core 1**: BLE scanning (NimBLE, passive, duplicates on). Open Drone ID over BLE 4 legacy adverts **and** BLE 5 Long Range extended adverts (message packs), plus BLE name / company-ID fingerprints.
 - Every Open Drone ID message type is decoded: both Basic IDs, Location, System (operator position, EU class), Operator ID, Self ID.
-- Sends JSON to USB Serial (local monitoring) and UART Serial1 (Heltec V3 mesh). The mesh line is budgeted to one Meshtastic packet; USB gets the full record.
+- Sends JSON to USB Serial (local monitoring) and UART Serial1 (the Heltec mesh radio). The mesh line is budgeted to one Meshtastic packet; USB gets the full record.
 - Each detection tagged with unique `node_id` for home node dedup
 - LED blinks on each detection
 - Heartbeat every 60s
@@ -147,7 +152,7 @@ Dual-core drone detection firmware.
 
 Lean mesh-to-USB bridge with dedup. No detection.
 
-- Reads JSON lines from Heltec V3 over UART
+- Reads JSON lines from the Heltec over UART
 - Deduplicates by drone MAC (500ms window, first-in wins)
 - Forwards clean data to USB Serial for `mesh-mapper.py`
 - Non-JSON lines (Meshtastic debug) forwarded with `[MESH]` prefix
@@ -207,11 +212,12 @@ when the value is unknown.
 ## Project Structure
 
 ```
-node-mode/
+node-mode-dualcore/
 ├── platformio.ini        # Two build environments: remote_node, home_node
 ├── src/
 │   ├── main_remote.cpp   # Remote node - WiFi+BLE detection + mesh send
 │   └── main_home.cpp     # Home node - UART bridge + dedup engine
+├── include/, lib/, test/ # PlatformIO placeholders
 ├── .gitignore
 └── README.md
 ../firmware-common/detect # Shared parsers: Open Drone ID, DJI DroneID, MAVLink, fingerprints
@@ -219,17 +225,22 @@ node-mode/
 
 ---
 
-## Heltec V3 Meshtastic Setup
+## Heltec V4 Meshtastic Setup
 
-The Heltec V3 boards run stock [Meshtastic firmware](https://meshtastic.org/). Enable the **Serial Module** in Meshtastic settings:
+The Heltec V4 boards run stock [Meshtastic firmware](https://meshtastic.org/). Enable the **Serial Module** in Meshtastic settings:
 
-1. Flash Meshtastic to both Heltec V3 boards
-2. Enable Serial Module: `meshtastic --set serial.enabled true`
-3. Set Serial Mode to **TEXTMSG**: `meshtastic --set serial.mode TEXTMSG`
-4. Set baud rate to **115200**: `meshtastic --set serial.baud BAUD_115200`
-5. Set the serial pins to match wiring (RX/TX pins the Heltec uses to talk to the XIAO)
+1. Flash Meshtastic to every Heltec V4 board
+2. Set your region: `meshtastic --set lora.region EU_868` (or `US`, `ANZ`, ...)
+3. Enable the serial module in TEXTMSG mode at 115200 baud on pins 47/48:
+   ```bash
+   meshtastic --set serial.enabled true --set serial.mode TEXTMSG \
+              --set serial.baud BAUD_115200 --set serial.rxd 47 --set serial.txd 48
+   ```
 
-Both Heltec boards should be on the same Meshtastic channel/encryption key.
+All Heltec boards must share the same primary channel and key. Settings for
+unattended stations (power saving, Bluetooth, remote admin) and the note for
+older Heltec V3 boards (pins 19/20) are in the main README under
+[Set up the Heltec V4](../README.md#set-up-the-heltec-v4-meshtastic).
 
 ---
 
@@ -237,11 +248,11 @@ Both Heltec boards should be on the same Meshtastic channel/encryption key.
 
 1. Flash **remote node** firmware to field XIAO boards
 2. Flash **home node** firmware to the base XIAO board
-3. Set up Meshtastic on all Heltec V3 boards (same channel)
-4. Wire each XIAO to its Heltec V3 (TX, RX, GND)
+3. Set up Meshtastic on all Heltec V4 boards (same channel)
+4. Wire each XIAO to its Heltec V4 (see [Wiring](#wiring))
 5. Plug the home XIAO into the computer running mesh-mapper.py via USB
-6. Run: `python3 mesh-mapper.py`
-7. mesh-mapper.py auto-detects the USB serial port and starts mapping
+6. Install and start the mapper as in the main README's [Quick Start](../README.md#quick-start)
+7. Open `http://localhost:5000` and pick the home XIAO's serial port. The mapper remembers it and reconnects on the next start
 
 ---
 

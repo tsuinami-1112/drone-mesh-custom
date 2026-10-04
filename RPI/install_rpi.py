@@ -1,27 +1,55 @@
 #!/usr/bin/env python3
 """
-Mesh-Mapper Setup Script
-Downloads mesh-mapper.py from colonelpanichacks/drone-mesh-mapper and sets up auto-start cron job.
+Mesh-Mapper Raspberry Pi installer
+
+Installs mesh-mapper.py from tsuinami-1112/drone-mesh-custom and starts it on
+every boot:
+
+  1. downloads the repository from GitHub and unpacks it into the install
+     directory (default ~/mesh-mapper). The mapper needs the static/ folder
+     next to it, not just mesh-mapper.py.
+  2. creates a Python virtual environment in <install dir>/.venv and installs
+     requirements.txt into it
+  3. adds an @reboot cron job for the current user that starts the mapper
+     from that environment
+
+Running it again updates an existing install in place. Detections, settings
+and cached map tiles in the install directory are kept.
 
 Usage:
-    python3 setup_mesh_mapper.py --branch main
-    python3 setup_mesh_mapper.py --branch dev
-    python3 setup_mesh_mapper.py --branch Dev --install-dir /custom/path
+    python3 install_rpi.py
+    python3 install_rpi.py --install-dir /opt/mesh-mapper
+    python3 install_rpi.py --no-cron
 """
 
 import os
 import sys
 import argparse
 import subprocess
-import requests
 import getpass
-from pathlib import Path
-from urllib.parse import urlparse
+import grp
+import shlex
+import shutil
+import tarfile
+import tempfile
+from pathlib import Path, PurePosixPath
+from urllib.parse import quote
+
+try:
+    import requests
+except ImportError:
+    print("❌ This installer needs the Python 'requests' module.")
+    print("   Install it with: sudo apt install python3-requests")
+    sys.exit(1)
 
 # GitHub repository configuration
-GITHUB_REPO = "colonelpanichacks/drone-mesh-mapper"
-GITHUB_BASE_URL = f"https://raw.githubusercontent.com/{GITHUB_REPO}"
+GITHUB_REPO = "tsuinami-1112/drone-mesh-custom"
+GITHUB_URL = f"https://github.com/{GITHUB_REPO}"
 TARGET_FILE = "mesh-mapper.py"
+REQUIREMENTS_FILE = "requirements.txt"
+# A file the web UI cannot work without; its absence means a broken unpack
+STATIC_CHECK_FILE = os.path.join("static", "leaflet", "leaflet.js")
+USER_AGENT = f"drone-mesh-custom-installer (+{GITHUB_URL})"
 
 def get_current_user():
     """Get the current username"""
@@ -32,51 +60,120 @@ def get_user_home():
     return str(Path.home())
 
 def construct_download_url(branch):
-    """Construct the raw GitHub URL for downloading the file"""
-    return f"{GITHUB_BASE_URL}/{branch}/{TARGET_FILE}"
+    """Construct the GitHub archive URL for a branch (None = default branch)"""
+    if branch is None:
+        return f"{GITHUB_URL}/archive/HEAD.tar.gz"
+    # Branch names may contain characters such as '(' that need escaping
+    return f"{GITHUB_URL}/archive/refs/heads/{quote(branch, safe='/')}.tar.gz"
 
 def download_file(url, destination):
     """Download a file from URL to destination"""
     print(f"📥 Downloading from: {url}")
-    print(f"📁 Saving to: {destination}")
-    
+
     try:
-        response = requests.get(url, stream=True, timeout=30)
+        response = requests.get(url, stream=True, timeout=30,
+                                headers={"User-Agent": USER_AGENT})
+        if response.status_code == 404:
+            print("❌ Not found. Check the branch name exists on GitHub:")
+            print(f"   {GITHUB_URL}/branches")
+            return False
         response.raise_for_status()
-        
-        # Create directory if it doesn't exist
-        os.makedirs(os.path.dirname(destination), exist_ok=True)
-        
+
         with open(destination, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
+            for chunk in response.iter_content(chunk_size=65536):
                 if chunk:
                     f.write(chunk)
-        
-        # Make the file executable
-        os.chmod(destination, 0o755)
-        
-        print(f"✅ Downloaded successfully: {destination}")
+
+        size_mb = os.path.getsize(destination) / (1024 * 1024)
+        print(f"✅ Downloaded {size_mb:.1f} MB")
         return True
-        
+
     except requests.exceptions.RequestException as e:
-        print(f"❌ Error downloading file: {e}")
+        print(f"❌ Error downloading: {e}")
         return False
-    except Exception as e:
-        print(f"❌ Error saving file: {e}")
+    except OSError as e:
+        print(f"❌ Error saving download: {e}")
         return False
 
-def check_file_exists(url):
-    """Check if file exists at the URL"""
+def extract_archive(archive_path, install_dir):
+    """Unpack the GitHub archive into install_dir, dropping its top-level folder.
+
+    Only regular files and directories are written, and only inside
+    install_dir. Files not in the archive (detections, settings, tiles,
+    the .venv) are left alone.
+    """
+    print(f"📦 Unpacking into: {install_dir}")
+    written = 0
     try:
-        response = requests.head(url, timeout=10)
-        return response.status_code == 200
-    except:
+        with tarfile.open(archive_path, 'r:gz') as tar:
+            for member in tar:
+                # GitHub archives wrap everything in "<repo>-<ref>/"
+                parts = PurePosixPath(member.name).parts[1:]
+                if not parts:
+                    continue
+                if any(p in ('..', '') for p in parts) or PurePosixPath(*parts).is_absolute():
+                    print(f"⚠️  Skipping unsafe path in archive: {member.name}")
+                    continue
+                target = os.path.join(install_dir, *parts)
+
+                if member.isdir():
+                    os.makedirs(target, exist_ok=True)
+                elif member.isfile():
+                    os.makedirs(os.path.dirname(target), exist_ok=True)
+                    source = tar.extractfile(member)
+                    with open(target, 'wb') as f:
+                        shutil.copyfileobj(source, f)
+                    os.chmod(target, member.mode & 0o755 | 0o644)
+                    written += 1
+                # Links and special files are not used by this repository
+    except (tarfile.TarError, OSError) as e:
+        print(f"❌ Error unpacking: {e}")
         return False
+
+    if not os.path.isfile(os.path.join(install_dir, TARGET_FILE)):
+        print(f"❌ The download did not contain {TARGET_FILE}")
+        return False
+
+    print(f"✅ Unpacked {written} files")
+    return True
+
+def setup_virtualenv(install_dir):
+    """Create <install_dir>/.venv and install requirements.txt into it.
+
+    Returns the path of the environment's python, or None on failure.
+    """
+    venv_dir = os.path.join(install_dir, '.venv')
+    venv_python = os.path.join(venv_dir, 'bin', 'python')
+
+    # (Re)create the environment if it is missing or was left without pip,
+    # e.g. by an earlier run on a system where python3-venv was missing
+    pip_ok = os.path.exists(venv_python) and subprocess.run(
+        [venv_python, '-m', 'pip', '--version'], capture_output=True).returncode == 0
+    if not pip_ok:
+        print(f"🐍 Creating virtual environment: {venv_dir}")
+        result = subprocess.run([sys.executable, '-m', 'venv', '--clear', venv_dir],
+                                capture_output=True, text=True)
+        if result.returncode != 0:
+            print("❌ Could not create the virtual environment:")
+            print(f"   {result.stderr.strip()}")
+            print("   Install venv support and run this installer again:")
+            print("   sudo apt install python3-venv")
+            return None
+
+    print("📦 Installing Python packages (this can take a few minutes on a Pi)...")
+    result = subprocess.run([venv_python, '-m', 'pip', 'install', '--upgrade',
+                             '-r', os.path.join(install_dir, REQUIREMENTS_FILE)])
+    if result.returncode != 0:
+        print("❌ Installing the Python packages failed (see the pip output above)")
+        return None
+
+    print("✅ Python packages installed")
+    return venv_python
 
 def get_current_crontab():
     """Get current user's crontab"""
     try:
-        result = subprocess.run(['crontab', '-l'], 
+        result = subprocess.run(['crontab', '-l'],
                               capture_output=True, text=True, check=False)
         if result.returncode == 0:
             return result.stdout.strip()
@@ -86,45 +183,45 @@ def get_current_crontab():
         print(f"⚠️  Error reading crontab: {e}")
         return ""
 
-def install_cron_job(install_dir):
+def is_our_cron_line(line, install_dir):
+    """True for a mesh-mapper @reboot line that starts from install_dir.
+
+    Also matches the line the older upstream installer wrote, so re-running
+    over such an install replaces it instead of starting the mapper twice.
+    """
+    return (TARGET_FILE in line and
+            any(f"cd {d} &&" in line for d in (install_dir, shlex.quote(install_dir))))
+
+def install_cron_job(install_dir, venv_python):
     """Install the cron job for auto-start"""
     current_user = get_current_user()
-    user_home = get_user_home()
-    
+
     # Construct the cron job command
-    cron_command = f"@reboot sleep 5 && cd {install_dir} && /usr/bin/python3 {TARGET_FILE} --debug"
-    
+    cron_command = (f"@reboot sleep 5 && cd {shlex.quote(install_dir)} && "
+                    f"{shlex.quote(venv_python)} {TARGET_FILE}")
+
     print(f"🔧 Setting up cron job for user: {current_user}")
-    print(f"📍 Install directory: {install_dir}")
     print(f"⚙️  Cron command: {cron_command}")
-    
+
     # Get current crontab
     current_crontab = get_current_crontab()
-    
-    # Check if our cron job already exists
-    if f"cd {install_dir} && /usr/bin/python3 {TARGET_FILE}" in current_crontab:
+
+    # Replace any existing entry for this install directory
+    lines = current_crontab.split('\n') if current_crontab else []
+    kept = [line for line in lines if not is_our_cron_line(line, install_dir)]
+    if len(kept) != len(lines):
         print("ℹ️  Cron job already exists, updating...")
-        # Remove old entries
-        lines = current_crontab.split('\n')
-        filtered_lines = [line for line in lines 
-                         if not (f"cd {install_dir}" in line and TARGET_FILE in line)]
-        current_crontab = '\n'.join(filtered_lines).strip()
-    
-    # Add our cron job
-    if current_crontab:
-        new_crontab = current_crontab + '\n' + cron_command
-    else:
-        new_crontab = cron_command
-    
+    new_crontab = '\n'.join(kept + [cron_command]).strip() + '\n'
+
     try:
         # Install the new crontab
-        process = subprocess.Popen(['crontab', '-'], 
-                                 stdin=subprocess.PIPE, 
-                                 stdout=subprocess.PIPE, 
+        process = subprocess.Popen(['crontab', '-'],
+                                 stdin=subprocess.PIPE,
+                                 stdout=subprocess.PIPE,
                                  stderr=subprocess.PIPE,
                                  text=True)
         stdout, stderr = process.communicate(new_crontab)
-        
+
         if process.returncode == 0:
             print("✅ Cron job installed successfully!")
             print("🔄 The mesh-mapper will auto-start on system reboot")
@@ -132,149 +229,168 @@ def install_cron_job(install_dir):
         else:
             print(f"❌ Error installing cron job: {stderr}")
             return False
-            
+
     except Exception as e:
         print(f"❌ Error setting up cron job: {e}")
         return False
 
-def verify_installation(install_path, cron_expected=True):
+def check_serial_access():
+    """Warn if the current user cannot open USB serial ports"""
+    try:
+        dialout_gid = grp.getgrnam('dialout').gr_gid
+    except KeyError:
+        return  # No dialout group on this system; nothing to check
+    if dialout_gid not in os.getgroups():
+        print(f"⚠️  User '{get_current_user()}' is not in the 'dialout' group, so the")
+        print("   mapper cannot open the XIAO's serial port. Fix it with:")
+        print("   sudo usermod -a -G dialout $USER")
+        print("   then log out and back in (or reboot).")
+
+def verify_installation(install_dir, venv_python, cron_expected=True):
     """Verify the installation"""
     print("\n🔍 Verifying installation...")
-    
-    # Check if file exists and is executable
-    if not os.path.exists(install_path):
-        print(f"❌ File not found: {install_path}")
-        return False
-    
-    if not os.access(install_path, os.X_OK):
-        print(f"⚠️  File is not executable: {install_path}")
-        return False
-    
-    # Check file size (should be substantial)
-    file_size = os.path.getsize(install_path)
-    if file_size < 1000:  # Less than 1KB is suspicious
-        print(f"⚠️  File seems too small ({file_size} bytes): {install_path}")
-        return False
-    
-    print(f"✅ Installation verified: {install_path} ({file_size} bytes)")
-    
+    ok = True
+
+    for rel in (TARGET_FILE, STATIC_CHECK_FILE):
+        if not os.path.isfile(os.path.join(install_dir, rel)):
+            print(f"❌ Missing: {os.path.join(install_dir, rel)}")
+            ok = False
+
+    result = subprocess.run(
+        [venv_python, '-c', 'import flask, flask_socketio, serial, requests'],
+        capture_output=True, text=True)
+    if result.returncode == 0:
+        print("✅ Python packages import correctly")
+    else:
+        print(f"❌ Python packages are not importable: {result.stderr.strip()}")
+        ok = False
+
     # Verify cron job only if expected
     if cron_expected:
-        current_crontab = get_current_crontab()
-        if TARGET_FILE in current_crontab and "@reboot" in current_crontab:
+        if any(is_our_cron_line(line, install_dir) and line.startswith('@reboot')
+               for line in get_current_crontab().split('\n')):
             print("✅ Cron job verified")
-            return True
         else:
             print("⚠️  Cron job not found in crontab")
-            return False
+            ok = False
     else:
         print("ℹ️  Cron job verification skipped (--no-cron used)")
-        return True
+
+    if ok:
+        print(f"✅ Installation verified: {install_dir}")
+    return ok
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Download and setup mesh-mapper.py from GitHub",
+        description=f"Install mesh-mapper.py from {GITHUB_URL} and start it on boot",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python3 setup_mesh_mapper.py --branch main
-  python3 setup_mesh_mapper.py --branch Dev
-  python3 setup_mesh_mapper.py --branch main --install-dir /opt/mesh-mapper
-  python3 setup_mesh_mapper.py --branch Dev --no-cron
+  python3 install_rpi.py
+  python3 install_rpi.py --install-dir /opt/mesh-mapper
+  python3 install_rpi.py --no-cron
+  python3 install_rpi.py --force          # update without asking
         """)
-    
-    parser.add_argument('--branch', 
-                       choices=['main', 'Dev', 'dev'], 
-                       default='main',
-                       help='GitHub branch to download from (default: main)')
-    
-    parser.add_argument('--install-dir', 
+
+    parser.add_argument('--branch',
+                       default=None,
+                       help="GitHub branch to install from "
+                            "(default: the repository's default branch)")
+
+    parser.add_argument('--install-dir',
                        default=None,
                        help='Installation directory (default: ~/mesh-mapper)')
-    
-    parser.add_argument('--no-cron', 
+
+    parser.add_argument('--no-cron',
                        action='store_true',
                        help='Skip installing cron job')
-    
-    parser.add_argument('--force', 
+
+    parser.add_argument('--force',
                        action='store_true',
-                       help='Force overwrite existing files')
-    
+                       help='Update an existing install without asking')
+
     args = parser.parse_args()
-    
-    # Normalize branch name (GitHub is case-sensitive)
-    if args.branch.lower() == 'dev':
-        branch = 'Dev'  # GitHub uses capital D
-    else:
-        branch = args.branch
-    
+
     # Determine installation directory
     if args.install_dir:
-        install_dir = os.path.abspath(args.install_dir)
+        install_dir = os.path.abspath(os.path.expanduser(args.install_dir))
     else:
         install_dir = os.path.join(get_user_home(), 'mesh-mapper')
-    
+
     install_path = os.path.join(install_dir, TARGET_FILE)
-    
+
     print("=" * 60)
-    print("🚁 MESH-MAPPER GITHUB SETUP SCRIPT")
+    print("🚁 MESH-MAPPER RASPBERRY PI INSTALLER")
     print("=" * 60)
-    print(f"📦 Repository: https://github.com/{GITHUB_REPO}")
-    print(f"🌿 Branch: {branch}")
+    print(f"📦 Repository: {GITHUB_URL}")
+    print(f"🌿 Branch: {args.branch or 'default branch'}")
     print(f"👤 User: {get_current_user()}")
-    print(f"🏠 Home: {get_user_home()}")
     print(f"📁 Install Dir: {install_dir}")
-    print(f"📄 Target File: {TARGET_FILE}")
     print()
-    
-    # Check if file already exists
-    if os.path.exists(install_path) and not args.force:
-        response = input(f"File already exists: {install_path}\nOverwrite? (y/N): ")
+
+    # Check if an install already exists
+    updating = os.path.exists(install_path)
+    if updating and not args.force:
+        print(f"An install already exists in {install_dir}.")
+        print("Updating replaces the program files and keeps your detections,")
+        print("settings and cached map tiles.")
+        response = input("Update it? (y/N): ")
         if response.lower() != 'y':
             print("❌ Installation cancelled")
             return 1
-    
-    # Construct download URL
-    download_url = construct_download_url(branch)
-    
-    # Check if file exists on GitHub
-    print("🔍 Checking if file exists on GitHub...")
-    if not check_file_exists(download_url):
-        print(f"❌ File not found at: {download_url}")
-        print(f"   Please check if the branch '{branch}' exists and contains {TARGET_FILE}")
+
+    try:
+        os.makedirs(install_dir, exist_ok=True)
+    except OSError as e:
+        print(f"❌ Cannot create {install_dir}: {e}")
         return 1
-    
-    print(f"✅ File found on GitHub: {branch}/{TARGET_FILE}")
-    
-    # Download the file
-    if not download_file(download_url, install_path):
-        print("❌ Download failed")
+
+    # Download and unpack the repository
+    with tempfile.TemporaryDirectory() as tmp:
+        archive_path = os.path.join(tmp, 'drone-mesh-custom.tar.gz')
+        if not download_file(construct_download_url(args.branch), archive_path):
+            print("❌ Download failed")
+            return 1
+        if not extract_archive(archive_path, install_dir):
+            print("❌ Unpacking failed")
+            return 1
+
+    # Python environment
+    venv_python = setup_virtualenv(install_dir)
+    if not venv_python:
         return 1
-    
+
     # Install cron job (if requested)
     if not args.no_cron:
         print("\n🕒 Setting up auto-start cron job...")
-        if not install_cron_job(install_dir):
-            print("⚠️  Cron job installation failed, but file was downloaded successfully")
+        if not install_cron_job(install_dir, venv_python):
+            print("⚠️  Cron job installation failed, but the mapper was installed")
     else:
         print("⏭️  Skipping cron job installation (--no-cron specified)")
-    
+
+    check_serial_access()
+
     # Verify installation
-    if verify_installation(install_path, not args.no_cron):
+    if verify_installation(install_dir, venv_python, not args.no_cron):
         print("\n🎉 Installation completed successfully!")
         print(f"📍 Mesh-mapper installed at: {install_path}")
-        
+
         if not args.no_cron:
             print("🔄 Auto-start enabled: Will run on system reboot")
-            print("💡 To test manually, run:")
-            print(f"   cd {install_dir} && python3 {TARGET_FILE} --debug")
-        
+
         print("\n📋 Next steps:")
-        print("  1. Connect your ESP32 device")
-        print("  2. Run the mesh-mapper manually to test")
-        print("  3. Reboot to test auto-start (if cron enabled)")
-        print(f"  4. Access web interface at: http://localhost:5000")
-        
+        print("  1. Plug the home station's XIAO (or a standalone detector) into this computer")
+        print("  2. Test the mapper by hand (stop it with Ctrl+C):")
+        print(f"     cd {shlex.quote(install_dir)} && .venv/bin/python {TARGET_FILE}")
+        print("  3. Open http://localhost:5000 (or http://<this computer's IP>:5000)")
+        print("     and pick the XIAO's serial port")
+        if not args.no_cron:
+            print("  4. Reboot to check that it starts by itself")
+        if updating:
+            print("\n⚠️  If the mapper is already running, restart it (or reboot)")
+            print("   so the updated version is loaded.")
+        print(f"\n📝 The mapper logs to {os.path.join(install_dir, 'mapper.log')}")
+
         return 0
     else:
         print("❌ Installation verification failed")
@@ -289,4 +405,4 @@ if __name__ == "__main__":
         sys.exit(1)
     except Exception as e:
         print(f"\n💥 Unexpected error: {e}")
-        sys.exit(1) 
+        sys.exit(1)

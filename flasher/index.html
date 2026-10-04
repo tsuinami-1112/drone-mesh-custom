@@ -124,6 +124,16 @@
     color: var(--magenta);
   }
 
+  /* Retired notice: amber so it reads as a warning before anything else */
+  .panel.retired { border-color: var(--amber); }
+  .panel.retired > header {
+    background: var(--amber-bg);
+    border-bottom-color: var(--amber);
+    color: var(--amber);
+  }
+  .panel.retired p { margin: 0 0 12px; line-height: 1.6; }
+  .panel.retired p:last-child { margin-bottom: 0; }
+
   /* --- STEPS --- */
   .step {
     display: flex;
@@ -353,6 +363,17 @@
 <main>
 
 <!-- =============================================================
+     RETIRED NOTICE
+     ============================================================= -->
+<section class="panel retired">
+  <header><span>Retired</span><span class="right">do not use</span></header>
+  <div class="body">
+    <p><b>This web flasher is retired and isn't published anywhere.</b> Its images are older firmware that predates the current detection code: they only decode US-style Remote ID on WiFi channel 6, and the instructions below describe the older Heltec V3 wiring.</p>
+    <p>Build and flash the current firmware from source with PlatformIO, as described in <a href="https://github.com/tsuinami-1112/drone-mesh-custom#build-and-flash-the-firmware">Build and flash the firmware</a>, and wire stations as in <a href="https://github.com/tsuinami-1112/drone-mesh-custom#build-a-station">Build a station</a>.</p>
+  </div>
+</section>
+
+<!-- =============================================================
      INSTALL / GETTING STARTED
      ============================================================= -->
 <section class="panel">
@@ -374,7 +395,7 @@
     <div class="step">
       <div class="n">3</div>
       <h3>Wire it to a Heltec V3</h3>
-      <p>All three builds send Remote ID JSON out UART on <b>GPIO5 (TX)</b> / <b>GPIO6 (RX)</b>. Wire that to a Heltec V3 running Meshtastic in serial TEXTMSG mode at 115200. See the <a href="https://github.com/colonelpanichacks/drone-mesh-mapper#hardware-setup">wiring diagram</a>.</p>
+      <p>All three builds send Remote ID JSON out UART on <b>GPIO5 (TX)</b> / <b>GPIO6 (RX)</b>. Wire that to a Heltec V3 running Meshtastic in serial TEXTMSG mode at 115200. See the <a href="https://github.com/tsuinami-1112/drone-mesh-custom#build-a-station">wiring diagram</a>.</p>
     </div>
 
   </div>
@@ -415,7 +436,7 @@
   <div class="body">
 
     <p style="max-width: 620px; margin: 0 auto 14px; color: var(--text); font-size: 13px; text-align: left;">
-      Node Mode splits the standard build into <b>two firmwares</b>: put <b>Remote</b> on every field detector, and <b>Home</b> on the base receiver plugged into <a href="https://github.com/colonelpanichacks/drone-mesh-mapper">mesh-mapper.py</a>. Deploy as many Remotes as you want.
+      Node Mode splits the standard build into <b>two firmwares</b>: put <b>Remote</b> on every field detector, and <b>Home</b> on the base receiver plugged into <a href="https://github.com/tsuinami-1112/drone-mesh-custom#quick-start">mesh-mapper.py</a>. Deploy as many Remotes as you want.
     </p>
 
     <pre class="arch"><span class="r">┌─────────────────────────────────────────────────────────────┐
@@ -533,8 +554,8 @@
 </section>
 
 <footer>
-  Hardware &middot; <a href="https://github.com/colonelpanichacks/mesh-detect">github.com/colonelpanichacks/mesh-detect</a><br>
-  Firmware source &middot; <a href="https://github.com/colonelpanichacks/drone-mesh-mapper">github.com/colonelpanichacks/drone-mesh-mapper</a>
+  Source &middot; <a href="https://github.com/tsuinami-1112/drone-mesh-custom">github.com/tsuinami-1112/drone-mesh-custom</a><br>
+  Based on &middot; <a href="https://github.com/colonelpanichacks/drone-mesh-mapper">colonelpanichacks/drone-mesh-mapper</a>
 </footer>
 
 </main>
