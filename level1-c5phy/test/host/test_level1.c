@@ -24,12 +24,23 @@ static unsigned g_seed = 12345u;
 static double urand(void) { g_seed = g_seed * 1664525u + 1013904223u; return (g_seed >> 8) / 16777216.0; }
 static double nrand(void) { double u1 = urand() + 1e-12, u2 = urand(); return sqrt(-2.0 * log(u1)) * cos(2 * PI * u2); }
 
+/* Hardware model: the modem's 10-bit sample truncated to bits 9..6 (what the
+ * four lanes per component carry). With three lanes per component the bit-6
+ * lane is not wired and that PARLIO line reads whatever its unassigned matrix
+ * input gives: the test puts random bits there so the suite proves demod.c
+ * masks them off. */
+static int g_lane_bits = 4;
 static uint8_t pack(double i, double q)
 {
-    long ii = lrint(i), qq = lrint(q);
+    long ii = (long)floor(i), qq = (long)floor(q);
     if (ii > 7) ii = 7; if (ii < -8) ii = -8;
     if (qq > 7) qq = 7; if (qq < -8) qq = -8;
-    return (uint8_t)(((ii & 0xF) << 4) | (qq & 0xF));
+    uint8_t b = (uint8_t)(((ii & 0xF) << 4) | (qq & 0xF));
+    if (g_lane_bits == 3) {
+        g_seed = g_seed * 1664525u + 1013904223u;
+        b = (uint8_t)((b & 0xEE) | ((g_seed >> 20) & 0x11));   /* unwired lanes: junk */
+    }
+    return b;
 }
 
 static void gen_noise(uint8_t* buf, int n, double sigma)
@@ -78,11 +89,20 @@ static void gen_fm_video(uint8_t* buf, int n, double line_samples, double cfo_hz
 
 static void test_lut(void)
 {
-    uint8_t two[2] = { pack(4, 0), pack(0, 4) };   /* +90 degrees */
+    /* (5,-5) -> (5,5) is a +90 degree step whose values exist in both lane modes */
+    uint8_t two[2] = { pack(5, -5), pack(5, 5) };
     IqMetrics m;
     iq_metrics(two, 2, &m);
     CHECK(fabs(m.cfo_khz - 10000.0) < 1.0, "90 deg/sample should read as +10 MHz, got %.1f kHz", m.cfo_khz);
     CHECK(demod_nib(0x8) == -8 && demod_nib(0x7) == 7 && demod_nib(0xF) == -1, "nibble decode");
+    if (demod_lane_bits() == 4) {
+        CHECK(demod_decode_nibble(0x7) == 7 && demod_decode_nibble(0x8) == -8 && demod_decode_nibble(0x0) == 0, "4-bit decode");
+    } else {
+        /* bit 0 ignored, midpoint of the merged pair: 0x6/0x7 -> 7, 0x8/0x9 -> -7, 0x0/0x1 -> 1, 0xE/0xF -> -1 */
+        CHECK(demod_decode_nibble(0x6) == 7 && demod_decode_nibble(0x7) == 7, "3-bit decode top");
+        CHECK(demod_decode_nibble(0x8) == -7 && demod_decode_nibble(0x9) == -7, "3-bit decode bottom");
+        CHECK(demod_decode_nibble(0x0) == 1 && demod_decode_nibble(0xF) == -1, "3-bit decode zero");
+    }
 }
 
 static void test_noise(void)
@@ -93,12 +113,32 @@ static void test_noise(void)
     iq_metrics(buf, N, &m);
     printf("noise: p_mean=%.2f q=%.1f%% clip=%.2f%% cv2=%.2f step_std=%.1f noise=%d mod=%d\n",
            m.p_mean, m.q_phase_pct, m.clip_pct, m.env_cv2, m.step_std_deg, m.noise, m.mod);
-    CHECK(fabs(m.p_mean - 2.0) < 0.3, "noise p_mean %.2f", m.p_mean);
+    /* sigma = 1 LSB truncated to 4 bits reads 2.7 (the -0.5 truncation bias adds
+     * 0.25 per component); the 3-lane midpoint decode reads 2.75. C5VRX measured
+     * 2.0 on hardware, and the bench measures RF_NOISE_POWER (stage 1); these pin
+     * the decode, not the board. */
+    CHECK(fabs(m.p_mean - (demod_lane_bits() == 4 ? 2.70 : 2.75)) < 0.3, "noise p_mean %.2f (%d lanes)", m.p_mean, demod_lane_bits());
+    CHECK(m.stuck == 0, "noise must not read as a stuck bus");
     CHECK(m.q_phase_pct < 10, "noise q_phase %.1f", m.q_phase_pct);
     CHECK(m.noise == 1, "noise flag");
     VideoResult v;
     video_window(buf, N, &v);
     CHECK(!v.present, "noise must not read as video (score %d periods %d)", v.score, v.periods);
+
+    /* A dead bus: every sample identical. In 3-lane mode it reads p_mean 2.0,
+     * exactly the noise reference, so the flag is what tells the bench. */
+    memset(buf, 0x00, N);
+    iq_metrics(buf, N, &m);
+    CHECK(m.stuck == 1, "all-zero bus must read as stuck (p_mean %.2f)", m.p_mean);
+    if (demod_lane_bits() == 3) {
+        CHECK(fabs(m.p_mean - 2.0) < 0.01, "a dead bus reads the noise reference in 3-lane mode (%.2f)", m.p_mean);
+        for (int k = 0; k < N; k++) { g_seed = g_seed * 1664525u + 1013904223u; buf[k] = (uint8_t)((g_seed >> 20) & 0x11); }
+        iq_metrics(buf, N, &m);
+        CHECK(m.stuck == 1, "junk on the unwired lanes only must still read as stuck");
+    }
+    memset(buf, 0xFF, N);
+    iq_metrics(buf, N, &m);
+    CHECK(m.stuck == 1, "all-ones bus must read as stuck");
 }
 
 static void test_cw(void)
@@ -260,9 +300,53 @@ static void test_report(void)
     CHECK(n3 > 0 && n4 > 0 && n4 <= 191, "heartbeat json");
 }
 
-int main(void)
+/* The price of three lanes per component: level above the noise reference and
+ * FM coherence of a video carrier, at the real noise floor (sigma = 1 LSB of
+ * the 4-bit scale), for both lane modes. Printed for the record; the strict
+ * checks above are what gate the build. */
+static void sensitivity_table(void)
 {
-    demod_init();
+    static uint8_t buf[N];
+    const double amps[] = { 0.7, 1.0, 1.4, 2.0, 2.8, 4.0 };
+    enum { NA = sizeof(amps) / sizeof(amps[0]) };
+    double row[2][NA][3];
+    for (int mode = 0; mode < 2; mode++) {          /* mode outermost: two LUT builds, not twelve */
+        g_lane_bits = mode ? 3 : 4;
+        demod_init_bits(g_lane_bits);
+        for (unsigned a = 0; a < NA; a++) {
+            g_seed = 99u;
+            gen_noise(buf, N, 1.0);
+            IqMetrics nm;
+            iq_metrics(buf, N, &nm);
+            int present = 0;
+            double q = 0, lvl = 0;
+            for (int w = 0; w < 8; w++) {
+                gen_fm_video(buf, N, 2542.2, 1.84e6, amps[a], 1.0, +1);
+                IqMetrics m;
+                VideoResult v;
+                iq_metrics(buf, N, &m);
+                video_window(buf, N, &v);
+                q += m.q_phase_pct / 8;
+                lvl += 10 * log10(m.p_mean / nm.p_mean) / 8;   /* each mode against its own measured floor */
+                present += v.present;
+            }
+            row[mode][a][0] = lvl; row[mode][a][1] = q; row[mode][a][2] = present;
+        }
+    }
+    printf("\nsensitivity, sigma = 1.0, each decode referenced to its own noise floor:\n"
+           "  amplitude | 4 lanes: level_db q_phase video | 3 lanes: level_db q_phase video\n");
+    for (unsigned a = 0; a < NA; a++)
+        printf("  A=%.1f | %5.1f dB %5.1f%% %d/8 | %5.1f dB %5.1f%% %d/8\n", amps[a],
+               row[0][a][0], row[0][a][1], (int)row[0][a][2], row[1][a][0], row[1][a][1], (int)row[1][a][2]);
+    g_lane_bits = 4;
+    demod_init_bits(4);
+}
+
+static void run_suite(int bits)
+{
+    g_lane_bits = bits;
+    demod_init_bits(bits);
+    printf("\n===== %d lanes per component =====\n", bits);
     test_lut();
     test_noise();
     test_cw();
@@ -270,9 +354,16 @@ int main(void)
     test_video("PAL", 2560.0, 15625, 4.5, 0.7, +1, 1);
     test_video("NTSC", 2542.2, 15734, 4.5, 0.7, -1, 1);   /* sync at the high end */
     test_video("PAL", 2560.0, 15625, 2.0, 1.0, +1, 0);     /* weak: informational */
+}
+
+int main(void)
+{
+    run_suite(4);
+    run_suite(3);
     test_bearing();
     test_channels();
     test_report();
+    sensitivity_table();
     printf(g_fail ? "\n%d FAILURE(S)\n" : "\nALL TESTS PASSED\n", g_fail);
     return g_fail ? 1 : 0;
 }

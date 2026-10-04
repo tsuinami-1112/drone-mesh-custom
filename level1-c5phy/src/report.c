@@ -115,7 +115,7 @@ int report_detection_json(char* out, size_t cap, const DetectionReport* r, int f
         json_add(&j, "\"sector\":%d", r->sector);
         json_add(&j, "\"bearing_deg\":%d", r->bearing_deg);
         json_add(&j, "\"bearing_sigma_deg\":%d", r->bearing_sigma_deg);
-        json_add(&j, "\"heading\":%d", r->heading);
+        json_add(&j, "\"station_heading\":%d", r->heading);
         json_add(&j, "\"freq_peak\":%d", r->freq_peak);
         json_add(&j, "\"video\":\"%s\"", r->video);
         if (has_video) {
@@ -174,6 +174,7 @@ int report_heartbeat_json(char* out, size_t cap, const HeartbeatReport* h, int f
         json_add(&j, "\"fe_gain_db\":%.1f", (double)h->fe_gain_db);
         json_add(&j, "\"tune_fail\":%u", h->tune_fail);
         json_add(&j, "\"cap_err\":%u", h->cap_err);
+        json_add(&j, "\"bus_stuck\":%u", h->bus_stuck);
         json_add(&j, "\"sweeps\":%u", h->sweeps);
         json_add(&j, "\"usb_drop\":%u", h->usb_drop);
         json_add(&j, "\"mesh_drop\":%u", h->mesh_drop);

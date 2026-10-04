@@ -16,7 +16,8 @@ typedef struct {
     float level_db; int gain; int q_phase; int cfo_khz;
     const char* carrier;      /* "fm" or "cw" */
     const float* sectors_dbm; int sector_count; int sector;
-    int bearing_deg; int bearing_sigma_deg; int heading;
+    int bearing_deg; int bearing_sigma_deg;
+    int heading;              /* installer's STATION_HEADING_DEG, reported as station_heading */
     int freq_peak;
     const char* video;        /* "NTSC", "PAL" or "none" */
     int sync_hz, field_hz, sync_q, sync_score, video_windows;
@@ -31,7 +32,7 @@ typedef struct {
     float threshold_dbm, threshold_level_db;
     int video_seen, gain_max, bw40;
     float fe_gain_db;
-    unsigned tune_fail, cap_err, sweeps, usb_drop, mesh_drop;
+    unsigned tune_fail, cap_err, bus_stuck, sweeps, usb_drop, mesh_drop;
     float nf_dbm, temp_c;
     unsigned uptime_s, seq;
 } HeartbeatReport;

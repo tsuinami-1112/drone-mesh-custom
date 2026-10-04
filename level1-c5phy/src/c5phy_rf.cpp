@@ -93,7 +93,8 @@ static esp_err_t lock_rx_only(void)
 static esp_err_t route_modem_iq(void)
 {
     uint64_t mask = 0;
-    for (int i = 0; i < IQ_LANE_COUNT; i++) mask |= 1ULL << k_lanes[i];
+    for (int i = 0; i < IQ_LANE_COUNT; i++)
+        if (k_lanes[i] >= 0) mask |= 1ULL << k_lanes[i];
     gpio_config_t cfg = {};
     cfg.pin_bit_mask = mask;
     cfg.mode = GPIO_MODE_INPUT_OUTPUT;
@@ -102,7 +103,8 @@ static esp_err_t route_modem_iq(void)
     cfg.intr_type = GPIO_INTR_DISABLE;
     TRY(gpio_config(&cfg));
     for (int i = 0; i < IQ_LANE_COUNT; i++)
-        esp_rom_gpio_connect_out_signal((gpio_num_t)k_lanes[i], MODEM_DIAG0_IDX + k_diag[i], false, false);
+        if (k_lanes[i] >= 0)
+            esp_rom_gpio_connect_out_signal((gpio_num_t)k_lanes[i], MODEM_DIAG0_IDX + k_diag[i], false, false);
     fence();
     return ESP_OK;
 }

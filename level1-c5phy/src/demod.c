@@ -8,8 +8,15 @@
 /* Phase step from sample a to sample b, 256 units per turn (int8: -180..+179 deg). */
 static int8_t  s_step_lut[65536];
 static uint8_t s_pwr_lut[256];
+static int8_t  s_val_lut[16];          /* nibble -> I or Q value under the lane mode */
 static int8_t  s_steps[DEMOD_MAX_SAMPLES];
 static int     s_ready;
+static int     s_bits = 4;
+static int     s_full_pos = 7, s_full_neg = -8;   /* full-scale codes: clipping */
+static uint8_t s_data_mask = 0xFF;                /* byte bits that carry wired lanes */
+
+int demod_lane_bits(void) { return s_bits; }
+int demod_decode_nibble(unsigned nib) { return s_val_lut[nib & 0xFu]; }
 
 #define BOX        32           /* 0.8 us box average on the discriminator */
 #define BOX_SHIFT  5
@@ -17,17 +24,30 @@ static int     s_ready;
 #define COH_LIMIT  32           /* 45 deg in LUT units */
 #define MOD_STD_DEG 4.0f        /* box-averaged step std above this = FM deviation present */
 
-void demod_init(void)
+void demod_init_bits(int bits)
 {
-    if (s_ready) return;
+    if (s_ready && bits == s_bits) return;
+    s_bits = (bits == 3) ? 3 : 4;
+    for (unsigned n = 0; n < 16; n++) {
+        if (s_bits == 4) {
+            s_val_lut[n] = (int8_t)demod_nib(n);                 /* -8..7 */
+        } else {
+            /* Bit 0 is an unwired lane: ignore it and read the midpoint of the
+             * two 4-bit codes that share the upper three bits -> -7,-5,..,7. */
+            s_val_lut[n] = (int8_t)(demod_nib(n & 0xEu) + 1);
+        }
+    }
+    s_full_pos = 7;
+    s_full_neg = (s_bits == 4) ? -8 : -7;
+    s_data_mask = (s_bits == 4) ? 0xFF : 0xEE;
     for (unsigned b = 0; b < 256; b++) {
-        int i = demod_nib(b >> 4), q = demod_nib(b);
+        int i = s_val_lut[b >> 4], q = s_val_lut[b & 0xF];
         s_pwr_lut[b] = (uint8_t)(i * i + q * q);        /* max 128 */
     }
     for (unsigned a = 0; a < 256; a++) {
-        int i0 = demod_nib(a >> 4), q0 = demod_nib(a);
+        int i0 = s_val_lut[a >> 4], q0 = s_val_lut[a & 0xF];
         for (unsigned b = 0; b < 256; b++) {
-            int i1 = demod_nib(b >> 4), q1 = demod_nib(b);
+            int i1 = s_val_lut[b >> 4], q1 = s_val_lut[b & 0xF];
             int dot = i0 * i1 + q0 * q1;
             int cross = i0 * q1 - q0 * i1;              /* arg(s1 * conj(s0)) */
             float ang = atan2f((float)cross, (float)dot);
@@ -43,7 +63,7 @@ void demod_init(void)
 void iq_metrics(const uint8_t* buf, int n, IqMetrics* m)
 {
     memset(m, 0, sizeof(*m));
-    if (!s_ready) demod_init();
+    if (!s_ready) demod_init_bits(s_bits);
     if (n < 2) return;
     if (n > DEMOD_MAX_SAMPLES) n = DEMOD_MAX_SAMPLES;
 
@@ -53,16 +73,19 @@ void iq_metrics(const uint8_t* buf, int n, IqMetrics* m)
     int32_t p_sum = 0, dot_sum = 0, cross_sum = 0;
     int64_t p_sq = 0;
     int32_t clip = 0, coh = 0;
+    unsigned first = buf[0] & s_data_mask;
+    int stuck = 1;
     for (int k = 0; k < n; k++) {
         unsigned b = buf[k];
-        int i = demod_nib(b >> 4), q = demod_nib(b);
+        if ((b & s_data_mask) != first) stuck = 0;
+        int i = s_val_lut[b >> 4], q = s_val_lut[b & 0xF];
         int p = s_pwr_lut[b];
         p_sum += p;
         p_sq += (int64_t)p * p;
-        if (i == 7 || i == -8 || q == 7 || q == -8) clip++;
+        if (i >= s_full_pos || i <= s_full_neg || q >= s_full_pos || q <= s_full_neg) clip++;
         if (k > 0) {
             unsigned a = buf[k - 1];
-            int i0 = demod_nib(a >> 4), q0 = demod_nib(a);
+            int i0 = s_val_lut[a >> 4], q0 = s_val_lut[a & 0xF];
             dot_sum += i0 * i + q0 * q;
             cross_sum += i0 * q - q0 * i;
             int st = s_step_lut[(a << 8) | b];
@@ -102,6 +125,7 @@ void iq_metrics(const uint8_t* buf, int n, IqMetrics* m)
     }
     m->noise = m->env_cv2 > 0.5f;
     m->mod = m->step_std_deg > MOD_STD_DEG;
+    m->stuck = stuck;
 }
 
 /* ---- video line structure ------------------------------------------------- */
@@ -197,7 +221,7 @@ void video_window(const uint8_t* buf, int n, VideoResult* r)
 {
     memset(r, 0, sizeof(*r));
     strcpy(r->std, "none");
-    if (!s_ready) demod_init();
+    if (!s_ready) demod_init_bits(s_bits);
     if (n < 4096) return;
     if (n > DEMOD_MAX_SAMPLES) n = DEMOD_MAX_SAMPLES;
 

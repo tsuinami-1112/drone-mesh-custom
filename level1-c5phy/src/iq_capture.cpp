@@ -1,13 +1,18 @@
 /*
- * PARLIO RX reads the eight MODEM_DIAG lanes at 40 MS/s into one 16 KiB DMA
- * window (409.6 us, 6.4 video lines): one byte per sample, I in the high
- * nibble, Q in the low nibble. Unlike C5VRX this station does not need a
+ * PARLIO RX reads the MODEM_DIAG lanes at 40 MS/s into one 16 KiB DMA window
+ * (409.6 us, 6.4 video lines): one byte per sample, I in the high nibble, Q in
+ * the low nibble. In the default IQ_LANE_BITS 3 build only six lanes are wired
+ * (bits 9..7 of each): byte bits 0 and 4 belong to unassigned PARLIO lines and
+ * demod.c masks them off. Unlike C5VRX this station does not need a
  * gapless stream, so each window is an ordinary one-shot transaction on the
  * stock driver and the CPU looks at it when it is done.
  *
  * Order matters: the PARLIO unit claims the lane GPIOs as inputs when it is
  * created, and c5phy_rf's lane routing then turns them into INPUT_OUTPUT pads
  * driven by the MODEM_DIAG signal. Create the unit first (main.cpp does).
+ * A lane set to -1 in IQ_LANE_GPIOS is left unconnected by the driver (it
+ * skips negative GPIO numbers) and its bit reads as a constant that demod.c
+ * masks off.
  */
 #include "iq_capture.h"
 #include "config.h"
@@ -42,7 +47,7 @@ esp_err_t iq_capture_init(void)
     cfg.clk_out_gpio_num  = GPIO_NUM_NC;
     cfg.valid_gpio_num    = GPIO_NUM_NC;
     for (int i = 0; i < PARLIO_RX_UNIT_MAX_DATA_WIDTH; i++)
-        cfg.data_gpio_nums[i] = (i < IQ_LANE_COUNT) ? (gpio_num_t)lanes[i] : GPIO_NUM_NC;
+        cfg.data_gpio_nums[i] = (i < IQ_LANE_COUNT && lanes[i] >= 0) ? (gpio_num_t)lanes[i] : GPIO_NUM_NC;
     cfg.flags.free_clk    = 1;                           /* sample continuously, nothing gates the clock */
     cfg.flags.clk_gate_en = 0;
 
@@ -51,7 +56,7 @@ esp_err_t iq_capture_init(void)
 
     parlio_rx_soft_delimiter_config_t d = {};
     d.sample_edge    = PARLIO_SAMPLE_EDGE_POS;           /* proven on hardware by C5VRX */
-    d.bit_pack_order = PARLIO_BIT_PACK_ORDER_LSB;        /* bit 0 of each byte = data_gpio_nums[0] = Q[6] */
+    d.bit_pack_order = PARLIO_BIT_PACK_ORDER_LSB;        /* byte bit i = data_gpio_nums[i]: Q6..Q9, I6..I9 */
     d.eof_data_len   = IQ_WINDOW_BYTES;
     d.timeout_ticks  = 0;
     err = parlio_new_rx_soft_delimiter(&d, &s_delim);

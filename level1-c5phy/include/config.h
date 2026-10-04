@@ -12,7 +12,8 @@
  *
  * Every value here can be overridden with -D in platformio.ini build_flags.
  * GPIO numbers are the ESP32-C5 GPIO numbers of the Seeed XIAO_ESP32C5 variant;
- * the D-labels in the comments are what is printed on the silkscreen.
+ * the D-labels in the comments are what is printed on the silkscreen. Every pin
+ * this station uses is a top-side castellation: nothing on the underside.
  */
 #pragma once
 
@@ -34,22 +35,30 @@
 #define FIRMWARE_HW "v3"
 #define FIRMWARE_RECEIVER "c5phy"
 
-/* ---- Pins ------------------------------------------------------------------ */
+/* ---- Pins ------------------------------------------------------------------
+ * The XIAO ESP32-C5 has eleven top-side GPIOs: D0 D1 D2 D3 D4 D5 D6 on the
+ * left, D10 D9 D8 D7 on the right. They are spent as follows:
+ *   D4 D5            UART to the Heltec (fixed, every station tier)
+ *   D7 D8 D9         SP4T control lines V3 V1 V2
+ *   D0 D1 D2 D3 D6 D10   six I/Q lane pads (must stay unconnected)
+ * Eight I/Q lanes (C5VRX) would need the underside GPIO2-5 JTAG pads; this
+ * station gives up the two least-significant lanes instead, see IQ_LANE_BITS. */
 #define PIN_MESH_TX        23   /* D4 -> Heltec RX   (UART 115200, every station tier) */
 #define PIN_MESH_RX        24   /* D5 <- Heltec TX */
-#define PIN_STATUS_LED     27   /* XIAO ESP32-C5 user LED (active low) */
-#define PIN_BOOT_BUTTON    28
+#define PIN_STATUS_LED     27   /* XIAO ESP32-C5 user LED, on the board (active low) */
+#define PIN_BOOT_BUTTON    28   /* on the board */
 
 /* RF switch control lines. The sector table below is a bit pattern over these
  * pins, bit 0 = SWITCH_PINS[0]. Three lines cover a 2-line decoded SP4T
- * (PE42442: V3 spare), a 3-line one, or a tree of SPDTs; a one-hot SP4T
- * (four control inputs) needs a fourth pin, e.g. D6 = GPIO11, and the table
- * {1, 2, 4, 8}. Fill the table in from the bench truth table (stage 6). */
+ * (PE42442: V3 spare), a 3-line one, or a tree of SPDTs. A one-hot SP4T with
+ * four control inputs does not fit the top side next to six lanes; decode
+ * it with two inverters or use a 2-line part. Fill the table in from the
+ * bench truth table (stage 6). */
 #ifndef SWITCH_PIN_COUNT
 #define SWITCH_PIN_COUNT 3
 #endif
 #ifndef SWITCH_PINS
-#define SWITCH_PINS { 25, 8, 9 }            /* D2 = V1, D8 = V2, D9 = V3 */
+#define SWITCH_PINS { 8, 9, 12 }            /* D8 = V1, D9 = V2, D7 = V3 */
 #endif
 #ifndef SECTOR_SWITCH_TABLE
 #define SECTOR_SWITCH_TABLE { 0x0, 0x1, 0x2, 0x3 }   /* N, E, S, W -> V1V2V3 = 000 100 010 110 */
@@ -58,14 +67,35 @@
 #define SWITCH_SETTLE_US 200
 #endif
 
-/* I/Q lanes: each MODEM_DIAG bit is driven out through a GPIO pad and read back
- * from the same pad by PARLIO RX, so the eight pads must stay unconnected
- * (D0, D1, D3, D10 and the underside GPIO2..5 pads). PARLIO data order is
- * Q[6..9] then I[6..9]. C5VRX uses GPIO25 (D2) for the third lane; this
- * station moves that lane to the underside GPIO2 pad so D2 can drive the switch. */
+/* I/Q lanes. Each MODEM_DIAG bit is driven out through a GPIO pad and read
+ * back from the same pad by PARLIO RX, so a lane pad must stay unconnected:
+ * no resistor, no probe, no PCB trace. PARLIO data order is Q[6..9] then
+ * I[6..9]; a lane set to -1 is not wired and reads as a constant.
+ *
+ * IQ_LANE_BITS 3 (default): bits 9..7 of Q and I on six top-side pads. The
+ *   missing bit 6 is read as the midpoint of the two codes it would have told
+ *   apart (demod_init_bits), so the level, coherence and video code run
+ *   unchanged with one bit less resolution. Referenced to its own measured
+ *   noise floor the 3-lane decode tracks the 4-lane one within 0.2 dB (test/host
+ *   sensitivity table); the floor itself (RF_NOISE_POWER) must be measured on
+ *   the bench in the lane mode that is built, and reads a little higher here
+ *   because the decode never returns 0. The clip test fires one code early
+ *   (|x| >= 6 instead of 7, about 1.3 dB), which with GAIN_STEP 6 costs nothing.
+ * IQ_LANE_BITS 4: the eight lanes exactly as C5VRX proved them, which needs
+ *   the underside GPIO2, 3, 4, 5 pads and gives D2 back to a lane. */
 #define IQ_LANE_COUNT 8
+#ifndef IQ_LANE_BITS
+#define IQ_LANE_BITS 3
+#endif
+#if IQ_LANE_BITS != 3 && IQ_LANE_BITS != 4
+#error "IQ_LANE_BITS must be 3 (six top-side lane pads) or 4 (C5VRX's eight lanes)"
+#endif
 #ifndef IQ_LANE_GPIOS
-#define IQ_LANE_GPIOS { 1, 0, 2, 7, 10, 5, 3, 4 }
+#if IQ_LANE_BITS == 4
+#define IQ_LANE_GPIOS { 1, 0, 25, 7, 10, 5, 3, 4 }       /* Q6 D0, Q7 D1, Q8 D2, Q9 D3, I6 D10, I7..I9 GPIO5 3 4 */
+#else
+#define IQ_LANE_GPIOS { -1, 1, 0, 25, -1, 7, 10, 11 }    /* Q7 D0, Q8 D1, Q9 D2, I7 D3, I8 D10, I9 D6 */
+#endif
 #endif
 #define IQ_LANE_DIAG  { 6, 7, 8, 9, 16, 17, 18, 19 }   /* MODEM_DIAG bit per lane */
 
@@ -86,13 +116,19 @@
 #define GAIN_MIN 2
 #endif
 #ifndef GAIN_STEP
-#define GAIN_STEP 12                    /* gain index steps of ~1 dB each */
+#define GAIN_STEP 6                     /* gain index steps of ~1 dB each. A 12 dB step took a
+                                           clipping carrier (amplitude 7) down to 1.75 LSB, under the
+                                           coherence power gate (|s|^2 >= 8): a strong signal lost
+                                           its hit. 6 dB leaves it at 3.5 LSB. */
 #endif
 #ifndef CLIP_MAX_PCT
 #define CLIP_MAX_PCT 3.0f               /* above this share of full-scale samples: step the gain down, retake */
 #endif
 #ifndef RF_NOISE_POWER
-#define RF_NOISE_POWER 2.0f             /* mean I^2+Q^2 with no signal at GAIN_MAX (C5VRX measurement) */
+#define RF_NOISE_POWER 2.0f             /* mean I^2+Q^2 with no signal at GAIN_MAX: C5VRX's 4-lane
+                                           measurement. Measure it on this board in the lane mode built
+                                           (bench stage 1); a dead I/Q bus reads exactly 2.0 in 3-lane
+                                           mode, which the firmware flags as bus_stuck. */
 #endif
 #ifndef WINDOWS_PER_SECTOR
 #define WINDOWS_PER_SECTOR 3            /* level = min over windows (drops Wi-Fi bursts), q = median */

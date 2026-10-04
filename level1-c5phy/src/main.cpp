@@ -64,7 +64,7 @@ static int      s_hold_sector = 0;
 static int      s_hold_gain = -1;       // -1 = automatic
 static int      s_gain = GAIN_MAX;      // PHY gain index currently applied
 
-static uint32_t s_sweeps = 0, s_tune_fail = 0, s_video_seen = 0;
+static uint32_t s_sweeps = 0, s_tune_fail = 0, s_video_seen = 0, s_bus_stuck = 0;
 static uint32_t s_usb_drop = 0, s_mesh_drop = 0;
 static unsigned s_seq = 0;
 static float    s_nf_level_min = 1e9f;  // quietest sector level this sweep
@@ -183,6 +183,7 @@ static bool capture_metrics(IqMetrics* m, uint8_t** raw)
     uint8_t* buf = nullptr;
     if (iq_capture_window(&buf, 20) != ESP_OK) return false;
     iq_metrics(buf, IQ_WINDOW_BYTES, m);
+    if (m->stuck) s_bus_stuck++;          // the diag bus is not streaming: every sample identical
     if (raw) *raw = buf;
     return true;
 }
@@ -192,7 +193,8 @@ static bool capture_metrics(IqMetrics* m, uint8_t** raw)
 static bool measure_window(int start_gain, bool allow_step, IqMetrics* m, int* gain_out)
 {
     int g = start_gain;
-    for (int attempt = 0; attempt < 6; attempt++) {
+    const int max_steps = (GAIN_MAX - GAIN_MIN) / GAIN_STEP + 2;
+    for (int attempt = 0; attempt < max_steps; attempt++) {
         set_gain(g);
         if (!capture_metrics(m, nullptr)) return false;
         if (allow_step && m->clip_pct > CLIP_MAX_PCT && g > GAIN_MIN) { g -= GAIN_STEP; continue; }
@@ -387,6 +389,7 @@ static void send_heartbeat(bool usb, bool mesh)
     h.fe_gain_db = RF_FRONTEND_GAIN_DB;
     h.tune_fail = s_tune_fail;
     h.cap_err = iq_capture_errors();
+    h.bus_stuck = s_bus_stuck;
     h.sweeps = s_sweeps;
     h.usb_drop = s_usb_drop;
     h.mesh_drop = s_mesh_drop;
@@ -408,12 +411,12 @@ static void print_ready_line()
     usb_printf("{\"info\":\"c5phy v3 station ready\",\"node_id\":\"%s\",\"receiver\":\"%s\",\"hw\":\"%s\","
                "\"channels\":%d,\"sectors\":%d,\"heading\":%d,\"fe_gain_db\":%.1f,"
                "\"threshold_dbm\":%.1f,\"threshold_level_db\":%.1f,\"q_min\":%d,\"peak_pick\":%d,"
-               "\"video\":%d,\"bw40\":%d,\"gain_max\":%d,\"window_us\":%d,\"mesh_uart\":\"D4 TX / D5 RX 115200\","
-               "\"phy_set_freq\":%s,\"rf\":%s}",
+               "\"video\":%d,\"bw40\":%d,\"gain_max\":%d,\"window_us\":%d,\"iq_lane_bits\":%d,"
+               "\"mesh_uart\":\"D4 TX / D5 RX 115200\",\"phy_set_freq\":%s,\"rf\":%s}",
                s_node_id, FIRMWARE_RECEIVER, FIRMWARE_HW, fpv_channel_count(), SECTOR_COUNT, STATION_HEADING_DEG,
                (double)RF_FRONTEND_GAIN_DB, (double)threshold_dbm(), (double)DETECT_LEVEL_DB, Q_MIN, PEAK_PICK,
                VIDEO_CHECK, rf_bw40() ? 1 : 0, GAIN_MAX, (int)(IQ_WINDOW_BYTES * 1000000ULL / IQ_SAMPLE_RATE_HZ),
-               rf_has_phy_set_freq() ? "true" : "false", s_rf_ok ? "true" : "false");
+               demod_lane_bits(), rf_has_phy_set_freq() ? "true" : "false", s_rf_ok ? "true" : "false");
 }
 
 // =============================================================================
@@ -472,12 +475,12 @@ static void print_status()
     const FpvChannel* c = s_hold_ch >= 0 ? fpv_channel(s_hold_ch) : nullptr;
     usb_printf("{\"info\":\"status\",\"node_id\":\"%s\",\"mode\":\"%s\",\"rf\":%s,\"rf_error\":\"%s\","
                "\"ch\":\"%c%d\",\"freq_mhz\":%u,\"wifi_ch\":%u,\"sector\":%d,\"gain\":%d,\"gain_mode\":\"%s\",\"bw40\":%d,"
-               "\"captures\":%u,\"cap_err\":%u,\"cap_err_last\":\"%s\",\"tune_fail\":%u,\"sweeps\":%u,\"video_seen\":%u,"
+               "\"captures\":%u,\"cap_err\":%u,\"cap_err_last\":\"%s\",\"bus_stuck\":%u,\"tune_fail\":%u,\"sweeps\":%u,\"video_seen\":%u,"
                "\"nf_dbm\":%.0f,\"usb_drop\":%u,\"mesh_drop\":%u,\"mesh_queued\":%d,\"heap\":%u,\"uptime_s\":%u}",
                s_node_id, s_mode == MODE_SCAN ? "scan" : "hold", s_rf_ok ? "true" : "false", s_rf_ok ? "" : rf_last_call(),
                c ? c->band : '-', c ? c->number : 0, rf_freq_mhz(), rf_wifi_channel(),
                s_mode == MODE_HOLD ? s_hold_sector : switch_current(), s_gain, s_hold_gain >= 0 ? "fixed" : "auto",
-               rf_bw40() ? 1 : 0, iq_capture_count(), iq_capture_errors(), iq_capture_last_error(), s_tune_fail, s_sweeps,
+               rf_bw40() ? 1 : 0, iq_capture_count(), iq_capture_errors(), iq_capture_last_error(), s_bus_stuck, s_tune_fail, s_sweeps,
                s_video_seen, (double)s_nf_dbm, s_usb_drop, s_mesh_drop, s_mesh_count,
                (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), millis() / 1000);
 }
@@ -610,10 +613,10 @@ static void hold_service()
     const FpvChannel* c = fpv_channel(s_hold_ch);
     usb_printf("{\"info\":\"bench\",\"ch\":\"%c%d\",\"freq_mhz\":%u,\"wifi_ch\":%u,\"sector\":%d,\"gain\":%d,"
                "\"level_db\":%.1f,\"rssi_dbm\":%.1f,\"p_mean\":%.2f,\"q_phase\":%.0f,\"clip\":%.1f,\"cfo_khz\":%.0f,"
-               "\"mod\":%d,\"noise\":%d,\"step_std\":%.1f,\"nf_dbm\":%.0f,\"captures\":%u,\"cap_err\":%u}",
+               "\"mod\":%d,\"noise\":%d,\"stuck\":%d,\"step_std\":%.1f,\"nf_dbm\":%.0f,\"captures\":%u,\"cap_err\":%u}",
                c->band, c->number, c->freq_mhz, rf_wifi_channel(), s_hold_sector, g,
                (double)level, (double)dbm_from_level(level), (double)m.p_mean, (double)m.q_phase_pct, (double)m.clip_pct,
-               (double)m.cfo_khz, m.mod, m.noise, (double)m.step_std_deg, (double)s_nf_dbm, iq_capture_count(), iq_capture_errors());
+               (double)m.cfo_khz, m.mod, m.noise, m.stuck, (double)m.step_std_deg, (double)s_nf_dbm, iq_capture_count(), iq_capture_errors());
 }
 
 static void service_io()
@@ -650,7 +653,7 @@ void setup()
     delay(100);
 
     make_node_id();
-    demod_init();
+    demod_init_bits(IQ_LANE_BITS);
     switch_init();
 
     // PARLIO first: it claims the lane pads as inputs, the PHY routing then

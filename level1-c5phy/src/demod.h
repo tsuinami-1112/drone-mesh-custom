@@ -23,6 +23,8 @@ typedef struct {
     float step_std_deg;  /* std of the 0.8 us box-averaged phase step, degrees/sample */
     int   noise;         /* 1 = envelope looks like noise */
     int   mod;           /* 1 = FM deviation present on the carrier (video swing, not bare CW) */
+    int   stuck;         /* 1 = every sample identical on the wired lanes: the I/Q bus is not
+                            streaming (a dead bus reads p_mean 2.0 in 3-lane mode, like noise) */
 } IqMetrics;
 
 typedef struct {
@@ -47,12 +49,20 @@ typedef struct {
     int  windows;
 } VideoVerdict;
 
-/* Builds the 64 KiB phase-step lookup table. Call once. */
-void demod_init(void);
+/* Builds the decode tables and the 64 KiB phase-step lookup table. Call once.
+ * bits = 4: all four lanes of each component wired (C5VRX layout).
+ * bits = 3: the bit-6 lanes are not wired; each nibble's bit 0 is ignored and
+ *           the value is taken as the midpoint of the two codes it merges,
+ *           so the scale (and every threshold) stays the same. */
+void demod_init_bits(int bits);
+/* Decoded I or Q value of one nibble under the current lane mode. */
+int  demod_decode_nibble(unsigned nib);
+int  demod_lane_bits(void);
 void iq_metrics(const uint8_t* buf, int n, IqMetrics* m);
 void video_window(const uint8_t* buf, int n, VideoResult* r);
 void video_verdict(const VideoResult* r, int n, int min_windows, VideoVerdict* v);
 
+/* Raw 4-bit two's complement nibble -> int (hardware code, no lane mode). */
 static inline int demod_nib(unsigned v) { return (int)((v & 0xFu) ^ 8u) - 8; }
 
 #ifdef __cplusplus
