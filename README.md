@@ -23,6 +23,12 @@
 
 ## Overview
 
+A solar-powered, 24-7 drone detection network communicating over a private mesh. Intended for around-the-clock area protection and privacy.
+
+Developed in partnership with our friends in Ukraine. Special thanks to:
+"Alik", 93rd OMBr
+"Ivan", 427th Unmanned Aerial Brigade
+
 ESP32 detection stations pick up drone broadcasts (Open Drone ID per ASTM
 F3411 and ASD-STAN EN 4709-002 over BLE and WiFi, DJI DroneID, MAVLink, and
 WiFi/BLE fingerprints), relay them over a Meshtastic LoRa mesh, and a Flask
