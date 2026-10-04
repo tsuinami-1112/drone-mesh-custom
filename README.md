@@ -25,7 +25,7 @@
 
 A solar-powered, 24-7 drone detection network communicating over a private mesh. Intended for around-the-clock area protection and privacy.
 
-Developed in partnership with our friends in Ukraine. Special thanks to:
+Developed in partnership with our friends in the Armed Forces of Ukraine. Special thanks to:
 
 "Alik", 93rd OMBr
 
@@ -350,6 +350,8 @@ MIT.
 
 ## Acknowledgments
 
+- **"Alik"** - UAV operator, 93rd OMBr "Black Ravens", AFU 🇺🇦
+- **"Ivan"** - ex-UAV operator, 427th Unmanned Aerial Brigade "Rarog", AFU 🇺🇦
 - **Cemaxecuter** / **alphafox02** - original RID firmware
 - **colonelpanichacks** - the upstream [drone-mesh-mapper](https://github.com/colonelpanichacks/drone-mesh-mapper) this project is built on
 - **Luke Switzer** - firmware contributions
