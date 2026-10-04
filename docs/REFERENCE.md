@@ -1,11 +1,10 @@
-# Drone Mesh Mapper - Reference
+# Standalone Mapper - Reference
 
-The detail that used to live in the main README. For the hardware, wiring,
-flashing and getting the mapper running, start with the
-[README](../README.md); come here for the rest.
+Details for the standalone mapper branch. To get it running, start with the
+[README](../README.md). The station hardware, the firmware and the full
+project documentation live on the
+[`level2-main`](https://github.com/tsuinami-1112/drone-mesh-custom/tree/level2-main) branch.
 
-- [Detection coverage](#detection-coverage)
-- [Firmware variants and build options](#firmware-variants-and-build-options)
 - [Mapper features](#mapper-features)
 - [Raspberry Pi installer](#raspberry-pi-installer)
 - [Direct Meshtastic radio input](#direct-meshtastic-radio-input)
@@ -15,113 +14,6 @@ flashing and getting the mapper running, start with the
 - [Performance](#performance)
 - [More troubleshooting](#more-troubleshooting)
 - [Project layout](#project-layout)
-
----
-
-## Detection coverage
-
-Everything below is passive and runs on the stock XIAO ESP32 radios, no extra
-hardware:
-
-| Layer | How | What you get |
-|---|---|---|
-| **Remote ID** - Open Drone ID per ASTM F3411 and ASD-STAN EN 4709-002 | BLE 4 legacy adverts, **BLE 5 Long Range** extended adverts, WiFi NAN action frames, WiFi Beacon vendor IEs | Serial number **and** registration ID (both Basic IDs), position, altitude, height, speed, heading, operator position, **Operator ID**, EU category/class, Self ID text, UA type |
-| **DJI DroneID** (proprietary) | Beacon vendor IE of WiFi-link DJI aircraft (Spark, Mavic Pro WiFi mode, Mavic Air, Mavic Mini / Mini SE) | Serial, position, home point, pilot phone position, model. Broadcast worldwide, independent of Remote ID rules |
-| **MAVLink** telemetry | UDP/TCP inside 802.11 data frames on **open** WiFi (ArduPilot / PX4 bridges, SITL, companion boards) | Position, altitude, heading, armed state, vehicle type, autopilot, and any OPEN_DRONE_ID_* messages on the link |
-| **Fingerprints** (heuristic) | SSID patterns, IEEE MAC prefixes (24/28/36-bit), BLE names and company IDs | "Possible drone" for aircraft and controllers that broadcast nothing: DJI/Ryze, Parrot, Skydio, Autel, Yuneec, Hubsan, Holy Stone, Potensic, Snaptain, Ruko, FIMI, PowerVision, HOVERAir, Walkera, toy quads, FPV goggles, telemetry bridges. Confidence-tagged, rate-limited, never with a position |
-
-The WiFi sniffer spends most of its time on channel 6 (the Remote ID channel)
-and makes short excursions across channels 1-13 to catch access points that
-sit elsewhere. Full details, the JSON schema and the limits are in
-[`firmware-common/README.md`](../firmware-common/README.md).
-
-### Outside the United States
-
-The mapper decodes what the aircraft broadcasts and never consults a national
-registry, so it works the same in every country. The identity section of a
-drone's popup shows what matters where you are:
-
-| Region | What is broadcast | What the UI shows |
-|---|---|---|
-| **EU / EEA, Switzerland, Norway** (EN 4709-002 direct remote ID, classes C1-C3, C5, C6) | serial number, **Operator Registration Number** (`FIN87astrdge12k8`, the 3 secret characters are never broadcast), EU category and class, operator position; BLE 4, BLE 5 Long Range, NAN or Beacon | `OPERATOR ID`, `SERIAL NUMBER`, `EU CATEGORY` (Open C1 ...) |
-| **United Kingdom** (mandatory from 2026) | `GBR-OP-...` operator ID + serial | `OPERATOR ID`, `SERIAL NUMBER` |
-| **Japan** (since June 2022) | registration `JU...` as Basic ID type 2 **plus** the serial as type 1, authentication, BLE 5 LR / Beacon / NAN | `REGISTRATION ID` and `SERIAL NUMBER` side by side |
-| **USA** | serial or session ID, operator position | `SERIAL NUMBER` / `SESSION ID` |
-| **China** | proprietary GB 42590 / GB 46750 formats, not decoded; DJI aircraft still show through DJI DroneID and fingerprints | `DJI DroneID`, `WiFi fingerprint` |
-| **Everywhere** | WiFi-link DJI aircraft, toy and FPV quads, telemetry bridges | DJI DroneID and fingerprint entries (dashed amber in the list) |
-
-Fingerprint hits are heuristics: a DJI MAC prefix is also an Osmo camera, and
-a phone that once joined a Tello keeps probing for it. They are shown with
-their confidence and without a position so they cannot be mistaken for a
-decoded Remote ID track.
-
----
-
-## Firmware variants and build options
-
-The README covers the recommended XIAO ESP32-S3 builds. Every variant builds
-with PlatformIO and shares one detection library (`firmware-common/detect`)
-that PlatformIO pulls in through `lib_extra_dirs`:
-
-| Path | Target | Notes |
-|---|---|---|
-| `node-mode-dualcore/` | ESP32-S3 dual-core | Remote node + home dedup node (`pio run -e remote_node` / `-e home_node`) |
-| `remoteid-mesh-dualcore/` | ESP32-S3 / ESP32-C6 | BLE + WiFi concurrent detection, mesh relay |
-| `remoteid-mesh/` | ESP32-C3 / ESP32-S3 | WiFi-only original variant, GPIO6/7 pinout |
-| `remoteid-c5-5g/` | ESP32-C5 (+ S3 fallback) | Dual band: 2.4 GHz plus the UNII-3 5GHz Remote ID channels (149-165) |
-
-```bash
-cd remoteid-mesh-dualcore
-pio run -e seeed_xiao_esp32s3 -t upload
-
-# parsers are unit-tested on the host, no board needed
-cd ../firmware-common/test && make
-```
-
-The BLE variants use `h2zero/NimBLE-Arduino` with extended advertising enabled
-(`-D CONFIG_BT_NIMBLE_EXT_ADV=1`): the core's built-in BLE library cannot scan
-the coded PHY, and BLE 5 Long Range is what most European and Japanese
-add-on Remote ID modules transmit.
-
-### Detection knobs
-
-Add to the environment's `build_flags` in `platformio.ini`:
-
-| Flag | Default | Effect |
-|---|---|---|
-| `-DDETECT_WIFI_HOP=0` | hopping on | Stay on channel 6 only: maximum Remote ID duty cycle, no DJI WiFi-link / toy-drone / bridge access points on other channels |
-| `-DDETECT_HOME_DWELL_MS=700` | 700 | Time on channel 6 between excursions |
-| `-DDETECT_AWAY_DWELL_MS=250` | 250 | Time on each other channel |
-| `-DDETECT_MAVLINK=0` | on | Do not capture data frames (MAVLink on open WiFi) |
-| `-DDETECT_FINGERPRINT=0` | on | Drop heuristic hits (devices without Remote ID) |
-
-`remoteid-c5-5g` uses shorter dwell defaults (400 / 120 ms); each
-`platformio.ini` lists its own.
-
-### UART pins by variant
-
-Every variant talks to the mesh radio at 115200 baud. Wire by GPIO number;
-the XIAO D-labels differ from board to board:
-
-| Firmware | UART GPIOs | XIAO ESP32-S3 | XIAO ESP32-C3 |
-|---|---|---|---|
-| `node-mode-dualcore`, `remoteid-mesh-dualcore`, `remoteid-c5-5g` | TX GPIO5, RX GPIO6 | TX D4, RX D5 | - |
-| `remoteid-mesh` | TX GPIO6, RX GPIO7 | TX D5, RX D8 | TX D4, RX D5 |
-
-On the XIAO ESP32-C6 and ESP32-C5, GPIO5 and GPIO6 are not among the
-D0-D10 edge pins. Check Seeed's pinout for those boards before wiring.
-
-### Prebuilt binaries and the web flasher
-
-There is no web flasher for this firmware. `flasher/` holds a retired web
-flasher page that isn't published anywhere, and a web flasher from another
-project installs that project's firmware, not this one. Build and flash with
-PlatformIO as the [README](../README.md#build-and-flash-the-firmware)
-describes. It takes a few minutes the first time.
-
-The images under `flasher/firmware/` and `firmware/` predate the detection
-expansion and are no longer maintained. They only decode US-style Remote ID
-on channel 6. They're kept for reference: don't flash them onto new stations.
 
 ---
 
@@ -171,25 +63,27 @@ on channel 6. They're kept for reference: don't flash them onto new stations.
 
 ## Raspberry Pi installer
 
-`RPI/install_rpi.py` sets the mapper up on the computer the home station plugs
+`RPI/install_rpi.py` sets the mapper up on the computer the base radio plugs
 into (a Raspberry Pi running Raspberry Pi OS, or any Debian-based Linux) and
 makes it start on every boot. It:
 
-1. downloads this repository from GitHub (the default branch, `level2-main`)
-   and unpacks it into `~/mesh-mapper`
+1. downloads a branch of this repository from GitHub and unpacks it into
+   `~/mesh-mapper`. For the standalone mapper, pass
+   `--branch claude/standalone-mapper-meshtastic`; without `--branch` it
+   installs the default branch, `level2-main`
 2. creates a Python virtual environment in `~/mesh-mapper/.venv` and installs
    `requirements.txt` into it
 3. adds an `@reboot` cron job for your user that starts the mapper from that
    environment
 
 ```bash
-wget https://raw.githubusercontent.com/tsuinami-1112/drone-mesh-custom/HEAD/RPI/install_rpi.py
-python3 install_rpi.py
+wget https://raw.githubusercontent.com/tsuinami-1112/drone-mesh-custom/claude/standalone-mapper-meshtastic/RPI/install_rpi.py
+python3 install_rpi.py --branch claude/standalone-mapper-meshtastic
 ```
 
 Run it as your normal user, not with `sudo`: the files and the cron job belong
 to whoever runs it. That user needs to be in the `dialout` group to open the
-XIAO's serial port. The installer warns you if it isn't; fix it with
+radio's (or an ESP32's) serial port. The installer warns you if it isn't; fix it with
 `sudo usermod -a -G dialout $USER` and log in again. If the installer reports
 that `venv` is missing, run `sudo apt install python3-venv` and run the
 installer again.
@@ -201,26 +95,49 @@ installer again.
 | `--no-cron` | off | Don't add the boot-time cron job |
 | `--force` | off | Update an existing install without asking |
 
-When it finishes, open `http://<the Pi's IP>:5000` from another device and
-pick the XIAO's serial port. The mapper logs to `~/mesh-mapper/mapper.log`.
+The boot job starts the mapper with no options, so it uses the radios saved in
+`meshtastic_config.json`. Save yours once, either by running the mapper by hand
+with `--mesh` (stop it with Ctrl+C afterwards) or through the API while it
+runs:
+
+```bash
+cd ~/mesh-mapper && .venv/bin/python mesh-mapper.py --mesh /dev/ttyACM0
+curl -X POST -H 'Content-Type: application/json' \
+     -d '{"links": ["tcp:192.168.1.50"]}' http://localhost:5000/api/meshtastic
+```
+
+Then open `http://<the Pi's IP>:5000` from another device. The mapper logs to
+`~/mesh-mapper/mapper.log`.
 
 - **Update:** run the installer again. It replaces the program files and
   keeps your detections, settings and cached map tiles. Then restart the
   mapper (or reboot) so the new version is loaded.
 - **Restart after a crash:** the cron job only starts the mapper at boot. To
-  have it restarted whenever it exits, install with `--no-cron` and use the
-  systemd service from the [README Quick Start](../README.md#quick-start),
-  with `WorkingDirectory=/home/<user>/mesh-mapper` and
-  `ExecStart=/home/<user>/mesh-mapper/.venv/bin/python mesh-mapper.py`.
+  have it restarted whenever it exits, install with `--no-cron` and add a
+  systemd service instead (replace `pi` with your user), then
+  `sudo systemctl enable --now mesh-mapper`:
+
+  ```ini
+  # /etc/systemd/system/mesh-mapper.service
+  [Unit]
+  Description=Drone Mesh Mapper
+  After=network.target
+
+  [Service]
+  User=pi
+  WorkingDirectory=/home/pi/mesh-mapper
+  ExecStart=/home/pi/mesh-mapper/.venv/bin/python mesh-mapper.py
+  Restart=always
+  RestartSec=5
+
+  [Install]
+  WantedBy=multi-user.target
+  ```
 - **Remove:** `crontab -e`, delete the `mesh-mapper.py` line, then delete
   `~/mesh-mapper`.
 
 Not on a Debian-based system, or prefer to see each step? The manual install
-in the [README Quick Start](../README.md#quick-start) does the same thing by
-hand.
-
-`RPI/rpi_dependancies.py` is an older helper that installs the mapper's Python
-packages system-wide. The installer doesn't use it and you don't need it.
+in the [README](../README.md#set-it-up) does the same thing by hand.
 
 ---
 
@@ -585,27 +502,24 @@ tail -f mapper.log             # what's it saying?
 ## Project layout
 
 ```
-drone-mesh-custom/
-|-- mesh-mapper.py              # Flask + SocketIO server, all UI inline
-|-- requirements.txt
+drone-mesh-custom/  (claude/standalone-mapper-meshtastic)
+|-- mesh-mapper.py              # Flask + SocketIO server, all UI inline, Meshtastic radio input
+|-- requirements.txt            # includes meshtastic, for --mesh
 |-- docs/
 |   `-- REFERENCE.md            # This file
 |-- static/                     # Vendored UI assets (offline-capable)
 |   |-- leaflet/                # Leaflet 1.9.4
+|   |-- leaflet-draw/           # Geofence drawing
 |   |-- maplibre/               # MapLibre GL 4.7.1 + leaflet plugin
 |   |-- socketio/               # Socket.IO client
 |   |-- fonts/                  # Orbitron TTF + @font-face CSS
 |   `-- styles/                 # MapLibre vector styles
 |-- tiles/                      # MBTiles files (created on first run, auto-discovered)
-|-- RPI/                        # Raspberry Pi installer (install_rpi.py)
-|-- firmware-common/            # Shared detection library + host unit tests
-|   |-- detect/                 #   Open Drone ID, DJI DroneID, MAVLink, fingerprints
-|   `-- test/                   #   make -> builds with gcc and runs synthetic-frame tests
-|-- node-mode-dualcore/         # ESP32-S3 remote node + home node firmware
-|-- remoteid-mesh-dualcore/     # ESP32-S3 / C6 BLE+WiFi firmware
-|-- remoteid-mesh/              # WiFi-only firmware (C3 / S3)
-|-- remoteid-c5-5g/             # ESP32-C5 dual-band firmware
-|-- mapper_test/                # Mapper test scripts, fake Meshtastic radio
-|-- firmware/                   # Legacy prebuilt binaries (predate the detection expansion)
-`-- flasher/                    # Retired web flasher page and its legacy images (not published)
+|-- RPI/
+|   `-- install_rpi.py          # Raspberry Pi installer + boot-time start
+`-- mapper_test/
+    |-- fake_meshtastic_radio.py   # Fake radio (USB pty or TCP) with a demo mesh
+    |-- test_mesh_direct.py        # End-to-end test of the direct radio input
+    |-- level1_bearing_sim.py      # Level 1 bearing stations over the HTTP API
+    `-- mapper_test.py             # Simulated Remote ID drones over the HTTP API
 ```

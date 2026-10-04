@@ -5,19 +5,6 @@
 .vscode/
 .idea/
 
-# ── PlatformIO build artifacts ─────────────────────────────
-*.pio/
-.pio/
-*.pio/build/
-node-mode-dualcore/.pio/build/
-remoteid-mesh-dualcore/.pio/build/
-remoteid-mesh/.pio/build/
-remoteid-c5-5g/.pio/build/
-
-# ── Host unit tests of the shared detection library ────────
-firmware-common/test/test_detect
-firmware-common/test/json_samples.txt
-
 # ── Python ─────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
