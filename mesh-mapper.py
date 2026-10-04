@@ -1720,12 +1720,21 @@ BEARINGS_LOCK = threading.Lock()  # serial reader threads and request threads bo
 BEARING_FUSE_WINDOW_S = 30      # bearings older than this take no part in a fix
 BEARING_OBS_KEEP_S = 300        # observations older than this are forgotten
 BEARING_RAY_KM = 3.0            # ray length drawn on the map
-ANALOG_FM_MERGE_MHZ = 4         # reports within this many MHz are the same emitter (R3 5732 / B1 5733 / F1 5740)
+ANALOG_FM_MERGE_MHZ = 10        # reports within this many MHz are the same emitter: the R3 5732 / B1 5733 /
+                                # F1 5740 cluster spans 8 MHz. The station itself folds hits within
+                                # PEAK_PICK_MHZ (20) of a stronger one, so two stations can still label one
+                                # carrier with any channel of the cluster; this window joins them again.
+MAX_STATIONS = 64               # auto-registration stops here (a flood of node_ids is not a deployment)
 BEARING_MIN_CROSSING_DEG = 8    # bearings closer to parallel than this give no fix
 BEARING_MAX_RANGE_M = 20000     # a fix further than this from a station is rejected
+BEARING_OUTLIER_DEG = 20        # a line missing the fix by more than max(3 sigma, this) is dropped
 STATION_HEARTBEAT_FIELDS = ('receiver', 'hw', 'heading', 'scanning', 'channels', 'sectors', 'sweeps',
-                            'video_seen', 'tune_fail', 'cap_err', 'nf_dbm', 'temp_c', 'uptime_s',
-                            'threshold_dbm', 'fe_gain_db')
+                            'video_seen', 'tune_fail', 'cap_err', 'bus_stuck', 'alias_drop', 'usb_drop',
+                            'mesh_drop', 'nf_dbm', 'temp_c', 'uptime_s', 'threshold_dbm', 'fe_gain_db')
+STATION_TEXT_FIELDS = ('receiver', 'hw')
+RESERVED_IDS = ('__proto__', 'constructor', 'prototype')
+last_fix = {}                   # mac -> (fix dict, epoch s): a fix is held through a short gap instead of flickering
+app.config.setdefault('MAX_CONTENT_LENGTH', 1 << 20)   # one JSON line, not a megabyte of 'bearings'
 BEARING_SIGMA_MIN_DEG = 2.0
 BEARING_SIGMA_MAX_DEG = 60.0
 import re as _re
@@ -1734,8 +1743,29 @@ _NODE_ID_RE = _re.compile(r'[^A-Za-z0-9_.:-]')
 
 def _norm_node_id(value):
     # node_id as used for the station key everywhere (API, heartbeat, detection):
-    # printable id characters only, at most 32 of them.
-    return _NODE_ID_RE.sub('', str(value or '').strip())[:32]
+    # a string of id characters only, at most 32 of them; never a JSON object or
+    # number, never a name that is special to a JavaScript object.
+    if not isinstance(value, str):
+        return ''
+    nid = _NODE_ID_RE.sub('', value.strip())[:32]
+    return '' if nid in RESERVED_IDS else nid
+
+
+def _norm_text(value, limit=32):
+    # Short device-supplied text (receiver, hw): same character class as node_id
+    if not isinstance(value, str):
+        return None
+    return _NODE_ID_RE.sub('', value.strip())[:limit] or None
+
+
+def _reject_constant(name):
+    raise ValueError(f'{name} is not valid JSON')
+
+
+def _json_loads_strict(text):
+    # Python's json accepts NaN/Infinity, which jsonify then re-emits as tokens no
+    # browser can parse; one such value would stop every client's map updates.
+    return json.loads(text, parse_constant=_reject_constant)
 
 
 def _safe_float(value, default=None):
@@ -1762,7 +1792,8 @@ def _auto_station(node_id, heading, receiver):
 
 def _stations_snapshot():
     with STATIONS_LOCK:
-        return {k: dict(v) for k, v in STATIONS.items()}, dict(station_status)
+        return ({k: dict(v) for k, v in STATIONS.items()},
+                {k: dict(v) for k, v in station_status.items()})
 
 
 def load_stations():
@@ -1771,7 +1802,7 @@ def load_stations():
         return
     try:
         with open(STATIONS_FILE, "r") as f:
-            data = json.load(f)
+            data = _json_loads_strict(f.read())
         if isinstance(data, dict):
             STATIONS = {}
             for k, v in data.items():
@@ -1792,13 +1823,23 @@ def load_stations():
                     v['heading_auto'] = bool(v.pop('auto', False))
                 STATIONS[nid] = v
     except Exception as e:
-        logger.error(f"Error loading {STATIONS_FILE}: {e}")
+        # Keep the damaged file instead of letting the next heartbeat overwrite the
+        # surveyed positions; the operator can repair it by hand.
+        kept = STATIONS_FILE + '.corrupt-' + datetime.now().strftime('%Y%m%d-%H%M%S')
+        try:
+            os.replace(STATIONS_FILE, kept)
+        except OSError:
+            kept = STATIONS_FILE
+        logger.error(f"Error loading {STATIONS_FILE}: {e} - file kept as {kept}; station positions must be re-entered")
 
 
 def save_stations():
+    # Called with STATIONS_LOCK held. Write-then-rename like the other stores.
     try:
-        with open(STATIONS_FILE, "w") as f:
-            json.dump(STATIONS, f, indent=2)
+        tmp = STATIONS_FILE + '.tmp'
+        with open(tmp, "w") as f:
+            json.dump(STATIONS, f, indent=2, allow_nan=False)
+        os.replace(tmp, STATIONS_FILE)
     except Exception as e:
         logger.error(f"Error saving {STATIONS_FILE}: {e}")
 
@@ -1827,11 +1868,30 @@ def register_station_heartbeat(hb, source=None):
     if not node_id:
         return
     heading = _safe_float(hb.get('heading'))
+    receiver = _norm_text(hb.get('receiver'))
     created = False
+    status = {}
+    for k in STATION_HEARTBEAT_FIELDS:
+        if k not in hb:
+            continue
+        v = hb.get(k)
+        if k in STATION_TEXT_FIELDS:
+            v = _norm_text(v)
+        elif isinstance(v, bool):
+            pass
+        else:
+            v = _safe_float(v)
+        if v is not None:
+            status[k] = v
+    status['last_seen'] = time.time()
+    status['source'] = str(source)[:64] if source is not None else None
     with STATIONS_LOCK:
         st = STATIONS.get(node_id)
         if st is None:
-            st = _auto_station(node_id, heading, hb.get('receiver'))
+            if len(STATIONS) >= MAX_STATIONS:
+                logger.debug(f"Station registry full ({MAX_STATIONS}); heartbeat from {node_id} not registered")
+                return
+            st = _auto_station(node_id, heading, receiver)
             STATIONS[node_id] = st
             created = True
             save_stations()
@@ -1839,12 +1899,9 @@ def register_station_heartbeat(hb, source=None):
             # Heading not set by hand yet: follow what the installer flashed
             st['heading_deg'] = heading % 360.0
             save_stations()
-    status = {k: hb.get(k) for k in STATION_HEARTBEAT_FIELDS if k in hb}
-    status['last_seen'] = time.time()
-    status['source'] = source
-    station_status[node_id] = status
+        station_status[node_id] = status
     if created:
-        logger.info(f"Level 1 station {node_id} ({hb.get('receiver')}) registered from its heartbeat; set its position in the LEVEL 1 STATIONS panel")
+        logger.info(f"Level 1 station {node_id} ({receiver}) registered from its heartbeat; set its position in the LEVEL 1 STATIONS panel")
     emit_stations()
 
 
@@ -1889,18 +1946,89 @@ def _analog_canonical_mac(det, now):
     return best or mac
 
 
+def _solve_bearing_lines(lines):
+    # One weighted-least-squares pass pair over the given lines (each a dict with
+    # lat, lon, theta, sigma, node_id). Returns the fix with the list of lines that
+    # the returned solution contradicts, worst first: a line that misses the fix by
+    # more than max(3 sigma, BEARING_OUTLIER_DEG) (a station the drone is over, a
+    # bearing from the wrong aircraft; 'behind the station' is the >90 degree case)
+    # or whose range to the fix is implausible. None when nothing crosses at all.
+    n = len(lines)
+    lat0 = sum(l['lat'] for l in lines) / n
+    lon0 = sum(l['lon'] for l in lines) / n
+    kx = 111320.0 * math.cos(math.radians(lat0))
+    ky = 110540.0
+    for l in lines:
+        l['px'], l['py'] = (l['lon'] - lon0) * kx, (l['lat'] - lat0) * ky
+        l['dx'], l['dy'] = math.sin(l['theta']), math.cos(l['theta'])    # unit direction, east/north
+    max_cross = max(abs(math.sin(lines[i]['theta'] - lines[j]['theta']))
+                    for i in range(n) for j in range(i + 1, n))
+    if max_cross < math.sin(math.radians(BEARING_MIN_CROSSING_DEG)):
+        return None                                  # every pair near-parallel: no crossing
+
+    def solve(weights):
+        a00 = a01 = a11 = b0 = b1 = 0.0
+        for l, w in zip(lines, weights):
+            nx, ny = l['dy'], -l['dx']                     # unit normal
+            c = nx * l['px'] + ny * l['py']
+            a00 += w * nx * nx
+            a01 += w * nx * ny
+            a11 += w * ny * ny
+            b0 += w * nx * c
+            b1 += w * ny * c
+        det = a00 * a11 - a01 * a01
+        if abs(det) < 1e-18:
+            return None
+        return ((b0 * a11 - b1 * a01) / det, (a00 * b1 - a01 * b0) / det, a11 / det, a00 / det)
+
+    first = solve([1.0 / (l['sigma'] ** 2) for l in lines])
+    if first is None:
+        return None
+    x, y = first[0], first[1]
+    # Second pass: weight every line by its cross-range uncertainty at the range
+    # just found (r * tan sigma); the covariance of that solve is the error radius.
+    weights = []
+    for l in lines:
+        r = math.hypot(x - l['px'], y - l['py'])
+        s_cross = max(5.0, r * math.tan(l['sigma']))
+        weights.append(1.0 / (s_cross * s_cross))
+    second = solve(weights)
+    if second is None:
+        return None
+    x, y, cov_xx, cov_yy = second
+    err = math.sqrt(max(cov_xx + cov_yy, 0.0))     # 1-sigma radius (drms)
+    if err > BEARING_MAX_RANGE_M:
+        return None
+    ranges, bad = {}, []
+    for l in lines:
+        rx, ry = x - l['px'], y - l['py']
+        r = math.hypot(rx, ry)
+        ranges[l['node_id']] = round(r)
+        # angle between the reported bearing and the direction to the fix, 0..180
+        residual = abs((math.atan2(rx, ry) - l['theta'] + math.pi) % (2 * math.pi) - math.pi)
+        limit = max(3.0 * l['sigma'], math.radians(BEARING_OUTLIER_DEG))
+        score = max(residual / limit, r / BEARING_MAX_RANGE_M)   # > 1: this line contradicts the fix
+        if score > 1.0:
+            bad.append((score, l['node_id']))
+    bad.sort(reverse=True)
+    return {'lat': lat0 + y / ky, 'lon': lon0 + x / kx, 'error_m': round(err),
+            'stations': [l['node_id'] for l in lines], 'ranges_m': ranges,
+            'bad': [nid for _, nid in bad]}
+
+
 def _bearing_fix(mac, now):
-    """Intersect the fresh bearings of the stations with known positions.
-    Weighted least squares in a local east/north plane: each bearing is the
-    line through its station along the true bearing; the fix minimises the
-    weighted squared perpendicular distances. Returns None when fewer than
-    two stations qualify, the lines are near-parallel, the solution lies
-    behind a station (diverging bearings) or implausibly far away."""
+    # Intersect the fresh bearings of the stations with known positions. The line
+    # that disagrees most with the solution (typically the station the drone is
+    # flying over, whose four-sector bearing is then meaningless, or a report from
+    # a different aircraft on the same channel) is dropped and the rest re-solved,
+    # as long as two lines that cross remain. Returns None when fewer than two
+    # usable stations are left; the caller holds the previous fix through a
+    # short gap so one bad report does not make the position flicker.
     with BEARINGS_LOCK:
         obs = {k: dict(v) for k, v in (bearing_obs.get(mac) or {}).items()}
-    pts = []
     with STATIONS_LOCK:
         stations = {k: dict(v) for k, v in STATIONS.items()}
+    lines = []
     for node_id, o in obs.items():
         if now - o.get('ts', 0) > BEARING_FUSE_WINDOW_S:
             continue
@@ -1908,89 +2036,67 @@ def _bearing_fix(mac, now):
         if not st or st.get('lat') in (None, '') or st.get('lon') in (None, ''):
             continue
         try:
-            theta = math.radians((float(o['bearing_deg']) + _station_heading(st)) % 360.0)
-            sigma = math.radians(_clamp_sigma(o.get('sigma_deg')))
-            pts.append((float(st['lat']), float(st['lon']), theta, sigma, node_id))
+            lines.append({'lat': float(st['lat']), 'lon': float(st['lon']), 'node_id': node_id,
+                          'theta': math.radians((float(o['bearing_deg']) + _station_heading(st)) % 360.0),
+                          'sigma': math.radians(_clamp_sigma(o.get('sigma_deg')))})
         except (TypeError, ValueError, KeyError):
             continue
-    if len(pts) < 2:
-        return None
-    n = len(pts)
-    lat0 = sum(p[0] for p in pts) / n
-    lon0 = sum(p[1] for p in pts) / n
-    kx = 111320.0 * math.cos(math.radians(lat0))
-    ky = 110540.0
-    a00 = a01 = a11 = b0 = b1 = 0.0
-    lines = []
-    for lat, lon, th, sg, nid in pts:
-        px, py = (lon - lon0) * kx, (lat - lat0) * ky
-        dx, dy = math.sin(th), math.cos(th)          # unit direction, east/north
-        nx, ny = dy, -dx                             # unit normal
-        w = 1.0 / (sg * sg)
-        c = nx * px + ny * py
-        a00 += w * nx * nx
-        a01 += w * nx * ny
-        a11 += w * ny * ny
-        b0 += w * nx * c
-        b1 += w * ny * c
-        lines.append((px, py, dx, dy, sg, nid, th))
-    max_cross = max(abs(math.sin(lines[i][6] - lines[j][6]))
-                    for i in range(n) for j in range(i + 1, n))
-    if max_cross < math.sin(math.radians(BEARING_MIN_CROSSING_DEG)):
-        return None                                  # every pair near-parallel: no crossing
-    det = a00 * a11 - a01 * a01
-    if abs(det) < 1e-12:
-        return None
-    x = (b0 * a11 - b1 * a01) / det
-    y = (a00 * b1 - a01 * b0) / det
-    # Second pass: weight every line by its cross-range uncertainty at the
-    # range just found (r * tan sigma), re-solve, and take the error radius
-    # from the covariance of the weighted least squares (A^-1).
-    a00 = a01 = a11 = b0 = b1 = 0.0
-    used, ranges = [], {}
-    for px, py, dx, dy, sg, nid, th in lines:
-        rx, ry = x - px, y - py
-        r = math.hypot(rx, ry)
-        if rx * dx + ry * dy <= 0:                   # behind the station: bearings diverge
+    excluded = []
+    while len(lines) >= 2:
+        sol = _solve_bearing_lines(lines)
+        if sol is None:
             return None
-        if r > BEARING_MAX_RANGE_M:
-            return None
-        s_cross = max(5.0, r * math.tan(sg))
-        w = 1.0 / (s_cross * s_cross)
-        nx, ny = dy, -dx
-        c = nx * px + ny * py
-        a00 += w * nx * nx
-        a01 += w * nx * ny
-        a11 += w * ny * ny
-        b0 += w * nx * c
-        b1 += w * ny * c
-        used.append(nid)
-        ranges[nid] = round(r)
-    det = a00 * a11 - a01 * a01
-    if abs(det) < 1e-18:
-        return None
-    x = (b0 * a11 - b1 * a01) / det
-    y = (a00 * b1 - a01 * b0) / det
-    cov_xx, cov_yy = a11 / det, a00 / det
-    err = math.sqrt(max(cov_xx + cov_yy, 0.0))     # 1-sigma radius (drms)
-    if err > BEARING_MAX_RANGE_M:
-        return None
-    # The re-weighted solution is the one returned: validate that one too
-    for px, py, dx, dy, sg, nid, th in lines:
-        rx, ry = x - px, y - py
-        r = math.hypot(rx, ry)
-        if rx * dx + ry * dy <= 0 or r > BEARING_MAX_RANGE_M:
-            return None
-        ranges[nid] = round(r)
-    return {'lat': lat0 + y / ky, 'lon': lon0 + x / kx, 'error_m': round(err),
-            'stations': used, 'ranges_m': ranges}
-
+        if not sol['bad']:
+            sol['excluded'] = excluded
+            return sol
+        worst = sol['bad'][0]
+        lines = [l for l in lines if l['node_id'] != worst]
+        excluded.append(worst)
+    return None
 
 def level1_prepare_detection(detection):
     """Normalise an analog_fm report, record its bearing, attach every live
     bearing for the UI and, when the geometry allows, a position fix."""
     now = time.time()
     detection.setdefault('src', 'analog_fm')
+    # Only the mapper writes these; a client that sends them is lying
+    for k in ('bearings', 'fix_stations', 'fix_ranges_m', 'fix_error_m', 'fix_excluded', 'fix_age_s', 'pos_src',
+              'bearing_true_deg', 'drone_lat', 'drone_long'):
+        detection.pop(k, None)
+    # The analog fields the page prints and the fusion uses, bounded to what the firmware emits
+    band = detection.get('band')
+    detection['band'] = band.strip()[:1].upper() if isinstance(band, str) and band.strip()[:1].isalpha() else None
+    for k in ('ch', 'sync_hz', 'field_hz', 'sync_q', 'sync_score', 'video_windows', 'gain', 'q_phase', 'cfo_khz',
+              'sector', 'seq', 'rssi', 'rssi_raw', 'rssi_min', 'rssi_max', 'rssi_n'):
+        if k in detection:
+            v = _safe_float(detection.get(k))
+            if v is None:
+                detection.pop(k, None)
+            else:
+                detection[k] = int(v) if abs(v) < 1e9 else None
+    for k in ('freq_mhz', 'freq_peak', 'rssi_dbm', 'level_db', 'bearing_deg', 'bearing_sigma_deg', 'station_heading'):
+        if k in detection:
+            v = _safe_float(detection.get(k))
+            if v is None:
+                detection.pop(k, None)
+            else:
+                detection[k] = round(v, 1)
+    video = detection.get('video')
+    if video is not None:
+        detection['video'] = video if video in ('NTSC', 'PAL', 'none') else 'none'
+    for k, limit in (('fp', 40), ('basic_id', 40), ('receiver', 16), ('hw', 8), ('carrier', 8)):
+        if k in detection:
+            v = _norm_text(detection.get(k), limit) if k not in ('fp', 'basic_id') else (
+                _re.sub(r'[^A-Za-z0-9/._:-]', '', str(detection.get(k)))[:limit] if isinstance(detection.get(k), str) else None)
+            if v:
+                detection[k] = v
+            else:
+                detection.pop(k, None)
+    sectors = detection.get('sectors')
+    if sectors is not None:
+        detection['sectors'] = [round(_safe_float(x, -120.0), 1) for x in sectors[:8]] if isinstance(sectors, list) else None
+        if detection['sectors'] is None:
+            detection.pop('sectors', None)
     if not detection.get('basic_id'):
         bid = _analog_basic_id(detection)
         if bid:
@@ -2018,22 +2124,25 @@ def level1_prepare_detection(detection):
     with STATIONS_LOCK:
         if node_id:
             station = STATIONS.get(node_id)
-            if station is None:
-                heading = _safe_float(detection.get('station_heading', detection.get('heading')))
-                station = _auto_station(node_id, heading, detection.get('receiver'))
+            if station is None and len(STATIONS) < MAX_STATIONS:
+                # station_heading is the installer's note of the face-N heading; 'heading'
+                # in a detection means the aircraft's course and is never used here
+                heading = _safe_float(detection.get('station_heading'))
+                station = _auto_station(node_id, heading, _norm_text(detection.get('receiver')))
                 STATIONS[node_id] = station
                 save_stations()
                 created = True
-            station = dict(station)
+            if station is not None:
+                station = dict(station)
+                # A station that reports is alive, heartbeat or not
+                stt = station_status.setdefault(node_id, {})
+                stt['last_seen'] = now
+                if 'receiver' not in stt and _norm_text(detection.get('receiver')):
+                    stt['receiver'] = _norm_text(detection.get('receiver'))
     if created:
         logger.info(f"Level 1 station {node_id} registered from a detection; set its position in the LEVEL 1 STATIONS panel")
         emit_stations()
-    rel = _safe_float(detection.get('bearing_deg')) if node_id else None
-    if node_id:
-        # A station that reports is alive, heartbeat or not
-        stt = station_status.setdefault(node_id, {})
-        stt['last_seen'] = now
-        stt.setdefault('receiver', detection.get('receiver'))
+    rel = _safe_float(detection.get('bearing_deg')) if (node_id and station is not None) else None
     with BEARINGS_LOCK:
         if rel is not None:
             rel = rel % 360.0
@@ -2047,13 +2156,16 @@ def level1_prepare_detection(detection):
                 'freq_mhz': detection.get('freq_mhz'), 'video': detection.get('video'),
                 'fp': detection.get('fp'), 'sector': detection.get('sector'), 'ts': now,
             }
-        # Forget stale observations (an emitter that moved on, a station that stopped)
-        per_mac = bearing_obs.get(mac) or {}
-        for nid in [k for k, o in per_mac.items() if now - o.get('ts', 0) > BEARING_OBS_KEEP_S]:
-            per_mac.pop(nid, None)
-        for stale_mac in [m for m, obs in list(bearing_obs.items()) if not obs]:
-            bearing_obs.pop(stale_mac, None)
-        per_mac = {k: dict(v) for k, v in per_mac.items()}
+        # Forget stale observations everywhere (an emitter that moved on, a station that
+        # stopped, a MAC that was reported once and never again)
+        for m, obs in list(bearing_obs.items()):
+            for nid in [k for k, o in obs.items() if now - o.get('ts', 0) > BEARING_OBS_KEEP_S]:
+                obs.pop(nid, None)
+            if not obs:
+                bearing_obs.pop(m, None)
+        for m in [k for k, (_, ts) in list(last_fix.items()) if now - ts > BEARING_OBS_KEEP_S]:
+            last_fix.pop(m, None)
+        per_mac = {k: dict(v) for k, v in (bearing_obs.get(mac) or {}).items()}
 
     # Everything the map needs to draw the rays, with the station geometry attached
     bearings = []
@@ -2071,13 +2183,29 @@ def level1_prepare_detection(detection):
     detection['bearings'] = bearings
 
     fix = _bearing_fix(mac, now)
+    held = last_fix.get(mac)
     if fix:
+        last_fix[mac] = (fix, now)
         detection['drone_lat'] = fix['lat']
         detection['drone_long'] = fix['lon']
         detection['pos_src'] = 'bearing_fix'
         detection['fix_error_m'] = fix['error_m']
         detection['fix_stations'] = fix['stations']
         detection['fix_ranges_m'] = fix['ranges_m']
+        if fix.get('excluded'):
+            detection['fix_excluded'] = fix['excluded']
+    elif held and now - held[1] <= BEARING_FUSE_WINDOW_S:
+        # No crossing this time (one station's turn to report, an outlier that left too
+        # few lines): keep the last fix for one fuse window rather than dropping the
+        # position and re-announcing the aircraft when it comes back
+        prev = held[0]
+        detection['drone_lat'] = prev['lat']
+        detection['drone_long'] = prev['lon']
+        detection['pos_src'] = 'bearing_fix_held'
+        detection['fix_error_m'] = prev['error_m']
+        detection['fix_stations'] = prev['stations']
+        detection['fix_ranges_m'] = prev['ranges_m']
+        detection['fix_age_s'] = round(now - held[1])
     else:
         # A bearing is not a position: never let a stale fix or a stray field pretend it is
         detection.pop('drone_lat', None)
@@ -7699,19 +7827,28 @@ function generatePopupContent(detection, markerType) {
     html += '<div style="height:1px; background:rgba(255,255,255,0.07); margin:8px 0;"></div>';
     html += '<div style="font-size:0.72em; color:' + muted + '; letter-spacing:1.5px; margin-bottom:4px;">ANALOG VIDEO · LEVEL 1</div>';
     const chLabel = (detection.band || '') + (detection.ch !== undefined && detection.ch !== null ? detection.ch : '');
-    if (detection.freq_mhz) html += stat('CHANNEL', (chLabel ? chLabel + ' · ' : '') + detection.freq_mhz + ' MHz', '#fff');
-    if (detection.video) html += stat('VIDEO', detection.video === 'none' ? 'carrier, no sync found' : detection.video + (detection.sync_hz ? ' · ' + detection.sync_hz + ' Hz lines' : ''), detection.video === 'none' ? '#dde6ee' : '#ffd9a0');
+    if (detection.freq_mhz) html += stat('CHANNEL', l1Esc((chLabel ? chLabel + ' · ' : '') + detection.freq_mhz + ' MHz'), '#fff');
+    if (detection.video) html += stat('VIDEO', detection.video === 'none' ? 'carrier, no sync found' : l1Esc(detection.video + (detection.sync_hz ? ' · ' + detection.sync_hz + ' Hz lines' : '')), detection.video === 'none' ? '#dde6ee' : '#ffd9a0');
     if (detection.fp) html += stat('FINGERPRINT', l1Esc(detection.fp));
-    if (detection.freq_peak) html += stat('CARRIER', detection.freq_peak + ' MHz');
-    const fixed = detection.pos_src === 'bearing_fix';
-    html += stat('POSITION', fixed ? ('bearing fix ±' + Math.round(detection.fix_error_m || 0) + ' m from ' + l1Esc((detection.fix_stations || []).join(', ')))
-                                   : 'bearing only — needs a second station', fixed ? '#88ff99' : '#ffcc66');
+    if (detection.freq_peak) html += stat('CARRIER', l1Esc(detection.freq_peak + ' MHz'));
+    const fixed = detection.pos_src === 'bearing_fix', held = detection.pos_src === 'bearing_fix_held';
+    let posText = 'bearing only — needs a second station';
+    if (fixed || held) {
+      posText = (held ? 'last fix held ' + Math.round(detection.fix_age_s || 0) + ' s · ' : 'bearing fix ') + '±' + Math.round(detection.fix_error_m || 0) + ' m from ' + l1Esc((detection.fix_stations || []).join(', '));
+      if (detection.fix_excluded && detection.fix_excluded.length) posText += ' · outlier: ' + l1Esc(detection.fix_excluded.join(', '));
+    }
+    html += stat('POSITION', posText, fixed ? '#88ff99' : '#ffcc66');
+    if (detection.node_id) {
+      html += stat('LAST REPORT', l1Esc(detection.node_id + (detection.rssi_dbm !== undefined ? ' · ' + Math.round(detection.rssi_dbm) + ' dBm' : '')
+        + (detection.level_db !== undefined ? ' · ' + Math.round(detection.level_db) + ' dB' : '') + (detection.q_phase !== undefined ? ' · q ' + detection.q_phase + '%' : '')
+        + (detection.carrier ? ' · ' + detection.carrier : '')));
+    }
     const bl = Array.isArray(detection.bearings) ? detection.bearings : [];
     if (bl.length) {
       html += '<div style="font-size:0.72em; color:' + muted + '; letter-spacing:1.5px; margin:6px 0 2px 0;">BEARINGS</div>';
       bl.forEach(b => {
         const age = (b.age_s !== undefined) ? Math.round(b.age_s) + 's' : '';
-        const stn = (typeof l1Stations !== 'undefined') ? l1Stations[b.node_id] : null;
+        const stn = l1Stations[b.node_id];
         const placed = stn ? (stn.lat !== null && stn.lat !== undefined && stn.lon !== null && stn.lon !== undefined)
                            : (b.station_lat !== null && b.station_lat !== undefined && b.station_lon !== null && b.station_lon !== undefined);
         const hdg = stn ? (Number(stn.heading_deg) || 0) : (Number(b.station_heading_deg) || 0);
@@ -7734,10 +7871,11 @@ function generatePopupContent(detection, markerType) {
     'src','vendor','model','ssid','conf','role']);
   if (detection.type === 'analog_fm') {
     // Shown in the LEVEL 1 section above, or internal to the bearing bookkeeping
-    ['bearings','fix_stations','fix_ranges_m','sectors','type','receiver','hw','band','ch','freq_mhz',
+    ['bearings','fix_stations','fix_ranges_m','fix_excluded','fix_age_s','sectors','type','receiver','hw','band','ch','freq_mhz',
      'video','fp','freq_peak','pos_src','fix_error_m','sync_hz','field_hz','sync_q','sync_score',
      'video_windows','rssi_raw','rssi_min','rssi_max','rssi_n','station_heading','seq','source_port',
-     'reported_mac'].forEach(k => skip.add(k));
+     'reported_mac','bearing_deg','bearing_sigma_deg','bearing_true_deg','node_id','sector','rssi','rssi_dbm',
+     'carrier','cfo_khz','gain','level_db','q_phase'].forEach(k => skip.add(k));
   }
   const telemetryKeys = Object.keys(detection).filter(k => !skip.has(k) && detection[k] !== '' && detection[k] !== null && detection[k] !== undefined);
   if (telemetryKeys.length > 0) {
@@ -12431,6 +12569,8 @@ const l1StationMarkers = {};    // node_id -> L.marker
 const l1Rays = {};              // mac -> { node_id -> {ray, wedge} }
 const l1FixCircles = {};        // mac -> L.circle
 let   l1PlaceFor = null;        // node_id being placed by a map click
+let   l1StationsLoaded = false; // first /api/stations or 'stations' event seen
+let   l1PointerDown = false;    // a press in the panel is in progress: do not rebuild under it
 const l1Layer = L.layerGroup().addTo(map);
 
 function l1Destination(lat, lon, bearingDeg, distM) {
@@ -12475,6 +12615,8 @@ function l1StationPopup(st) {
   if (stt.nf_dbm !== undefined) h += row('noise floor', stt.nf_dbm + ' dBm');
   if (stt.temp_c !== undefined) h += row('temp', stt.temp_c + ' °C');
   if (stt.tune_fail !== undefined) h += row('tune_fail / cap_err', stt.tune_fail + ' / ' + (stt.cap_err !== undefined ? stt.cap_err : '-'));
+  if (stt.bus_stuck !== undefined) h += row('bus_stuck', stt.bus_stuck + (Number(stt.bus_stuck) > 0 ? ' (I/Q bus not streaming!)' : ''));
+  if (stt.alias_drop !== undefined) h += row('alias_drop', stt.alias_drop);
   if (stt.video_seen !== undefined) h += row('video seen', stt.video_seen);
   if (stt.channels !== undefined) h += row('plan', stt.channels + ' ch × ' + (stt.sectors || 4) + ' sectors');
   h += '</div>';
@@ -12519,22 +12661,26 @@ function l1RenderStations() {
   // a rebuild through l1Dirty, filled by the input listener below).
   const ae = document.activeElement;
   if (ae && ae.tagName === 'INPUT' && list.contains(ae)) return;
-  // Rebuild the panel only when what it shows has changed (ages are shown to the second but
-  // only re-rendered every 5 s by the timer, so round them into the signature)
-  const sigNow = JSON.stringify([Object.keys(l1Stations).sort().map(id => {
-    const st = l1Stations[id], stt = l1Status[id] || {};
-    return [id, st.name, st.lat, st.lon, st.heading_deg, l1StationAlive(id), stt.last_seen ? Math.round((Date.now() / 1000 - stt.last_seen) / 5) : -1, stt.nf_dbm];
+  if (l1PointerDown) return;                       // a click is in flight: do not swap the DOM under it
+  // Rebuild the panel only when its structure changed (stations, names, positions,
+  // headings, alive state, dirty inputs, placement mode); ages and noise floors are
+  // patched into the existing rows in place so buttons are never replaced under a press.
+  const ids = Object.keys(l1Stations).sort();
+  const ageText = id => { const stt = l1Status[id] || {}; return (stt.last_seen ? Math.round(Date.now() / 1000 - stt.last_seen) + 's' : 'no heartbeat') + (stt.nf_dbm !== undefined ? ' · nf ' + stt.nf_dbm : ''); };
+  const sigNow = JSON.stringify([ids.map(id => {
+    const st = l1Stations[id];
+    return [id, st.name, st.lat, st.lon, st.heading_deg, !!st.heading_auto, l1StationAlive(id)];
   }), Object.keys(l1Dirty), l1PlaceFor]);
-  if (sigNow === l1PanelSig && list.children.length) return;
+  if (sigNow === l1PanelSig && list.children.length) {
+    list.querySelectorAll('[data-age]').forEach(el => { const t = ageText(el.getAttribute('data-age')); if (el.textContent !== t) el.textContent = t; });
+    return;
+  }
   l1PanelSig = sigNow;
   let h = '';
-  const ids = Object.keys(l1Stations).sort();
   if (!ids.length) h = '<div style="color:#a87f40;">— no stations yet — a station registers itself with its first heartbeat; or ADD one below —</div>';
   ids.forEach(id => {
     const st = l1Stations[id];
     const alive = l1StationAlive(id);
-    const stt = l1Status[id] || {};
-    const age = stt.last_seen ? Math.round(Date.now() / 1000 - stt.last_seen) + 's' : 'no heartbeat';
     const dom = l1Dom(id), eid = l1Esc(id);
     const placed = l1Placed(st);
     const d = l1Dirty[id] || {};
@@ -12543,12 +12689,13 @@ function l1RenderStations() {
       + '<div style="display:flex; justify-content:space-between; align-items:center;">'
       + '<span><span class="l1-dot" style="background:' + (alive ? '#88ff99' : '#664433') + '"></span><b>' + eid + '</b>'
       + (st.name && st.name !== id ? ' · ' + l1Esc(st.name) : '') + '</span>'
-      + '<span style="color:#a87f40;">' + l1Esc(age) + (stt.nf_dbm !== undefined ? ' · nf ' + l1Esc(stt.nf_dbm) : '') + '</span></div>'
+      + '<span style="color:#a87f40;" data-age="' + eid + '">' + l1Esc(ageText(id)) + '</span></div>'
       + '<div class="l1-row">'
       + '<input id="l1name_' + dom + '" data-id="' + eid + '" data-k="name" type="text" value="' + val('name', st.name || '') + '" placeholder="name" style="width:84px;"/>'
       + '<input id="l1lat_' + dom + '" data-id="' + eid + '" data-k="lat" type="text" value="' + val('lat', placed ? Number(st.lat).toFixed(6) : '') + '" placeholder="lat" style="width:86px;"/>'
       + '<input id="l1lon_' + dom + '" data-id="' + eid + '" data-k="lon" type="text" value="' + val('lon', placed ? Number(st.lon).toFixed(6) : '') + '" placeholder="lon" style="width:86px;"/>'
       + '<input id="l1hdg_' + dom + '" data-id="' + eid + '" data-k="hdg" type="number" min="0" max="359" value="' + val('hdg', Number(st.heading_deg) || 0) + '" title="true-north heading of face N" style="width:52px;"/>°'
+      + (st.heading_auto ? '<span title="follows the heading the station reports until one is saved here" style="color:#a87f40; font-size:0.85em;">auto</span>' : '')
       + '</div><div class="l1-row">'
       + '<button class="l1-btn' + (l1PlaceFor === id ? ' active' : '') + '" data-act="place" data-id="' + eid + '" title="click the map to place">' + (l1PlaceFor === id ? 'CLICK MAP…' : 'PLACE') + '</button>'
       + '<button class="l1-btn" data-act="here" data-id="' + eid + '" title="use my position">HERE</button>'
@@ -12586,7 +12733,12 @@ document.addEventListener('click', ev => {
 async function l1Save(id) {
   const dom = l1Dom(id);
   const g = k => { const el = document.getElementById('l1' + k + '_' + dom); return el ? el.value.trim() : ''; };
-  const body = { node_id: id, name: g('name'), lat: g('lat'), lon: g('lon'), heading_deg: g('hdg') || 0 };
+  // Send only what the operator touched: a heading the server receives is a heading set
+  // by hand, and from then on the station's own reported heading is ignored.
+  const d = l1Dirty[id] || {};
+  const body = { node_id: id, lat: g('lat'), lon: g('lon') };
+  if (d.name !== undefined) body.name = g('name');
+  if (d.hdg !== undefined) body.heading_deg = g('hdg') || 0;
   try {
     const r = await fetch('/api/stations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const j = await r.json();
@@ -12635,16 +12787,24 @@ map.on('click', ev => {
   l1Save(id);
 });
 
+const L1_RESERVED = new Set(['__proto__', 'constructor', 'prototype']);
 function l1Apply(msg) {
   if (!msg) return;
   for (const k in l1Stations) delete l1Stations[k];
   for (const k in l1Status) delete l1Status[k];
-  Object.assign(l1Stations, msg.stations || {});
-  Object.assign(l1Status, msg.status || {});
+  // Copy key by key: Object.assign with a JSON key named __proto__ would write the prototype
+  for (const k of Object.keys(msg.stations || {})) if (!L1_RESERVED.has(k)) Object.defineProperty(l1Stations, k, { value: msg.stations[k], writable: true, enumerable: true, configurable: true });
+  for (const k of Object.keys(msg.status || {})) if (!L1_RESERVED.has(k)) Object.defineProperty(l1Status, k, { value: msg.status[k], writable: true, enumerable: true, configurable: true });
   if (msg.ray_km) l1RayKm = msg.ray_km;
   if (msg.fuse_window_s) l1FuseWindowS = msg.fuse_window_s;
+  l1StationsLoaded = true;
+  for (const mac in l1RaySig) delete l1RaySig[mac];   // station geometry may have changed: redraw rays
   l1RenderStations();
 }
+document.addEventListener('mousedown', ev => { if (ev.target && ev.target.closest && ev.target.closest('#l1StationList')) l1PointerDown = true; }, true);
+document.addEventListener('touchstart', ev => { if (ev.target && ev.target.closest && ev.target.closest('#l1StationList')) l1PointerDown = true; }, { capture: true, passive: true });
+document.addEventListener('mouseup', () => { l1PointerDown = false; }, true);
+document.addEventListener('touchend', () => { l1PointerDown = false; }, true);
 async function l1Fetch() {
   try { const r = await fetch('/api/stations'); if (r.ok) l1Apply(await r.json()); } catch (e) { console.error('stations fetch failed', e); }
 }
@@ -12661,13 +12821,21 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
   const add = document.getElementById('l1AddBtn'), newId = document.getElementById('l1NewId');
-  if (add && newId) add.addEventListener('click', async () => {
+  const doAdd = async () => {
     const id = newId.value.trim();
+    const hint = document.getElementById('l1Hint');
     if (!id) return;
-    await fetch('/api/stations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ node_id: id, name: id }) });
-    newId.value = '';
-    await l1Fetch();
-  });
+    try {
+      const r = await fetch('/api/stations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ node_id: id, name: id }) });
+      const j = await r.json().catch(() => ({}));
+      if (hint) hint.textContent = r.ok ? ('added ' + ((j.station && j.station.node_id) || id) + ((j.station && j.station.node_id !== id) ? ' (id normalised)' : '')) : ('error: ' + (j.error || r.status));
+      if (r.ok) { newId.value = ''; await l1Fetch(); }
+    } catch (e) { if (hint) hint.textContent = 'error: ' + e; }
+  };
+  if (add && newId) {
+    add.addEventListener('click', doAdd);
+    newId.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); doAdd(); } });
+  }
   l1Fetch();
   setInterval(l1RenderStations, 5000);   // heartbeat ages and alive dots
 });
@@ -12687,7 +12855,7 @@ function updateBearingLayers(mac, det, currentTime) {
   const bl = Array.isArray(det.bearings) ? det.bearings : [];
   // Nothing to redraw while the detection and the station geometry are unchanged
   // (freshness only flips at the fuse window, so age is bucketed by that)
-  const sig = [det.last_update, det.pos_src, det.fix_error_m, Math.floor((currentTime - (det.last_update || 0)) / l1FuseWindowS)]
+  const sig = [det.last_update, det.pos_src, det.fix_error_m, l1StationsLoaded, Math.floor((currentTime - (det.last_update || 0)) / l1FuseWindowS)]
     .concat(bl.map(b => { const st = l1Stations[b.node_id]; return b.node_id + ':' + (st ? [st.lat, st.lon, st.heading_deg].join('/') : '-'); })).join('|');
   if (l1RaySig[mac] === sig && l1Rays[mac]) return;
   l1RaySig[mac] = sig;
@@ -12696,6 +12864,9 @@ function updateBearingLayers(mac, det, currentTime) {
   const detAge = det.last_update ? (currentTime - det.last_update) : 0;
   bl.forEach(b => {
     const st = l1Stations[b.node_id];
+    // The station list is the truth once it has loaded; the geometry the server copied
+    // into the detection is only a stop-gap for the first second of the page
+    if (l1StationsLoaded && !l1Placed(st)) return;
     const lat = l1Placed(st) ? Number(st.lat) : b.station_lat;
     const lon = l1Placed(st) ? Number(st.lon) : b.station_lon;
     if (lat === null || lat === undefined || lon === null || lon === undefined) return;
@@ -12726,7 +12897,7 @@ function updateBearingLayers(mac, det, currentTime) {
   });
   for (const id in rays) if (!seen.has(id)) { l1Layer.removeLayer(rays[id].ray); l1Layer.removeLayer(rays[id].wedge); delete rays[id]; }
   // Error circle around a fix
-  const fixed = det.pos_src === 'bearing_fix' && det.drone_lat && det.drone_long;
+  const fixed = (det.pos_src === 'bearing_fix' || det.pos_src === 'bearing_fix_held') && det.drone_lat && det.drone_long;
   if (fixed) {
     const r = Math.max(15, Number(det.fix_error_m) || 50);
     if (!l1FixCircles[mac]) {
@@ -13439,11 +13610,26 @@ def index():
 def api_detections():
     return jsonify(tracked_pairs)
 
+def _request_json_object():
+    # Strict parse of a request body: a JSON object, no NaN/Infinity, bounded size
+    limit = app.config.get('MAX_CONTENT_LENGTH') or (1 << 20)
+    if request.content_length is not None and request.content_length > limit:
+        return None
+    raw = request.get_data(cache=False)
+    if len(raw) > limit:
+        return None
+    try:
+        obj = _json_loads_strict(raw.decode('utf-8'))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
 @app.route('/api/detections', methods=['POST'])
 def post_detection():
-    detection = request.get_json()
-    if not isinstance(detection, dict):
-        return jsonify({"error": "JSON object expected"}), 400
+    detection = _request_json_object()
+    if detection is None:
+        return jsonify({"error": "JSON object expected (no NaN/Infinity, at most 1 MiB)"}), 400
     if 'heartbeat' in detection:
         if detection.get('node_id') and detection.get('receiver'):
             register_station_heartbeat(detection, source='api')
@@ -13466,9 +13652,9 @@ def api_stations():
 
 @app.route('/api/stations', methods=['POST'])
 def api_station_set():
-    data = request.get_json(silent=True) or {}
-    if not isinstance(data, dict):
-        return jsonify({'error': 'JSON object expected'}), 400
+    data = _request_json_object()
+    if data is None:
+        return jsonify({'error': 'JSON object expected (no NaN/Infinity, at most 1 MiB)'}), 400
     node_id = _norm_node_id(data.get('node_id'))
     if not node_id:
         return jsonify({'error': 'node_id required (letters, digits, _ . : -)'}), 400
@@ -13489,18 +13675,22 @@ def api_station_set():
         return jsonify({'error': 'lat out of range'}), 400
     if lon is not None and not -180 <= lon <= 180:
         return jsonify({'error': 'lon out of range'}), 400
+    name = _NODE_ID_RE.sub(' ', str(data['name'])).strip()[:40] if isinstance(data.get('name'), str) and data.get('name') else None
     with STATIONS_LOCK:
         st = STATIONS.get(node_id)
-        if st is None:
-            st = _auto_station(node_id, None, None)
-            STATIONS[node_id] = st
-        if data.get('name'):
-            st['name'] = _NODE_ID_RE.sub(' ', str(data['name'])).strip()[:40] or node_id
-        st.setdefault('name', node_id)
-        new_lat = lat if 'lat' in data else st.get('lat')
-        new_lon = lon if 'lon' in data else st.get('lon')
+        # Decide everything before touching the registry: a rejected request leaves no trace
+        new_lat = lat if 'lat' in data else (st or {}).get('lat')
+        new_lon = lon if 'lon' in data else (st or {}).get('lon')
         if (new_lat is None) != (new_lon is None):
             return jsonify({'error': 'lat and lon go together'}), 400
+        if st is None:
+            if len(STATIONS) >= MAX_STATIONS:
+                return jsonify({'error': f'station registry full ({MAX_STATIONS})'}), 400
+            st = _auto_station(node_id, None, None)
+            STATIONS[node_id] = st
+        if name:
+            st['name'] = name
+        st.setdefault('name', node_id)
         st['lat'], st['lon'] = new_lat, new_lon
         if 'heading_deg' in data:
             st['heading_deg'] = (heading or 0.0) % 360.0
@@ -13518,7 +13708,8 @@ def api_station_delete(node_id):
         existed = STATIONS.pop(node_id, None) is not None
         if existed:
             save_stations()
-    station_status.pop(node_id, None)
+    with STATIONS_LOCK:
+        station_status.pop(node_id, None)
     with BEARINGS_LOCK:
         # Its bearings go with it; otherwise they linger in popups and fixes for BEARING_OBS_KEEP_S
         for obs in bearing_obs.values():
@@ -13886,7 +14077,9 @@ def serial_reader(port):
                     json_str = line[line.find('{'):]
                     
                 try:
-                    detection = json.loads(json_str)
+                    detection = _json_loads_strict(json_str)
+                    if not isinstance(detection, dict):
+                        raise json.JSONDecodeError('JSON object expected', json_str, 0)
                     logger.debug(f"Parsed JSON from {port}: {detection}")
                     
                     # Heartbeats and command acks are normal traffic, not
@@ -13939,7 +14132,7 @@ def serial_reader(port):
                         logger.info(f"Detection from {port}: MAC {detection['mac']}, "
                                    f"RSSI {detection.get('rssi', 'N/A')}")
                         
-                except json.JSONDecodeError as e:
+                except (json.JSONDecodeError, ValueError) as e:
                     # Log non-JSON data for debugging
                     logger.debug(f"Non-JSON data from {port}: {line[:100]}")
                     continue
