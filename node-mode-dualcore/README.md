@@ -49,6 +49,7 @@ When you deploy 5 remote nodes and a drone flies overhead, all 5 nodes detect th
 - **Duplicates** from other nodes within **500ms**: **dropped** (same detection event from different nodes)
 - **After 500ms**: next detection goes through (drone moved, new position data)
 - **Result**: near real-time tracking, no multi-node spam
+- **Level 1 bearing reports** (`"type":"analog_fm"`, from level 1 stations on the same mesh) are never deduplicated: every station that hears a carrier reports the same channel-derived MAC but its own bearing, and `mesh-mapper.py` needs two or more of them to fix a position. The level 1 firmware already sends at most one per emitter every 8 s
 
 Remote nodes send Remote ID / DJI / MAVLink detections as fast as they happen with no artificial rate limiting; heuristic fingerprint hits are limited to one per device per 30 s. Meshtastic handles its own channel queuing. The 500ms dedup window at the home node is tight enough to squash the burst of multi-node duplicates while letting every new position update flow through.
 

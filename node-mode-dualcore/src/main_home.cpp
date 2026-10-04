@@ -376,6 +376,13 @@ static inline void ledUpdate(uint32_t now) {
 // SIMPLE RULE: First detection in wins. Everything else within the dedup
 // window is dropped. The drone's lat/long comes from the Remote ID broadcast
 // and is the same regardless of which node picks it up.
+//
+// Level 1 bearing reports ("type":"analog_fm") are the exception. Every level
+// 1 station that hears the same video carrier reports the same channel-derived
+// MAC, but each one carries that station's own bearing, and mesh-mapper.py
+// needs a bearing from two or more stations to intersect them into a position.
+// They are never duplicates of each other, and the level 1 firmware already
+// limits itself to one report per emitter per 8 s, so they bypass the engine.
 // =============================================================================
 static void processJsonLine(const char* line, int len, uint32_t now) {
   char droneMac[18] = {0};
@@ -389,8 +396,16 @@ static void processJsonLine(const char* line, int len, uint32_t now) {
     return;
   }
 
-  extractJsonString(line, "node_id", nodeIdBuf, sizeof(nodeIdBuf));
   msgReceived++;
+
+  if (strstr(line, "\"type\":\"analog_fm\"")) {
+    txPrintln(line);
+    msgForwarded++;
+    ledFlash();
+    return;
+  }
+
+  extractJsonString(line, "node_id", nodeIdBuf, sizeof(nodeIdBuf));
 
   dedup_entry* entry = dedupFind(droneMac);
 
