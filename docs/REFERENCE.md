@@ -174,8 +174,8 @@ on channel 6. They're kept for reference: don't flash them onto new stations.
 into (a Raspberry Pi running Raspberry Pi OS, or any Debian-based Linux) and
 makes it start on every boot. It:
 
-1. downloads this repository from GitHub (the default branch) and unpacks it
-   into `~/mesh-mapper`
+1. downloads this repository from GitHub (the default branch, `level2-main`)
+   and unpacks it into `~/mesh-mapper`
 2. creates a Python virtual environment in `~/mesh-mapper/.venv` and installs
    `requirements.txt` into it
 3. adds an `@reboot` cron job for your user that starts the mapper from that
@@ -196,7 +196,7 @@ installer again.
 | Flag | Default | What it does |
 |---|---|---|
 | `--install-dir DIR` | `~/mesh-mapper` | Where to install |
-| `--branch NAME` | the default branch | Install from another branch of this repository |
+| `--branch NAME` | `level2-main` | Install from another branch of this repository |
 | `--no-cron` | off | Don't add the boot-time cron job |
 | `--force` | off | Update an existing install without asking |
 

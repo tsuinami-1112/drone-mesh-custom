@@ -19,7 +19,7 @@
  *
  * Detected drone JSON is sent to:
  *   - USB Serial (for local monitoring / direct mesh-mapper.py connection)
- *   - Serial1 UART (GPIO5 TX / GPIO6 RX -> Heltec V3 running Meshtastic)
+ *   - Serial1 UART (GPIO5 TX / GPIO6 RX -> Heltec V4 running Meshtastic)
  *
  * USB output NEVER blocks: on this board Serial is the native USB CDC
  * (HWCDC), whose write() waits on the TX ring when an attached host stops
@@ -101,9 +101,9 @@
 // =============================================================================
 // Pin Definitions
 // =============================================================================
-// UART to Heltec V3 (Meshtastic)
-static const int SERIAL1_TX_PIN = 5;   // GPIO5 -> Heltec RX
-static const int SERIAL1_RX_PIN = 6;   // GPIO6 <- Heltec TX
+// UART to Heltec V4 (Meshtastic)
+static const int SERIAL1_TX_PIN = 5;   // GPIO5 -> Heltec RX (pin 47)
+static const int SERIAL1_RX_PIN = 6;   // GPIO6 <- Heltec TX (pin 48)
 
 // LED on XIAO ESP32S3 (active LOW / inverted logic)
 #define LED_PIN 21
@@ -330,7 +330,7 @@ static void wifiCallback(void* buffer, wifi_promiscuous_pkt_type_t type) {
 }
 
 // =============================================================================
-// JSON Output - Sends to USB Serial + UART (Heltec V3 mesh)
+// JSON Output - Sends to USB Serial + UART (Heltec V4 mesh)
 // =============================================================================
 static void send_json(const DetectRecord* rec) {
   char json[USB_JSON_MAX];
@@ -344,7 +344,7 @@ static void send_json(const DetectRecord* rec) {
   digitalWrite(LED_PIN, LOW);   // ON (inverted)
 }
 
-// Send to the Heltec V3, paced. Meshtastic's serial module frames its input
+// Send to the Heltec V4, paced. Meshtastic's serial module frames its input
 // with readBytes(237 bytes / 250ms timeout): writes closer together than that
 // are coalesced into one packet (and the overflow splits into a broken
 // fragment), so one message per window is the fastest reliable rate. LoRa

@@ -21,7 +21,7 @@
 
 ---
 
-| **Level 1** · [`level1`](../../tree/level1) branch (in bench testing) | **Level 2** · this branch |
+| **Level 1** · [`level1`](../../tree/level1) branch (in bench testing) | **Level 2** · [`level2-main`](../../tree/level2-main) branch (this one) |
 |---|---|
 | Finds drones by their **5.8 GHz analog FPV video link**, including drones that broadcast nothing else | Finds drones by what they **broadcast**: Remote ID (BLE + WiFi), DJI DroneID, MAVLink, WiFi/BLE fingerprints |
 | XIAO ESP32-C5 and four patch antennas: each station measures a **compass bearing** to the transmitter | XIAO ESP32-S3 **decodes** the broadcast: position, altitude, serial / operator ID, pilot position |

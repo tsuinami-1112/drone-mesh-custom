@@ -3,7 +3,7 @@
  * HOME NODE - Mesh-to-USB Bridge with Multi-Node Deduplication
  * colonelpanichacks
  *
- * Receives Remote ID JSON from the Meshtastic mesh via a Heltec V3 connected
+ * Receives Remote ID JSON from the Meshtastic mesh via a Heltec V4 connected
  * over UART, deduplicates detections from multiple remote nodes, and forwards
  * clean data out USB serial to mesh-mapper.py.
  *
@@ -19,7 +19,7 @@
  *   - Stale entries auto-cleared after 30s of no activity
  *
  * NO WiFi scanning. NO BLE scanning. NO detection.
- * Purely a smart bridge: Heltec V3 UART -> dedup -> USB Serial.
+ * Purely a smart bridge: Heltec V4 UART -> dedup -> USB Serial.
  *
  * -----------------------------------------------------------------------------
  * WHY THIS NODE USED TO WEDGE / TRIP THE WATCHDOG
@@ -59,9 +59,9 @@
  *      wedge the node reboots cleanly instead of hanging. The reset reason
  *      and a boot counter survive the reboot and are reported on startup.
  *
- * Wiring (XIAO ESP32S3 <-> Heltec V3):
- *   GPIO5 (TX) -> Heltec RX
- *   GPIO6 (RX) <- Heltec TX
+ * Wiring (XIAO ESP32S3 <-> Heltec V4):
+ *   GPIO5 (TX) -> Heltec RX (pin 47)
+ *   GPIO6 (RX) <- Heltec TX (pin 48)
  *   GND        -- GND
  *
  * Build:  pio run -e home_node
@@ -444,7 +444,7 @@ static void processJsonLine(const char* line, int len, uint32_t now) {
 }
 
 // =============================================================================
-// Process a complete line from Heltec V3
+// Process a complete line from Heltec V4
 //
 // Meshtastic's serial module in TEXTMSG mode does not deliver the payload
 // bare: every received message is printed as "<sender_short_name>: <payload>"
@@ -621,7 +621,7 @@ void setup() {
 
   watchdogSetup();
 
-  // Let the Heltec V3 / Meshtastic come up. Kept as a fed, bounded wait
+  // Let the Heltec V4 / Meshtastic come up. Kept as a fed, bounded wait
   // instead of a bare delay(3000) so the freshly armed watchdog is happy.
   uint32_t bootWaitStart = millis();
   while (elapsed(millis(), bootWaitStart) < 3000) {
