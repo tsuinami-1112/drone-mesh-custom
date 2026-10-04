@@ -242,7 +242,7 @@ def check_serial_access():
         return  # No dialout group on this system; nothing to check
     if dialout_gid not in os.getgroups():
         print(f"⚠️  User '{get_current_user()}' is not in the 'dialout' group, so the")
-        print("   mapper cannot open the XIAO's serial port. Fix it with:")
+        print("   mapper cannot open a USB radio's (or XIAO's) serial port. Fix it with:")
         print("   sudo usermod -a -G dialout $USER")
         print("   then log out and back in (or reboot).")
 
@@ -379,11 +379,13 @@ Examples:
             print("🔄 Auto-start enabled: Will run on system reboot")
 
         print("\n📋 Next steps:")
-        print("  1. Plug the home station's XIAO (or a standalone detector) into this computer")
-        print("  2. Test the mapper by hand (stop it with Ctrl+C):")
-        print(f"     cd {shlex.quote(install_dir)} && .venv/bin/python {TARGET_FILE}")
+        print("  1. Plug the Meshtastic radio into this computer (or put it on WiFi)")
+        print("  2. Run the mapper by hand once with your radio, which saves it for every")
+        print("     later start (stop it with Ctrl+C):")
+        print(f"     cd {shlex.quote(install_dir)} && .venv/bin/python {TARGET_FILE} --mesh /dev/ttyACM0")
+        print("     (a radio on WiFi: --mesh tcp:<its IP>; an ESP32 home station: no --mesh,")
+        print("     pick its serial port in the web page instead)")
         print("  3. Open http://localhost:5000 (or http://<this computer's IP>:5000)")
-        print("     and pick the XIAO's serial port")
         if not args.no_cron:
             print("  4. Reboot to check that it starts by itself")
         if updating:
