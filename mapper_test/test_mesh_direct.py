@@ -10,7 +10,8 @@ tcp:127.0.0.1:<port>`, so every packet reaches the mapper through both links
 mesh, and checks what the mapper made of each:
 
   - node mode (remote_node) JSON detection in one packet, split over two
-    packets, and two lines merged into one packet
+    packets (also with each half heard by a different radio), and two lines
+    merged into one packet
   - the same drone from a second field station inside 500 ms (dropped, as the
     ESP32 home node would)
   - level 1 heartbeats and analog_fm bearing reports from two stations for
@@ -149,14 +150,19 @@ def main():
         radio.text(FS1, (line[:90]).encode())                # split across two packets
         time.sleep(0.3)
         radio.text(FS1, (line[90:] + '\r\n').encode())
+        cross = j(dict(long_rec, mac="bc:bc:bc:00:00:09"))
+        radio.text(FS1, cross[:90].encode(), via='pty')      # first half heard by the USB radio only,
+        time.sleep(0.3)
+        radio.text(FS1, (cross[90:] + '\r\n').encode(), via='tcp')   # second half by the WiFi one
         merged = j({"mac": "cc:cc:cc:00:00:03", "rssi": -75, "node_id": "B2C3", "drone_lat": -33.8580,
                     "drone_long": 151.2080, "basic_id": "ABC123", "id_type": 1, "src": "odid_bcn"}) + '\r\n' + \
             j({"mac": "dd:dd:dd:00:00:04", "rssi": -81, "node_id": "B2C3", "src": "wifi", "vendor": "DJI",
                "model": "Mini 2", "ssid": "Mini2-0A1B", "conf": "med"}) + '\r\n'
         radio.text(FS2, merged.encode())                     # two lines in one packet
 
-        dets = wait_for(lambda: (lambda d: d if {'aa:aa:aa:00:00:01', 'bb:bb:bb:00:00:02', 'cc:cc:cc:00:00:03',
-                                                 'dd:dd:dd:00:00:04'} <= set(d) else None)(detections(base)))
+        dets = wait_for(lambda: (lambda d: d if {'aa:aa:aa:00:00:01', 'bb:bb:bb:00:00:02', 'bc:bc:bc:00:00:09',
+                                                 'cc:cc:cc:00:00:03', 'dd:dd:dd:00:00:04'} <= set(d) else None)(
+            detections(base)))
         dets = dets or detections(base)
         a = dets.get('aa:aa:aa:00:00:01', {})
         check(a.get('basic_id') == '1581F5FHB229F00202DR' and a.get('drone_lat') == -33.861,
@@ -167,6 +173,8 @@ def main():
               'mesh SNR and hop count are attached')
         check(dets.get('bb:bb:bb:00:00:02', {}).get('desc') == long_rec['desc'],
               'a line split across two packets is re-joined')
+        check(dets.get('bc:bc:bc:00:00:09', {}).get('desc') == long_rec['desc'],
+              'a split line whose halves arrive through different radios is re-joined')
         check('cc:cc:cc:00:00:03' in dets and dets.get('dd:dd:dd:00:00:04', {}).get('src') == 'wifi',
               'two lines in one packet are both read (Remote ID + fingerprint)')
 

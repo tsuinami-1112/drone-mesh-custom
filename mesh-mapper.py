@@ -14493,6 +14493,12 @@ class MeshDedup:
 
 
 MESH_DEDUP = MeshDedup()
+# Shared by every radio, not one per link: _mesh_first_sighting() hands each
+# packet to whichever radio delivered it first, so with two radios the two
+# halves of a split line (or a "Drone:" alert and its "Pilot:" line) can come
+# in through different links. Keyed by sender, they still meet here.
+MESH_ASSEMBLER = MeshLineAssembler()
+MESH_ALERTS = MeshTextAlerts()
 
 
 def _mesh_first_sighting(packet):
@@ -14541,8 +14547,6 @@ class MeshLink:
         self.my_node = None
         self.stats = {'texts': 0, 'lines': 0, 'records': 0, 'detections': 0, 'duplicates': 0,
                       'unparsed': 0, 'other_channel': 0, 'repeats': 0}
-        self.assembler = MeshLineAssembler()
-        self.alerts = MeshTextAlerts()
         self._stop = threading.Event()
         self._lost = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True, name=f"mesh:{self.id}")
@@ -14700,7 +14704,7 @@ def _mesh_on_text(packet, interface):
             meta['mesh_rssi'] = packet.get('rxRssi')
         if isinstance(packet.get('hopStart'), int) and isinstance(packet.get('hopLimit'), int):
             meta['mesh_hops'] = max(0, packet['hopStart'] - packet['hopLimit'])
-        for line in link.assembler.feed(sender, text):
+        for line in MESH_ASSEMBLER.feed(sender, text):
             handle_mesh_line(line, link, sender, meta)
     except Exception as e:
         logger.exception(f"Mesh: failed to handle a text packet: {e}")
@@ -14720,7 +14724,7 @@ def handle_mesh_line(line, link, sender, meta=None):
         if not isinstance(rec, dict):
             rec = None
     if rec is None:
-        rec = link.alerts.parse(sender, line)
+        rec = MESH_ALERTS.parse(sender, line)
     if rec is None:
         link.stats['unparsed'] += 1
         logger.debug(f"Mesh: not a station record from {sender}: {line[:100]!r}")

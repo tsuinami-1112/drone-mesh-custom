@@ -121,9 +121,9 @@ class FakeRadio:
         frames.append(frame(mesh_pb2.FromRadio(config_complete_id=config_id)))
         return frames
 
-    def _broadcast(self, data):
+    def _broadcast(self, data, via=None):
         with self.lock:
-            clients = list(self.clients)
+            clients = [c for c in self.clients if via is None or c.name.startswith(via)]
         for c in clients:
             try:
                 c.write(data)
@@ -131,7 +131,9 @@ class FakeRadio:
                 pass
 
     def packet(self, from_num, portnum, payload, channel=0, pkt_id=None, snr=6.25, rssi=-97,
-               hop_start=3, hop_limit=2):
+               hop_start=3, hop_limit=2, via=None):
+        """via='tcp' or 'pty' delivers it to that transport's clients only, as if just
+        one of two base radios had heard it."""
         if pkt_id is None:
             self._pkt_id += 1
             pkt_id = self._pkt_id
@@ -139,7 +141,7 @@ class FakeRadio:
                                 rx_snr=snr, rx_rssi=rssi, hop_start=hop_start, hop_limit=hop_limit,
                                 decoded=mesh_pb2.Data(portnum=portnum, payload=payload))
         setattr(p, 'from', from_num)
-        self._broadcast(frame(mesh_pb2.FromRadio(packet=p)))
+        self._broadcast(frame(mesh_pb2.FromRadio(packet=p)), via)
         return pkt_id
 
     def text(self, from_num, text, **kw):
