@@ -108,6 +108,14 @@ def signal_handler(signum, frame):
                     ser.close()
             except Exception as e:
                 logger.error(f"Error closing serial port {port}: {e}")
+
+    # Close Meshtastic radios (defined further down; absent if shutdown comes first)
+    try:
+        stop_mesh_links()
+    except NameError:
+        pass
+    except Exception as e:
+        logger.error(f"Error closing Meshtastic radios: {e}")
     
     logger.info("Shutdown complete")
     sys.exit(0)
@@ -702,7 +710,7 @@ def _cache_worker(job_id):
 # Define emit_serial_status early to avoid NameError in threads
 def emit_serial_status():
     try:
-        socketio.emit('serial_status', serial_connected_status, )
+        socketio.emit('serial_status', _serial_status_view(), )
     except Exception as e:
         logger.debug(f"Error emitting serial status: {e}")
         pass  # Ignore if no clients connected or serialization error
@@ -7601,7 +7609,7 @@ function showTerminalPopup(det, isNew) {
   const rid   = det.basic_id || det.op_id || 'N/A';
   // Fingerprint hits (src wifi/ble) never carry Remote ID or a position: say
   // so instead of reporting a "GPS lock" that will never come.
-  const isFingerprint = det.src === 'wifi' || det.src === 'ble';
+  const isFingerprint = det.src === 'wifi' || det.src === 'ble' || det.src === 'fingerprint';
   let header;
   if (isFingerprint) {
     const what = ((det.vendor || '') + ' ' + (det.model || det.ssid || '')).trim();
@@ -7781,9 +7789,10 @@ function generatePopupContent(detection, markerType) {
   const SRC_LABEL = {odid_ble:'Remote ID · BLE 4', odid_ble5:'Remote ID · BLE 5 Long Range',
     odid_nan:'Remote ID · WiFi NAN', odid_bcn:'Remote ID · WiFi Beacon', dji:'DJI DroneID · WiFi beacon',
     mavlink:'MAVLink telemetry · WiFi', wifi:'WiFi fingerprint', ble:'BLE fingerprint',
-    analog_fm:'5.8 GHz analog video · level 1 station'};
+    analog_fm:'5.8 GHz analog video · level 1 station',
+    mesh_text:'Remote ID · mesh text alert', fingerprint:'Fingerprint · mesh text alert'};
   const CONF_COLOR = {high:'#88ff99', med:'#ffcc66', low:'#ff8866'};
-  const isFingerprint = detection.src === 'wifi' || detection.src === 'ble';
+  const isFingerprint = detection.src === 'wifi' || detection.src === 'ble' || detection.src === 'fingerprint';
   const hasIdentity = detection.basic_id || detection.op_id || detection.desc || detection.src
                    || detection.vendor || detection.ssid;
   if (hasIdentity) {
@@ -12473,7 +12482,7 @@ function updateComboList(data) {
     // (no Remote ID, never a position) read differently from decoded Remote
     // ID, DJI DroneID or MAVLink. The tooltip carries the identity summary.
     const srcKind = (det && det.src) ? det.src : '';
-    item.classList.toggle('src-fingerprint', srcKind === 'wifi' || srcKind === 'ble');
+    item.classList.toggle('src-fingerprint', srcKind === 'wifi' || srcKind === 'ble' || srcKind === 'fingerprint');
     item.classList.toggle('src-mavlink', srcKind === 'mavlink');
     item.classList.toggle('src-dji', srcKind === 'dji');
     item.classList.toggle('src-analog', srcKind === 'analog_fm' || (det && det.type === 'analog_fm'));
@@ -13568,7 +13577,8 @@ def index():
     to the guided /select_ports onboarding screen — once setup is saved (or the
     user explicitly skips it) future visits land directly on the map and never
     bounce again, even on board disconnect."""
-    first_boot = not os.path.exists(PORTS_FILE)
+    # A mapper reading a Meshtastic radio directly has nothing to pick on that screen
+    first_boot = not os.path.exists(PORTS_FILE) and not MESH_LINKS
     load_selected_ports()
     # Best-effort auto-connect in the background, but never block or redirect on it.
     if SELECTED_PORTS and not any(serial_connected_status.get(p, False) for p in SELECTED_PORTS.values()):
@@ -13940,7 +13950,7 @@ def api_ports():
 # Updated status endpoint: returns a dict of statuses for each selected USB.
 @app.route('/api/serial_status', methods=['GET'])
 def api_serial_status():
-    return jsonify({"statuses": serial_connected_status})
+    return jsonify({"statuses": _serial_status_view()})
 
 # New endpoint to get currently selected ports
 @app.route('/api/selected_ports', methods=['GET'])
@@ -14008,6 +14018,64 @@ def open_serial_no_reset(port, baudrate=None, timeout=1):
 # ----------------------
 # Serial Reader Threads: Each selected port gets its own thread.
 # ----------------------
+def handle_station_json(detection, source):
+    """Act on one JSON record from a station, however it arrived: a line on a
+    USB serial port (ESP32 home node or a detector plugged in directly) or a
+    Meshtastic text message read straight off a radio. `source` names where it
+    came from and keys the last-MAC cache. Returns True when the record went
+    to update_detection()."""
+    # Heartbeats and command acks are normal traffic, not
+    # detections - drop them before the MAC logic below, which
+    # would otherwise log a WARNING for every one of them.
+    if 'heartbeat' in detection:
+        if detection.get('node_id') and detection.get('receiver'):
+            # A level 1 station announcing itself (position unknown until set)
+            register_station_heartbeat(detection, source=source)
+        else:
+            logger.debug(f"Skipping heartbeat from {source}")
+        return False
+    if 'info' in detection:
+        # Boot, status and bench lines of a level 1 station's console: never a
+        # detection, and never to be given the port's last MAC below
+        logger.debug(f"Station info line from {source}: {str(detection)[:120]}")
+        return False
+
+    # MAC tracking logic...
+    if 'mac' in detection:
+        last_mac_by_port[source] = detection['mac']
+        logger.debug(f"Found MAC in detection: {detection['mac']}")
+    elif source in last_mac_by_port:
+        detection['mac'] = last_mac_by_port[source]
+        logger.debug(f"Using cached MAC for {source}: {detection['mac']}")
+    else:
+        logger.warning(f"No MAC found in detection from {source}: {detection}")
+
+    # Skip status messages without detection data
+    if not any(key in detection for key in ['mac', 'drone_lat', 'pilot_lat', 'basic_id', 'remote_id']):
+        logger.debug(f"Skipping non-detection message from {source}: {detection}")
+        return False
+
+    # Normalize remote_id field
+    if 'remote_id' in detection and 'basic_id' not in detection:
+        detection['basic_id'] = detection['remote_id']
+
+    # Add port information for debugging
+    detection['source_port'] = source
+
+    # Process the detection
+    logger.info(f"Processing detection from {source}: MAC={detection.get('mac', 'N/A')}, "
+              f"RSSI={detection.get('rssi', 'N/A')}, "
+              f"Drone GPS=({detection.get('drone_lat', 'N/A')}, {detection.get('drone_long', 'N/A')})")
+
+    update_detection(detection)
+
+    # Log detection in headless mode
+    if HEADLESS_MODE and detection.get('mac'):
+        logger.info(f"Detection from {source}: MAC {detection['mac']}, "
+                   f"RSSI {detection.get('rssi', 'N/A')}")
+    return True
+
+
 def serial_reader(port):
     ser = None
     connection_attempts = 0
@@ -14082,55 +14150,7 @@ def serial_reader(port):
                         raise json.JSONDecodeError('JSON object expected', json_str, 0)
                     logger.debug(f"Parsed JSON from {port}: {detection}")
                     
-                    # Heartbeats and command acks are normal traffic, not
-                    # detections - drop them before the MAC logic below, which
-                    # would otherwise log a WARNING for every one of them.
-                    if 'heartbeat' in detection:
-                        if detection.get('node_id') and detection.get('receiver'):
-                            # A level 1 station announcing itself (position unknown until set)
-                            register_station_heartbeat(detection, source=port)
-                        else:
-                            logger.debug(f"Skipping heartbeat from {port}")
-                        continue
-                    if 'info' in detection:
-                        # Boot, status and bench lines of a level 1 station's console: never a
-                        # detection, and never to be given the port's last MAC below
-                        logger.debug(f"Station info line from {port}: {json_str[:120]}")
-                        continue
-
-                    # MAC tracking logic...
-                    if 'mac' in detection:
-                        last_mac_by_port[port] = detection['mac']
-                        logger.debug(f"Found MAC in detection: {detection['mac']}")
-                    elif port in last_mac_by_port:
-                        detection['mac'] = last_mac_by_port[port]
-                        logger.debug(f"Using cached MAC for {port}: {detection['mac']}")
-                    else:
-                        logger.warning(f"No MAC found in detection from {port}: {detection}")
-                    
-                    # Skip status messages without detection data
-                    if not any(key in detection for key in ['mac', 'drone_lat', 'pilot_lat', 'basic_id', 'remote_id']):
-                        logger.debug(f"Skipping non-detection message from {port}: {detection}")
-                        continue
-                        
-                    # Normalize remote_id field
-                    if 'remote_id' in detection and 'basic_id' not in detection:
-                        detection['basic_id'] = detection['remote_id']
-                    
-                    # Add port information for debugging
-                    detection['source_port'] = port
-                    
-                    # Process the detection
-                    logger.info(f"Processing detection from {port}: MAC={detection.get('mac', 'N/A')}, "
-                              f"RSSI={detection.get('rssi', 'N/A')}, "
-                              f"Drone GPS=({detection.get('drone_lat', 'N/A')}, {detection.get('drone_long', 'N/A')})")
-                    
-                    update_detection(detection)
-                    
-                    # Log detection in headless mode
-                    if HEADLESS_MODE and detection.get('mac'):
-                        logger.info(f"Detection from {port}: MAC {detection['mac']}, "
-                                   f"RSSI {detection.get('rssi', 'N/A')}")
+                    handle_station_json(detection, port)
                         
                 except (json.JSONDecodeError, ValueError) as e:
                     # Log non-JSON data for debugging
@@ -14200,6 +14220,11 @@ SERIAL_THREADS_LOCK = threading.Lock()
 
 def start_serial_thread(port):
     """Start the reader thread for `port`, unless one is already running."""
+    if port in mesh_claimed_ports():
+        # A Meshtastic radio speaks protobuf on this port, not JSON lines; its
+        # MeshLink owns it
+        logger.warning(f"{port} is configured as a Meshtastic radio - not starting a serial reader on it")
+        return None
     with SERIAL_THREADS_LOCK:
         existing = SERIAL_THREADS.get(port)
         if existing is not None and existing.is_alive():
@@ -14210,6 +14235,629 @@ def start_serial_thread(port):
         SERIAL_THREADS[port] = thread
         thread.start()
         return thread
+
+# ----------------------
+# Meshtastic radios, read directly (no ESP32 home node)
+# ----------------------
+# The home station's XIAO exists because a Heltec's USB port does not carry
+# TEXTMSG output: Meshtastic's serial module writes received text to its GPIO
+# UART, while the USB port speaks Meshtastic's protobuf client API (and
+# override_console_serial_port only works in the NMEA and CALTOPO modes).
+# Speaking that API here, through the official `meshtastic` package, lets the
+# mapper read a radio on USB or over WiFi (TCP port 4403) with nothing else
+# at the base.
+#
+# A field station's serial module (TEXTMSG) sends whatever its XIAO wrote as
+# TEXT_MESSAGE_APP packets: the raw bytes, newlines included, cut at 233 bytes
+# or a 250 ms pause. One packet can therefore hold two lines, or half of one,
+# so each sender's text is re-joined and split on newlines before parsing.
+# Lines are then treated exactly like serial lines from the ESP32 home node:
+# JSON (level 2 detections, level 1 analog_fm reports and heartbeats) goes
+# through handle_station_json(), and the plain-text alerts of the standalone
+# firmwares ("Drone: ...", "Possible drone (...) ...", "Pilot: ...") are
+# turned into the same records first. The home node's dedup (the first report
+# of a MAC wins for 500 ms, level 1 bearings exempt) runs here too.
+#
+# The mapper only listens. It never sends a packet into the mesh.
+MESHTASTIC_CONFIG_FILE = os.path.join(BASE_DIR, "meshtastic_config.json")
+MESH_DEFAULT_TCP_PORT = 4403
+MESH_MAX_LINKS = 4
+MESH_CHANNEL = 0                 # --mesh-channel: channel index the stations' serial modules send on
+MESH_DEDUP_WINDOW_S = 0.5        # --mesh-dedup-ms: the home node's window; 0 turns it off
+MESH_DEDUP_STALE_S = 30
+MESH_FRAGMENT_MAX_AGE_S = 15     # half a line older than this is dropped
+MESH_PILOT_PAIR_S = 10           # a "Pilot:" alert belongs to its sender's "Drone:" alert this recent
+MESH_LINE_MAX = 1024
+MESH_CONNECT_TIMEOUT_S = 60
+
+MESH_LINKS = {}                  # link id -> MeshLink
+MESH_LINKS_LOCK = threading.Lock()
+_MESH_LINK_BY_IFACE = {}         # id(interface) -> MeshLink, for the pubsub callbacks
+_MESH_IMPORT_LOCK = threading.Lock()
+_mesh_lib = None                 # (meshtastic module, pubsub.pub) once imported
+_mesh_seen_packets = {}          # (from, packet id) -> first seen: one packet heard by two radios counts once
+_MESH_SEEN_LOCK = threading.Lock()
+
+_MESH_DEV_RE = _re.compile(r'^(?:/dev/[A-Za-z0-9._\-/]{1,96}|COM\d{1,3})$')
+_MESH_HOST_RE = _re.compile(r'^[A-Za-z0-9](?:[A-Za-z0-9.\-]{0,251}[A-Za-z0-9])?$')
+
+
+def meshtastic_available():
+    """True when the meshtastic package is installed (without importing it)."""
+    import importlib.util
+    try:
+        return importlib.util.find_spec('meshtastic') is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _mesh_import():
+    """Import meshtastic on first use, so a mapper without radios never needs it,
+    and subscribe the mapper's listeners once."""
+    global _mesh_lib
+    with _MESH_IMPORT_LOCK:
+        if _mesh_lib is None:
+            import meshtastic
+            import meshtastic.serial_interface  # noqa: F401
+            import meshtastic.tcp_interface  # noqa: F401
+            from pubsub import pub
+            pub.subscribe(_mesh_on_text, "meshtastic.receive.text")
+            pub.subscribe(_mesh_on_lost, "meshtastic.connection.lost")
+            _mesh_lib = (meshtastic, pub)
+        return _mesh_lib
+
+
+def parse_mesh_spec(spec):
+    """'/dev/ttyACM0', 'COM7', 'serial:/dev/cu.usbmodem101', 'tcp:192.168.1.50',
+    'tcp:meshradio.local:4403' or a bare host -> {'kind', 'target'[, 'port']}.
+    Raises ValueError for anything else."""
+    s = str(spec or '').strip()
+    low = s.lower()
+    if low.startswith('serial:'):
+        kind, rest = 'serial', s[7:].strip()
+    elif low.startswith('tcp:'):
+        kind, rest = 'tcp', s[4:].strip().lstrip('/')
+    elif _MESH_DEV_RE.match(s):
+        kind, rest = 'serial', s
+    else:
+        kind, rest = 'tcp', s
+    if kind == 'serial':
+        if not _MESH_DEV_RE.match(rest):
+            raise ValueError(f"not a serial device path: {spec!r}")
+        return {'kind': 'serial', 'target': rest}
+    host, sep, port = rest.partition(':')
+    if not _MESH_HOST_RE.match(host):
+        raise ValueError(f"not a host name or IPv4 address: {spec!r}")
+    try:
+        port = int(port) if sep else MESH_DEFAULT_TCP_PORT
+    except ValueError:
+        raise ValueError(f"bad TCP port in {spec!r}")
+    if not 1 <= port <= 65535:
+        raise ValueError(f"bad TCP port in {spec!r}")
+    return {'kind': 'tcp', 'target': host, 'port': port}
+
+
+def mesh_link_id(cfg):
+    if cfg['kind'] == 'serial':
+        return f"serial:{cfg['target']}"
+    return f"tcp:{cfg['target']}:{cfg['port']}"
+
+
+class MeshLineAssembler:
+    """Re-joins each sender's serial-module text into whole lines."""
+
+    def __init__(self):
+        self._held = {}          # sender -> (partial text, time its first piece arrived)
+        self._lock = threading.Lock()
+
+    def feed(self, sender, text, now=None):
+        now = time.time() if now is None else now
+        with self._lock:
+            held = self._held.pop(sender, None)
+            if held and now - held[1] > MESH_FRAGMENT_MAX_AGE_S:
+                logger.debug(f"Mesh: dropping a stale half line from {sender}: {held[0][:60]!r}")
+                held = None
+            data = (held[0] if held else '') + text.replace('\r', '')
+            parts = data.split('\n')
+            tail = parts.pop()
+            lines = [p.strip() for p in parts if p.strip()]
+            tail_s = tail.strip()
+            if tail_s:
+                if _mesh_json_complete(tail_s) or not _mesh_line_start(tail_s):
+                    # A whole JSON object that simply lacks its newline, or text that
+                    # can never become a station record (chat typed in the
+                    # Meshtastic app has no newline): hand it on now
+                    lines.append(tail_s)
+                else:
+                    self._held[sender] = (tail[-MESH_LINE_MAX:], held[1] if held else now)
+            return lines
+
+
+_MESH_ALERT_PREFIXES = ('Drone', 'Possible drone', 'Pilot:')
+
+
+def _mesh_line_start(s):
+    """Could `s` be the beginning of a station line? A held piece is always the
+    start of a line, so it is JSON or one of the text alerts, or it is not ours."""
+    if s.startswith('{'):
+        return True
+    return any(s.startswith(p) or p.startswith(s) for p in _MESH_ALERT_PREFIXES)
+
+
+def _mesh_json_complete(s):
+    j = s.find('{')
+    if j < 0 or not s.endswith('}'):
+        return False
+    try:
+        return isinstance(_json_loads_strict(s[j:]), dict)
+    except (json.JSONDecodeError, ValueError):
+        return False
+
+
+_MESH_MAC = r'[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}'
+_MESH_ALERT_DRONE = _re.compile(r'^Drone(?:\[(?P<band>[^\]]{1,8})\])?:\s+(?P<mac>' + _MESH_MAC +
+                               r')\s+RSSI:(?P<rssi>-?\d{1,3})(?P<rest>.*)$')
+_MESH_ALERT_FP = _re.compile(r'^Possible drone(?:\[(?P<band>[^\]]{1,8})\])?\s+\((?P<what>.*)\)\s+(?P<mac>' +
+                            _MESH_MAC + r')\s+RSSI:(?P<rssi>-?\d{1,3})\s*$')
+_MESH_ALERT_PILOT = _re.compile(r'^Pilot:\s+https?://maps\.google\.com/\?q=(?P<lat>-?\d{1,3}(?:\.\d+)?),'
+                               r'(?P<lon>-?\d{1,3}(?:\.\d+)?)\s*$')
+_MESH_ALERT_ID = _re.compile(r'(?:^|\s)ID:(\S{1,40})')
+_MESH_ALERT_OP = _re.compile(r'(?:^|\s)OP:(\S{1,40})')
+_MESH_ALERT_POS = _re.compile(r'https?://maps\.google\.com/\?q=(-?\d{1,3}(?:\.\d+)?),(-?\d{1,3}(?:\.\d+)?)')
+
+
+class MeshTextAlerts:
+    """The plain-text mesh alerts of remoteid-mesh, remoteid-mesh-dualcore and
+    remoteid-c5-5g, turned into the JSON records the rest of the mapper reads.
+    The text does not say whether a hit came over WiFi or BLE, so decoded
+    alerts get src 'mesh_text' and fingerprint alerts src 'fingerprint'."""
+
+    def __init__(self):
+        self._last_drone = {}    # sender -> (record, time)
+        self._lock = threading.Lock()
+
+    def parse(self, sender, line, now=None):
+        now = time.time() if now is None else now
+        m = _MESH_ALERT_DRONE.match(line)
+        if m:
+            rec = {'mac': m.group('mac').lower(), 'rssi': int(m.group('rssi')), 'src': 'mesh_text'}
+            rest = m.group('rest')
+            mid = _MESH_ALERT_ID.search(rest)
+            mop = _MESH_ALERT_OP.search(rest)
+            mpos = _MESH_ALERT_POS.search(rest)
+            if mid:
+                rec['basic_id'] = mid.group(1)
+            if mop:
+                rec['op_id'] = mop.group(1)
+            if mpos:
+                lat, lon = float(mpos.group(1)), float(mpos.group(2))
+                if -90 <= lat <= 90 and -180 <= lon <= 180:
+                    rec['drone_lat'], rec['drone_long'] = lat, lon
+            if m.group('band'):
+                rec['rf_band'] = m.group('band')
+            with self._lock:
+                self._last_drone[sender] = (dict(rec), now)
+            return rec
+        m = _MESH_ALERT_FP.match(line)
+        if m:
+            rec = {'mac': m.group('mac').lower(), 'rssi': int(m.group('rssi')), 'src': 'fingerprint',
+                   'vendor': m.group('what').strip()[:64]}
+            if m.group('band'):
+                rec['rf_band'] = m.group('band')
+            return rec
+        m = _MESH_ALERT_PILOT.match(line)
+        if m:
+            # Sent a second after its "Drone:" line and without the MAC: resend that
+            # drone's record with the pilot added, because update_detection()
+            # replaces the whole track and a pilot-only record would erase it.
+            with self._lock:
+                last = self._last_drone.get(sender)
+            if not last or now - last[1] > MESH_PILOT_PAIR_S:
+                return None
+            lat, lon = float(m.group('lat')), float(m.group('lon'))
+            if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                return None
+            rec = dict(last[0])
+            rec['pilot_lat'], rec['pilot_long'] = lat, lon
+            return rec
+        return None
+
+
+class MeshDedup:
+    """The home node's dedup engine (node-mode-dualcore/src/main_home.cpp): the
+    first report of a MAC wins and later copies inside MESH_DEDUP_WINDOW_S are
+    dropped. Level 1 bearing reports always pass, because every station that
+    hears a carrier reports the same channel-derived MAC with its own bearing."""
+
+    def __init__(self):
+        self._window_start = {}  # mac -> start of its current window
+        self._lock = threading.Lock()
+
+    def allow(self, rec, now=None):
+        if MESH_DEDUP_WINDOW_S <= 0:
+            return True
+        mac = rec.get('mac')
+        if not isinstance(mac, str) or not mac or rec.get('type') == 'analog_fm':
+            return True
+        now = time.time() if now is None else now
+        key = mac.lower()
+        with self._lock:
+            if len(self._window_start) > 512:
+                for k in [k for k, t in self._window_start.items() if now - t > MESH_DEDUP_STALE_S]:
+                    del self._window_start[k]
+            start = self._window_start.get(key)
+            if start is None or now - start >= MESH_DEDUP_WINDOW_S:
+                self._window_start[key] = now
+                return True
+            return False
+
+
+MESH_DEDUP = MeshDedup()
+
+
+def _mesh_first_sighting(packet):
+    """False when this exact packet (same sender, same packet id) already came in
+    through another radio."""
+    pid = packet.get('id')
+    frm = packet.get('from')
+    if not pid or frm is None:
+        return True
+    now = time.time()
+    key = (frm, pid)
+    with _MESH_SEEN_LOCK:
+        if len(_mesh_seen_packets) > 4096:
+            for k in [k for k, t in _mesh_seen_packets.items() if now - t > 600]:
+                del _mesh_seen_packets[k]
+        if key in _mesh_seen_packets:
+            return False
+        _mesh_seen_packets[key] = now
+        return True
+
+
+def _mesh_sender_id(packet):
+    frm = packet.get('fromId')
+    if isinstance(frm, str) and frm:
+        return frm[:16]
+    try:
+        return f"!{int(packet.get('from')) & 0xFFFFFFFF:08x}"
+    except (TypeError, ValueError):
+        return "!unknown"
+
+
+class MeshLink:
+    """One radio (USB serial or TCP), kept connected by its own thread."""
+
+    def __init__(self, cfg):
+        self.cfg = dict(cfg)
+        self.id = mesh_link_id(cfg)
+        self.kind = cfg['kind']
+        where = cfg['target'] if self.kind == 'serial' else f"{cfg['target']}:{cfg['port']}"
+        self.label = f"mesh radio {where}"
+        self.iface = None
+        self.connected = False
+        self.connected_since = None
+        self.error = None
+        self.last_rx = None
+        self.my_node = None
+        self.stats = {'texts': 0, 'lines': 0, 'records': 0, 'detections': 0, 'duplicates': 0,
+                      'unparsed': 0, 'other_channel': 0, 'repeats': 0}
+        self.assembler = MeshLineAssembler()
+        self.alerts = MeshTextAlerts()
+        self._stop = threading.Event()
+        self._lost = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True, name=f"mesh:{self.id}")
+
+    def start(self):
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        self._lost.set()
+        self._close()
+
+    def _close(self):
+        iface, self.iface = self.iface, None
+        was_connected, self.connected = self.connected, False
+        if iface is not None:
+            with MESH_LINKS_LOCK:
+                _MESH_LINK_BY_IFACE.pop(id(iface), None)
+            try:
+                iface.close()
+            except Exception as e:
+                logger.debug(f"Meshtastic {self.label}: close failed: {e}")
+        if was_connected:
+            emit_serial_status()
+
+    def _open(self):
+        meshtastic, _pub = _mesh_import()
+        if self.kind == 'serial':
+            iface = meshtastic.serial_interface.SerialInterface(
+                devPath=self.cfg['target'], connectNow=False, timeout=MESH_CONNECT_TIMEOUT_S)
+        else:
+            iface = meshtastic.tcp_interface.TCPInterface(
+                hostname=self.cfg['target'], portNumber=self.cfg['port'], connectNow=False,
+                timeout=MESH_CONNECT_TIMEOUT_S)
+        # Registered before connecting, so packets that arrive during the handshake
+        # already find their link
+        with MESH_LINKS_LOCK:
+            _MESH_LINK_BY_IFACE[id(iface)] = self
+        self.iface = iface
+        iface.connect()
+        iface.waitForConfig()
+        return iface
+
+    def _run(self):
+        backoff = 2
+        while not self._stop.is_set() and not SHUTDOWN_EVENT.is_set():
+            self._lost.clear()
+            try:
+                iface = self._open()
+                info = iface.getMyNodeInfo() or {}
+                user = info.get('user') or {}
+                self.my_node = {'id': user.get('id'), 'long_name': user.get('longName'),
+                                'short_name': user.get('shortName'), 'hw_model': user.get('hwModel')}
+                self.connected, self.connected_since, self.error = True, time.time(), None
+                backoff = 2
+                logger.info(f"Meshtastic {self.label}: connected to {self.my_node.get('long_name') or '?'} "
+                            f"({self.my_node.get('id') or '?'}), listening on channel {MESH_CHANNEL}")
+                emit_serial_status()
+                while not (self._stop.is_set() or SHUTDOWN_EVENT.is_set() or self._lost.is_set()):
+                    rx = getattr(iface, '_rxThread', None)
+                    if rx is not None and not rx.is_alive():
+                        break
+                    self._lost.wait(1)
+                if not self._stop.is_set():
+                    logger.warning(f"Meshtastic {self.label}: connection lost, reconnecting")
+            except Exception as e:
+                self.error = str(e) or type(e).__name__
+                logger.warning(f"Meshtastic {self.label}: {self.error}")
+            except SystemExit as e:
+                # meshtastic.util.our_exit() calls sys.exit(); in this thread that would
+                # end the link for good instead of retrying
+                self.error = f"meshtastic exited: {e}"
+                logger.warning(f"Meshtastic {self.label}: {self.error}")
+            finally:
+                self._close()
+            if self._stop.is_set():
+                break
+            self._stop.wait(backoff)
+            backoff = min(backoff * 2, 60)
+        logger.info(f"Meshtastic {self.label}: stopped")
+
+    def nodes_snapshot(self):
+        iface = self.iface
+        if iface is None or not self.connected:
+            return {}
+        try:
+            nodes = dict(getattr(iface, 'nodes', None) or {})
+        except RuntimeError:
+            return {}
+        now = time.time()
+        out = {}
+        for node_id, n in list(nodes.items()):
+            if not isinstance(n, dict):
+                continue
+            user = n.get('user') or {}
+            dm = n.get('deviceMetrics') or {}
+            pm = n.get('powerMetrics') or {}
+            last = n.get('lastHeard')
+            out[str(node_id)[:16]] = {
+                'long_name': user.get('longName'), 'short_name': user.get('shortName'),
+                'hw_model': user.get('hwModel'),
+                'last_heard_age_s': round(now - last) if isinstance(last, (int, float)) and last > 0 else None,
+                'snr': n.get('snr'), 'hops_away': n.get('hopsAway'),
+                'battery_level': dm.get('batteryLevel'), 'voltage': dm.get('voltage'),
+                'channel_util': dm.get('channelUtilization'), 'air_util_tx': dm.get('airUtilTx'),
+                'uptime_s': dm.get('uptimeSeconds'),
+                'power': {k: v for k, v in pm.items() if isinstance(v, (int, float))} or None,
+                'via': self.id,
+            }
+        return out
+
+    def status(self):
+        return {
+            'id': self.id, 'kind': self.kind, 'label': self.label, 'connected': self.connected,
+            'connected_since': self.connected_since, 'error': self.error,
+            'last_rx_age_s': round(time.time() - self.last_rx, 1) if self.last_rx else None,
+            'radio': self.my_node, 'stats': dict(self.stats),
+        }
+
+
+def _mesh_link_for(interface):
+    with MESH_LINKS_LOCK:
+        return _MESH_LINK_BY_IFACE.get(id(interface))
+
+
+def _mesh_on_lost(interface):
+    link = _mesh_link_for(interface)
+    if link is not None:
+        link._lost.set()
+
+
+def _mesh_on_text(packet, interface):
+    """pubsub listener for meshtastic.receive.text (runs on the library's thread)."""
+    try:
+        link = _mesh_link_for(interface)
+        if link is None or not isinstance(packet, dict):
+            return
+        decoded = packet.get('decoded') or {}
+        text = decoded.get('text')
+        if not isinstance(text, str) or not text:
+            return
+        link.last_rx = time.time()
+        link.stats['texts'] += 1
+        if packet.get('channel', 0) != MESH_CHANNEL:
+            link.stats['other_channel'] += 1
+            return
+        if not _mesh_first_sighting(packet):
+            link.stats['repeats'] += 1
+            return
+        sender = _mesh_sender_id(packet)
+        meta = {'mesh_from': sender}
+        if packet.get('rxSnr') is not None:
+            meta['mesh_snr'] = packet.get('rxSnr')
+        if packet.get('rxRssi') is not None:
+            meta['mesh_rssi'] = packet.get('rxRssi')
+        if isinstance(packet.get('hopStart'), int) and isinstance(packet.get('hopLimit'), int):
+            meta['mesh_hops'] = max(0, packet['hopStart'] - packet['hopLimit'])
+        for line in link.assembler.feed(sender, text):
+            handle_mesh_line(line, link, sender, meta)
+    except Exception as e:
+        logger.exception(f"Mesh: failed to handle a text packet: {e}")
+
+
+def handle_mesh_line(line, link, sender, meta=None):
+    """One reassembled line from a station's serial module."""
+    link.stats['lines'] += 1
+    source = f"{link.label} {sender}"
+    rec = None
+    j = line.find('{')
+    if j >= 0 and line.endswith('}'):
+        try:
+            rec = _json_loads_strict(line[j:])
+        except (json.JSONDecodeError, ValueError):
+            rec = None
+        if not isinstance(rec, dict):
+            rec = None
+    if rec is None:
+        rec = link.alerts.parse(sender, line)
+    if rec is None:
+        link.stats['unparsed'] += 1
+        logger.debug(f"Mesh: not a station record from {sender}: {line[:100]!r}")
+        return False
+    link.stats['records'] += 1
+    if 'heartbeat' not in rec and 'info' not in rec:
+        if not MESH_DEDUP.allow(rec):
+            link.stats['duplicates'] += 1
+            return False
+        for k, v in (meta or {}).items():
+            rec.setdefault(k, v)
+    try:
+        processed = handle_station_json(rec, source)
+    except (json.JSONDecodeError, ValueError) as e:
+        logger.debug(f"Mesh: record from {sender} rejected: {e}")
+        return False
+    if processed:
+        link.stats['detections'] += 1
+    return processed
+
+
+def mesh_claimed_ports():
+    with MESH_LINKS_LOCK:
+        return {l.cfg['target'] for l in MESH_LINKS.values() if l.kind == 'serial'}
+
+
+def mesh_status():
+    with MESH_LINKS_LOCK:
+        links = list(MESH_LINKS.values())
+    nodes = {}
+    for link in links:
+        for node_id, n in link.nodes_snapshot().items():
+            nodes.setdefault(node_id, n)
+    return {'available': meshtastic_available(), 'channel': MESH_CHANNEL,
+            'dedup_ms': int(MESH_DEDUP_WINDOW_S * 1000),
+            'links': [l.status() for l in links], 'nodes': nodes}
+
+
+def load_mesh_config():
+    try:
+        with open(MESHTASTIC_CONFIG_FILE) as f:
+            data = json.load(f)
+        links = data.get('links') if isinstance(data, dict) else None
+        return [str(x) for x in links][:MESH_MAX_LINKS] if isinstance(links, list) else []
+    except FileNotFoundError:
+        return []
+    except Exception as e:
+        logger.warning(f"Could not read {MESHTASTIC_CONFIG_FILE}: {e}")
+        return []
+
+
+def save_mesh_config():
+    with MESH_LINKS_LOCK:
+        specs = [l.id for l in MESH_LINKS.values()]
+    try:
+        tmp = MESHTASTIC_CONFIG_FILE + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump({'links': specs}, f, indent=2)
+        os.replace(tmp, MESHTASTIC_CONFIG_FILE)
+    except Exception as e:
+        logger.warning(f"Could not save {MESHTASTIC_CONFIG_FILE}: {e}")
+
+
+def set_mesh_links(specs, persist=True):
+    """Make the running links match `specs`. Returns (ok, errors)."""
+    if not isinstance(specs, (list, tuple)):
+        return False, ['links must be a list']
+    if len(specs) > MESH_MAX_LINKS:
+        return False, [f'at most {MESH_MAX_LINKS} radios']
+    wanted, errors = {}, []
+    for spec in specs:
+        try:
+            cfg = parse_mesh_spec(spec)
+        except ValueError as e:
+            errors.append(str(e))
+            continue
+        if cfg['kind'] == 'serial' and cfg['target'] in set(SELECTED_PORTS.values()):
+            errors.append(f"{cfg['target']} is selected as a serial port for an ESP32; deselect it first")
+            continue
+        wanted[mesh_link_id(cfg)] = cfg
+    if errors:
+        return False, errors
+    if wanted and not meshtastic_available():
+        return False, ['the meshtastic package is not installed: pip install meshtastic']
+    with MESH_LINKS_LOCK:
+        removed = [l for lid, l in MESH_LINKS.items() if lid not in wanted]
+        for l in removed:
+            MESH_LINKS.pop(l.id, None)
+        added = []
+        for lid, cfg in wanted.items():
+            if lid not in MESH_LINKS:
+                link = MeshLink(cfg)
+                MESH_LINKS[lid] = link
+                added.append(link)
+    for l in removed:
+        l.stop()
+    for l in added:
+        logger.info(f"Meshtastic: starting {l.label}")
+        l.start()
+    if persist:
+        save_mesh_config()
+    emit_serial_status()
+    return True, []
+
+
+def stop_mesh_links():
+    with MESH_LINKS_LOCK:
+        links = list(MESH_LINKS.values())
+    for l in links:
+        l.stop()
+
+
+def _serial_status_view():
+    """Serial ports plus mesh radios, for display only: the port monitor and the
+    auto-connect logic keep reading serial_connected_status itself."""
+    view = dict(serial_connected_status)
+    with MESH_LINKS_LOCK:
+        for l in MESH_LINKS.values():
+            view[l.label] = l.connected
+    return view
+
+
+@app.route('/api/meshtastic', methods=['GET'])
+def api_meshtastic_status():
+    return jsonify(mesh_status())
+
+
+@app.route('/api/meshtastic', methods=['POST'])
+def api_meshtastic_set():
+    data = _request_json_object()
+    if data is None or not isinstance(data.get('links'), list):
+        return jsonify({'error': 'JSON object with a "links" list expected, e.g. {"links": ["/dev/ttyACM0", "tcp:192.168.1.50"]}'}), 400
+    ok, errors = set_mesh_links(data['links'])
+    if not ok:
+        return jsonify({'error': '; '.join(errors)}), 400
+    return jsonify(mesh_status())
+
 
 # Download endpoints for CSV, KML, and Aliases files
 @app.route('/download/csv')
@@ -14309,6 +14957,8 @@ Examples:
   python mapper.py --no-auto-start    # Disable automatic port connection
   python mapper.py --port-interval 5  # Check for ports every 5 seconds
   python mapper.py --debug            # Enable debug logging
+  python mapper.py --mesh /dev/ttyACM0            # Read a Meshtastic radio on USB directly
+  python mapper.py --mesh tcp:192.168.1.50        # ...or one on WiFi
         """
     )
     
@@ -14343,15 +14993,42 @@ Examples:
         action='store_true',
         help='Enable debug logging'
     )
+
+    parser.add_argument(
+        '--mesh',
+        action='append',
+        metavar='PORT_OR_HOST',
+        help='Read a Meshtastic radio directly, no ESP32 home node needed: a USB serial port '
+             '(/dev/ttyACM0, COM7) or a WiFi radio (tcp:192.168.1.50[:4403]). Repeat for more '
+             'radios. Saved and reused on the next start; POST /api/meshtastic changes it later'
+    )
+
+    parser.add_argument(
+        '--mesh-channel',
+        type=int,
+        default=0,
+        help='Channel index the stations\' serial modules send on (default: 0, the primary channel)'
+    )
+
+    parser.add_argument(
+        '--mesh-dedup-ms',
+        type=int,
+        default=500,
+        help='Drop repeat reports of the same drone MAC from the mesh within this window, as the '
+             'ESP32 home node does (default: 500, 0 = off)'
+    )
     
     return parser.parse_args()
 
 def main():
     """Main function with enhanced startup and configuration"""
     global HEADLESS_MODE, AUTO_START_ENABLED, PORT_MONITOR_INTERVAL
+    global MESH_CHANNEL, MESH_DEDUP_WINDOW_S
     
     # Parse command line arguments
     args = parse_arguments()
+    MESH_CHANNEL = max(0, min(7, args.mesh_channel))
+    MESH_DEDUP_WINDOW_S = max(0, args.mesh_dedup_ms) / 1000.0
     
     # Configure global settings
     HEADLESS_MODE = args.headless
@@ -14382,6 +15059,14 @@ def main():
     
     # Perform startup auto-connection
     startup_auto_connect()
+
+    # Meshtastic radios read directly: the ones on the command line (saved for
+    # next time), otherwise the saved ones
+    mesh_specs = args.mesh if args.mesh else (load_mesh_config() if AUTO_START_ENABLED else [])
+    if mesh_specs:
+        ok, errors = set_mesh_links(mesh_specs, persist=bool(args.mesh))
+        if not ok:
+            logger.error(f"Meshtastic radios not started: {'; '.join(errors)}")
     
     # Start cleanup timer to prevent memory leaks
     start_cleanup_timer()
@@ -14433,6 +15118,7 @@ def api_diagnostics():
         "timestamp": datetime.now().isoformat(),
         "selected_ports": SELECTED_PORTS,
         "serial_status": serial_connected_status,
+        "meshtastic": mesh_status(),
         "tracked_pairs": len(tracked_pairs),
         "detection_history_count": len(detection_history),
         "last_mac_by_port": last_mac_by_port,
@@ -14514,7 +15200,7 @@ def handle_connect():
 
 def emit_serial_status():
     try:
-        socketio.emit('serial_status', serial_connected_status, )
+        socketio.emit('serial_status', _serial_status_view(), )
     except Exception as e:
         logger.debug(f"Error emitting serial status: {e}")
         pass  # Ignore if no clients connected or serialization error

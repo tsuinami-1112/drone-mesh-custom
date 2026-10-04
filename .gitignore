@@ -33,6 +33,7 @@ drone_tags.json
 geofences.json
 webhook_url.json
 stations.json
+meshtastic_config.json
 adsb_config.json
 cache_jobs.json
 

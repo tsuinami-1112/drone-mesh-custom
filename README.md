@@ -114,7 +114,8 @@ dBm V4 variants.
 |---|---|---|
 | **Field station** | `node-mode-dualcore`, env `remote_node` | On a pole or roof, on solar, unattended. Detects drones and sends each detection over the mesh, tagged with its own `node_id` |
 | **Home station** | `node-mode-dualcore`, env `home_node` | Plugged into the computer running `mesh-mapper.py`. Receives the mesh, drops duplicate reports of the same drone from several field stations, and forwards the rest over USB |
-| **Standalone detector** | `remoteid-mesh-dualcore`, env `seeed_xiao_esp32s3` | Plugged straight into the mapper's computer. Also posts short text alerts with map links to the mesh, which any Meshtastic app can read but the mapper doesn't plot |
+| **Standalone detector** | `remoteid-mesh-dualcore`, env `seeed_xiao_esp32s3` | Plugged straight into the mapper's computer. Also posts short text alerts with map links to the mesh, which any Meshtastic app can read; a mapper [reading a radio directly](#reading-a-mesh-radio-directly-experimental) plots them too |
+| **Radio-only home station** (experimental) | None on the XIAO side: just a Heltec V4 running stock Meshtastic | On the mapper computer's USB, or on WiFi. `mesh-mapper.py --mesh` reads it directly, with no XIAO. See [Reading a mesh radio directly](#reading-a-mesh-radio-directly-experimental) |
 
 A typical deployment is several field stations and one home station. A bare
 Heltec V4 on a hilltop, with no XIAO and the `ROUTER` role, extends the mesh
@@ -521,6 +522,43 @@ sudo systemctl enable --now mesh-mapper
 | `--debug` | off | Verbose logging |
 | `--port-interval SEC` | 10 | USB port re-scan cadence |
 | `--no-auto-start` | off | Don't auto-connect to saved ports |
+| `--mesh PORT_OR_HOST` | - | Read a Meshtastic radio directly (repeatable): `/dev/ttyACM0`, `COM7` or `tcp:192.168.1.50` |
+| `--mesh-channel N` | 0 | Channel index the stations send on |
+| `--mesh-dedup-ms MS` | 500 | Drop repeat reports of the same drone within this window, as the ESP32 home node does |
+
+### Reading a mesh radio directly (experimental)
+
+The mapper can talk to a Meshtastic radio itself, so the home station needs no
+XIAO: plug a Heltec V4 running stock Meshtastic into the mapper computer, or
+put it on WiFi.
+
+```bash
+python3 mesh-mapper.py --mesh /dev/ttyACM0          # USB (Windows: COM7, macOS: /dev/cu.usbmodem...)
+python3 mesh-mapper.py --mesh tcp:192.168.1.50      # a radio on WiFi (port 4403)
+```
+
+- **The radio** needs only the region and your private channel. Its serial
+  module can stay off, because there is no XIAO on it. For WiFi:
+  `meshtastic --set network.wifi_enabled true --set network.wifi_ssid <ssid> --set network.wifi_psk <password>`
+  (on the ESP32, WiFi replaces Bluetooth).
+- **Field stations don't change.** The mapper reads the same messages the
+  ESP32 home node does: node mode JSON, level 1 bearings and heartbeats, and
+  the standalone firmwares' `Drone:` / `Pilot:` / `Possible drone` text
+  alerts. It joins lines the radio split across packets and drops repeat
+  reports of the same drone like the home node.
+- **It only listens.** The mapper never sends anything into the mesh. While it
+  holds the radio's USB port, the Meshtastic CLI and app can't use that port;
+  use WiFi, or stop the mapper first.
+- **Station health:** `GET /api/meshtastic` lists every node the radio knows,
+  with last-heard time, SNR, and battery and power telemetry (the current
+  sensor from [Running unattended](#running-unattended) shows up here).
+- The radios are saved to `meshtastic_config.json` and reconnect on the next
+  start. Change them later with
+  `POST /api/meshtastic {"links": ["/dev/ttyACM0"]}`.
+- **No hardware?** `mapper_test/fake_meshtastic_radio.py --tcp 4403 --demo`
+  plays a demo mesh to `--mesh tcp:127.0.0.1:4403`, and
+  `mapper_test/test_mesh_direct.py` checks every message format end to end.
+  Details are in the [reference](docs/REFERENCE.md#direct-meshtastic-radio-input).
 
 ---
 

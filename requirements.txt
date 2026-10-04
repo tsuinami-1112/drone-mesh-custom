@@ -3,3 +3,5 @@ flask-socketio>=5.0.0
 requests>=2.25.0
 urllib3>=1.26.0
 pyserial>=3.5
+# Direct Meshtastic radio input (mesh-mapper.py --mesh); not needed with an ESP32 home node
+meshtastic>=2.5

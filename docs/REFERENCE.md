@@ -8,6 +8,7 @@ flashing and getting the mapper running, start with the
 - [Firmware variants and build options](#firmware-variants-and-build-options)
 - [Mapper features](#mapper-features)
 - [Raspberry Pi installer](#raspberry-pi-installer)
+- [Direct Meshtastic radio input](#direct-meshtastic-radio-input)
 - [Offline maps](#offline-maps)
 - [ADS-B air traffic](#ads-b-air-traffic)
 - [API reference](#api-reference)
@@ -220,6 +221,68 @@ hand.
 
 `RPI/rpi_dependancies.py` is an older helper that installs the mapper's Python
 packages system-wide. The installer doesn't use it and you don't need it.
+
+---
+
+## Direct Meshtastic radio input
+
+`mesh-mapper.py --mesh PORT_OR_HOST` connects to a Meshtastic radio through
+the official `meshtastic` Python package (`SerialInterface` on USB,
+`TCPInterface` on WiFi, port 4403) and reads the text messages the field
+stations' serial modules send. It replaces the ESP32 home node, whose only
+job was to turn the radio's GPIO serial output into USB lines: a Heltec's USB
+port speaks Meshtastic's protobuf client API instead, and
+`override_console_serial_port` does not work in TEXTMSG mode.
+
+**What arrives.** In TEXTMSG mode a serial module sends whatever its XIAO
+wrote as a TEXT_MESSAGE_APP packet: the raw bytes with their `\r\n`, cut at
+233 bytes or at a 250 ms pause. The mapper re-joins each sender's text and
+splits it on newlines. A held piece older than 15 s is dropped, and text that
+can't be the start of a station line (chat from a phone) is handed on at once.
+
+**How each line is read:**
+
+| Line | Becomes | `src` |
+|---|---|---|
+| JSON (node mode detection, level 1 `analog_fm` report or heartbeat) | handled exactly as a serial line from the home node | as sent |
+| `Drone: <mac> RSSI:<n> [ID:<id>] [OP:<id>] [maps link]`, or the C5's `Drone[<band>]: ...` | detection with MAC, RSSI, IDs, position and `rf_band` | `mesh_text` |
+| `Pilot: <maps link>` | the same sender's last `Drone:` record (within 10 s) with the pilot added | `mesh_text` |
+| `Possible drone (<what>) <mac> RSSI:<n>` | fingerprint entry, `vendor` = `<what>` | `fingerprint` |
+| anything else | counted as `unparsed`, ignored | - |
+
+Text alerts don't say whether a hit came over WiFi or BLE, hence the two new
+`src` values. The UI labels them and styles `fingerprint` like the other
+heuristic hits.
+
+**Dedup.** As on the home node, the first report of a MAC wins and repeats
+inside `--mesh-dedup-ms` (500 ms) are dropped. Level 1 `analog_fm` reports
+always pass, because each station's bearing is its own observation. The same
+packet heard through two radios (same sender and packet id) is processed once.
+Only `--mesh-channel` (default 0, the channel serial modules send on) is read.
+
+**Added fields** on each detection: `mesh_from` (the sending radio's node id,
+e.g. `!a1b2c3d4`), `mesh_snr`, `mesh_rssi`, `mesh_hops`. `source_port` reads
+`mesh radio <port or host> <node id>`.
+
+**Connection handling.** Each radio has a thread that connects, waits for the
+radio's config, and reconnects with backoff (2 s doubling to 60 s) after a
+lost connection. The library itself re-dials a dropped TCP socket. A serial
+port given to `--mesh` is never opened by the ESP32 serial reader. The radios
+show in the USB status list as `mesh radio ...`.
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/meshtastic` | Links (connected, radio, error, counters) and every node the radios know: last heard, SNR, hops, battery, voltage, channel and airtime use, power telemetry |
+| `POST` | `/api/meshtastic` | `{"links": ["/dev/ttyACM0", "tcp:192.168.1.50"]}` replaces the radios (max 4) and saves them; `[]` clears |
+
+**Testing without a radio.** `mapper_test/fake_meshtastic_radio.py` speaks
+enough of the radio side of the protocol for the library to connect over a
+pseudo-terminal (`--pty`) or TCP (`--tcp PORT`). `--demo` loops a mesh with a
+Remote ID drone, two level 1 stations and a standalone detector (`--mapper
+URL` places the level 1 stations). `mapper_test/test_mesh_direct.py` runs the
+real mapper against it over both transports and checks every message format,
+the dedup, telemetry, a TCP drop and reconnect, and that the mapper never
+transmits.
 
 ---
 
@@ -473,6 +536,7 @@ WebSocket event: `adsb` - pushed every poll cycle when enabled.
 | `GET` | `/api/diagnostics` | System health and performance |
 | `POST` | `/api/debug_mode` | Toggle debug logging |
 | `POST` | `/api/send_command` | Send command to ESP32 devices |
+| `GET` / `POST` | `/api/meshtastic` | Directly read Meshtastic radios: status, nodes, configuration ([details](#direct-meshtastic-radio-input)) |
 | `GET` / `POST` | `/select_ports` | Port selection interface |
 
 ### WebSocket events
@@ -541,7 +605,7 @@ drone-mesh-custom/
 |-- remoteid-mesh-dualcore/     # ESP32-S3 / C6 BLE+WiFi firmware
 |-- remoteid-mesh/              # WiFi-only firmware (C3 / S3)
 |-- remoteid-c5-5g/             # ESP32-C5 dual-band firmware
-|-- mapper_test/                # Mapper test scripts
+|-- mapper_test/                # Mapper test scripts, fake Meshtastic radio
 |-- firmware/                   # Legacy prebuilt binaries (predate the detection expansion)
 `-- flasher/                    # Retired web flasher page and its legacy images (not published)
 ```
