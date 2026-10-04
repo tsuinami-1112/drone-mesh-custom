@@ -83,6 +83,7 @@ def main():
     ap.add_argument('--spacing', type=float, default=600.0, help='station spacing, metres')
     ap.add_argument('--noise-deg', type=float, default=6.0, help='1-sigma bearing noise per report')
     ap.add_argument('--no-register', action='store_true', help='do not set station positions (exercise the "not placed" path)')
+    ap.add_argument('--keep-stations', action='store_true', help='leave the simulated stations in the mapper when done')
     args = ap.parse_args()
 
     clat, clon = (float(v) for v in args.center.split(','))
@@ -109,10 +110,24 @@ def main():
         print(f"station {st['node_id']}: {st['lat']:.6f},{st['lon']:.6f} heading {st['heading']:.0f} deg")
 
     t0 = time.time()
+    print(f"flying one analog FPV drone around {clat:.5f},{clon:.5f} for {args.duration} min ...")
+    try:
+        fly(args, api, rng, stations, clat, clon, t0)
+    finally:
+        if not args.keep_stations:
+            for st in stations:
+                try:
+                    urllib.request.urlopen(urllib.request.Request(api.base + '/api/stations/' + st['node_id'], method='DELETE'), timeout=5).close()
+                except Exception as e:
+                    print('cleanup failed for', st['node_id'], e)
+            print('simulated stations removed from the mapper (use --keep-stations to keep them)')
+    print('done')
+
+
+def fly(args, api, rng, stations, clat, clon, t0):
     seq = 0
     sweeps = 0
     last_hb = t0
-    print(f"flying one analog FPV drone around {clat:.5f},{clon:.5f} for {args.duration} min ...")
     while time.time() - t0 < args.duration * 60:
         t = time.time() - t0
         # a slow loop 400-900 m from the centre
@@ -139,7 +154,7 @@ def main():
                 'level_db': round(level, 1), 'gain': 62 if level < 20 else 50, 'q_phase': 70 + int(10 * rng.random()),
                 'cfo_khz': 1840, 'carrier': 'fm', 'sectors': sectors, 'sector': sector,
                 'bearing_deg': int(round(rel)) % 360, 'bearing_sigma_deg': int(round(max(8.0, args.noise_deg * 1.5))),
-                'heading': int(st['heading']), 'freq_peak': st['freq'] + 2,
+                'station_heading': int(st['heading']), 'freq_peak': st['freq'] + 2,
                 'video': 'NTSC', 'sync_hz': 15736, 'field_hz': 60, 'sync_q': 88, 'sync_score': 91, 'video_windows': 8,
                 'fp': f"NTSC/15736/{st['freq'] + 2}", 'basic_id': f"5.8G-{st['band']}{st['ch']}-{st['freq']}MHz",
                 'node_id': st['node_id'], 'seq': seq,
@@ -153,9 +168,12 @@ def main():
         if time.time() - last_hb > 30:
             last_hb = time.time()
             for st in stations:
-                api.post('/api/detections', {'heartbeat': True, 'node_id': st['node_id'], 'receiver': 'c5phy', 'hw': 'v3',
-                                             'scanning': True, 'heading': int(st['heading']), 'sweeps': sweeps,
-                                             'nf_dbm': -98, 'temp_c': 39.0, 'uptime_s': int(t)})
+                try:
+                    api.post('/api/detections', {'heartbeat': True, 'node_id': st['node_id'], 'receiver': 'c5phy', 'hw': 'v3',
+                                                 'scanning': True, 'heading': int(st['heading']), 'sweeps': sweeps,
+                                                 'nf_dbm': -98, 'temp_c': 39.0, 'uptime_s': int(t)})
+                except urllib.error.URLError as e:
+                    print('heartbeat post failed:', e)
         # what did the mapper make of it?
         try:
             tracked = api.get('/api/detections')
@@ -170,7 +188,6 @@ def main():
         except Exception as e:
             print('status failed:', e)
         time.sleep(args.interval)
-    print('done')
 
 
 if __name__ == '__main__':

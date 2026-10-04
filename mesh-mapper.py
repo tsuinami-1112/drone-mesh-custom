@@ -853,7 +853,8 @@ IDENTITY_FIELDS = [
     'eu_cat', 'eu_class', 'src', 'vendor', 'model', 'ssid', 'conf', 'role',
     'sysid', 'mavtype', 'autopilot', 'node_id',
     # Level 1 analog video stations: the emitter's channel is its identity
-    'type', 'receiver', 'freq_mhz', 'band', 'ch', 'fp'
+    # (ch itself stays per-frame: for WiFi sources it describes the frame)
+    'type', 'receiver', 'freq_mhz', 'band', 'fp'
 ]
 
 _csv_header_cache = {}
@@ -1715,6 +1716,7 @@ STATIONS = {}                   # node_id -> {node_id, name, lat, lon, heading_d
 STATIONS_LOCK = threading.Lock()
 station_status = {}             # node_id -> last heartbeat fields + last_seen (epoch s)
 bearing_obs = {}                # mac -> {node_id -> {bearing_deg, sigma_deg, rssi_dbm, ts, ...}}
+BEARINGS_LOCK = threading.Lock()  # serial reader threads and request threads both write bearing_obs
 BEARING_FUSE_WINDOW_S = 30      # bearings older than this take no part in a fix
 BEARING_OBS_KEEP_S = 300        # observations older than this are forgotten
 BEARING_RAY_KM = 3.0            # ray length drawn on the map
@@ -1724,6 +1726,43 @@ BEARING_MAX_RANGE_M = 20000     # a fix further than this from a station is reje
 STATION_HEARTBEAT_FIELDS = ('receiver', 'hw', 'heading', 'scanning', 'channels', 'sectors', 'sweeps',
                             'video_seen', 'tune_fail', 'cap_err', 'nf_dbm', 'temp_c', 'uptime_s',
                             'threshold_dbm', 'fe_gain_db')
+BEARING_SIGMA_MIN_DEG = 2.0
+BEARING_SIGMA_MAX_DEG = 60.0
+import re as _re
+_NODE_ID_RE = _re.compile(r'[^A-Za-z0-9_.:-]')
+
+
+def _norm_node_id(value):
+    # node_id as used for the station key everywhere (API, heartbeat, detection):
+    # printable id characters only, at most 32 of them.
+    return _NODE_ID_RE.sub('', str(value or '').strip())[:32]
+
+
+def _safe_float(value, default=None):
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return default
+    return f if math.isfinite(f) else default
+
+
+def _clamp_sigma(value):
+    f = _safe_float(value, 15.0)
+    return min(BEARING_SIGMA_MAX_DEG, max(BEARING_SIGMA_MIN_DEG, f))
+
+
+def _auto_station(node_id, heading, receiver):
+    # A station the mapper learned about from the station itself. Its position is
+    # unknown until set in the panel; its heading follows the installer-flashed
+    # value until someone sets one by hand (heading_auto).
+    return {'node_id': node_id, 'name': node_id, 'lat': None, 'lon': None,
+            'heading_deg': (heading or 0.0) % 360.0, 'kind': 'level1',
+            'receiver': receiver, 'heading_auto': True}
+
+
+def _stations_snapshot():
+    with STATIONS_LOCK:
+        return {k: dict(v) for k, v in STATIONS.items()}, dict(station_status)
 
 
 def load_stations():
@@ -1734,12 +1773,24 @@ def load_stations():
         with open(STATIONS_FILE, "r") as f:
             data = json.load(f)
         if isinstance(data, dict):
-            STATIONS = {str(k): v for k, v in data.items() if isinstance(v, dict)}
-            for k, v in STATIONS.items():
-                v.setdefault('node_id', k)
-                v.setdefault('name', k)
+            STATIONS = {}
+            for k, v in data.items():
+                if not isinstance(v, dict):
+                    continue
+                nid = _norm_node_id(k)
+                if not nid:
+                    continue
+                v['node_id'] = nid
+                v.setdefault('name', nid)
                 v.setdefault('kind', 'level1')
-                v.setdefault('heading_deg', 0)
+                v['heading_deg'] = (_safe_float(v.get('heading_deg'), 0.0) or 0.0) % 360.0
+                v['lat'] = _safe_float(v.get('lat'))
+                v['lon'] = _safe_float(v.get('lon'))
+                if v['lat'] is None or v['lon'] is None:
+                    v['lat'] = v['lon'] = None
+                if 'heading_auto' not in v:
+                    v['heading_auto'] = bool(v.pop('auto', False))
+                STATIONS[nid] = v
     except Exception as e:
         logger.error(f"Error loading {STATIONS_FILE}: {e}")
 
@@ -1754,7 +1805,8 @@ def save_stations():
 
 def emit_stations():
     try:
-        socketio.emit('stations', {'stations': STATIONS, 'status': station_status,
+        stations, status = _stations_snapshot()
+        socketio.emit('stations', {'stations': stations, 'status': status,
                                    'ray_km': BEARING_RAY_KM, 'fuse_window_s': BEARING_FUSE_WINDOW_S})
     except Exception as e:
         logger.debug(f"Error emitting stations: {e}")
@@ -1771,25 +1823,21 @@ def register_station_heartbeat(hb, source=None):
     """A heartbeat with node_id + receiver comes from a station. Remember it
     (and its reported heading as the default) so the panel can list it before
     anyone has typed its position in."""
-    node_id = str(hb.get('node_id') or '').strip()
+    node_id = _norm_node_id(hb.get('node_id'))
     if not node_id:
         return
+    heading = _safe_float(hb.get('heading'))
     created = False
     with STATIONS_LOCK:
         st = STATIONS.get(node_id)
         if st is None:
-            st = {'node_id': node_id, 'name': node_id, 'lat': None, 'lon': None,
-                  'heading_deg': float(hb.get('heading') or 0.0), 'kind': 'level1',
-                  'receiver': hb.get('receiver'), 'auto': True}
+            st = _auto_station(node_id, heading, hb.get('receiver'))
             STATIONS[node_id] = st
             created = True
-        elif st.get('auto') and 'heading' in hb:
+            save_stations()
+        elif st.get('heading_auto') and heading is not None and st.get('heading_deg') != heading % 360.0:
             # Heading not set by hand yet: follow what the installer flashed
-            try:
-                st['heading_deg'] = float(hb.get('heading') or 0.0)
-            except (TypeError, ValueError):
-                pass
-        if created:
+            st['heading_deg'] = heading % 360.0
             save_stations()
     status = {k: hb.get(k) for k in STATION_HEARTBEAT_FIELDS if k in hb}
     status['last_seen'] = time.time()
@@ -1823,6 +1871,9 @@ def _analog_canonical_mac(det, now):
         freq = float(freq)
     except (TypeError, ValueError):
         return mac
+    own = tracked_pairs.get(mac)
+    if own and own.get('type') == 'analog_fm' and now - float(own.get('last_update') or 0) <= BEARING_OBS_KEEP_S:
+        return mac                      # already a live track of its own: keep it
     best, best_d = None, None
     for other_mac, other in list(tracked_pairs.items()):
         if other_mac == mac or other.get('type') != 'analog_fm':
@@ -1845,7 +1896,8 @@ def _bearing_fix(mac, now):
     weighted squared perpendicular distances. Returns None when fewer than
     two stations qualify, the lines are near-parallel, the solution lies
     behind a station (diverging bearings) or implausibly far away."""
-    obs = bearing_obs.get(mac) or {}
+    with BEARINGS_LOCK:
+        obs = {k: dict(v) for k, v in (bearing_obs.get(mac) or {}).items()}
     pts = []
     with STATIONS_LOCK:
         stations = {k: dict(v) for k, v in STATIONS.items()}
@@ -1857,7 +1909,7 @@ def _bearing_fix(mac, now):
             continue
         try:
             theta = math.radians((float(o['bearing_deg']) + _station_heading(st)) % 360.0)
-            sigma = math.radians(max(2.0, float(o.get('sigma_deg') or 15.0)))
+            sigma = math.radians(_clamp_sigma(o.get('sigma_deg')))
             pts.append((float(st['lat']), float(st['lon']), theta, sigma, node_id))
         except (TypeError, ValueError, KeyError):
             continue
@@ -1923,6 +1975,13 @@ def _bearing_fix(mac, now):
     err = math.sqrt(max(cov_xx + cov_yy, 0.0))     # 1-sigma radius (drms)
     if err > BEARING_MAX_RANGE_M:
         return None
+    # The re-weighted solution is the one returned: validate that one too
+    for px, py, dx, dy, sg, nid, th in lines:
+        rx, ry = x - px, y - py
+        r = math.hypot(rx, ry)
+        if rx * dx + ry * dy <= 0 or r > BEARING_MAX_RANGE_M:
+            return None
+        ranges[nid] = round(r)
     return {'lat': lat0 + y / ky, 'lon': lon0 + x / kx, 'error_m': round(err),
             'stations': used, 'ranges_m': ranges}
 
@@ -1939,48 +1998,62 @@ def level1_prepare_detection(detection):
     reported_mac = detection.get('mac')
     detection['mac'] = _analog_canonical_mac(detection, now)
     mac = detection['mac']
-    if mac != reported_mac:
-        # Folded onto a live track labelled with an overlapping channel: keep
-        # that track's identity so the list does not flicker between R3 and B1
-        track = tracked_pairs.get(mac) or {}
-        for k in ('basic_id', 'freq_mhz', 'band', 'ch'):
-            if track.get(k) not in (None, ''):
-                detection[k] = track[k]
+    track = tracked_pairs.get(mac) or {}
+    merged = mac != reported_mac
+    for k in ('basic_id', 'freq_mhz', 'band', 'ch'):
+        # Folded onto a live track labelled with an overlapping channel: keep that
+        # track's identity so the list does not flicker between R3 and B1. A report
+        # on the same channel only fills in what the mesh copy dropped.
+        if track.get(k) in (None, ''):
+            continue
+        if merged or detection.get(k) in (None, ''):
+            detection[k] = track[k]
+    if merged:
         detection['reported_mac'] = reported_mac
-    node_id = str(detection.get('node_id') or '').strip()
+    node_id = _norm_node_id(detection.get('node_id'))
+    if node_id:
+        detection['node_id'] = node_id
     station = None
+    created = False
     with STATIONS_LOCK:
         if node_id:
             station = STATIONS.get(node_id)
             if station is None:
-                station = {'node_id': node_id, 'name': node_id, 'lat': None, 'lon': None,
-                           'heading_deg': float(detection.get('heading') or 0.0), 'kind': 'level1',
-                           'receiver': detection.get('receiver'), 'auto': True}
+                heading = _safe_float(detection.get('station_heading', detection.get('heading')))
+                station = _auto_station(node_id, heading, detection.get('receiver'))
                 STATIONS[node_id] = station
                 save_stations()
-                logger.info(f"Level 1 station {node_id} registered from a detection; set its position in the LEVEL 1 STATIONS panel")
+                created = True
             station = dict(station)
-    if node_id and detection.get('bearing_deg') is not None:
-        try:
-            rel = float(detection['bearing_deg']) % 360.0
+    if created:
+        logger.info(f"Level 1 station {node_id} registered from a detection; set its position in the LEVEL 1 STATIONS panel")
+        emit_stations()
+    rel = _safe_float(detection.get('bearing_deg')) if node_id else None
+    if node_id:
+        # A station that reports is alive, heartbeat or not
+        stt = station_status.setdefault(node_id, {})
+        stt['last_seen'] = now
+        stt.setdefault('receiver', detection.get('receiver'))
+    with BEARINGS_LOCK:
+        if rel is not None:
+            rel = rel % 360.0
             true_deg = (rel + _station_heading(station)) % 360.0
             detection['bearing_true_deg'] = round(true_deg, 1)
             per_mac = bearing_obs.setdefault(mac, {})
             per_mac[node_id] = {
                 'node_id': node_id, 'bearing_deg': rel, 'bearing_true_deg': round(true_deg, 1),
-                'sigma_deg': float(detection.get('bearing_sigma_deg') or 15.0),
+                'sigma_deg': _clamp_sigma(detection.get('bearing_sigma_deg')),
                 'rssi_dbm': detection.get('rssi_dbm', detection.get('rssi')),
                 'freq_mhz': detection.get('freq_mhz'), 'video': detection.get('video'),
                 'fp': detection.get('fp'), 'sector': detection.get('sector'), 'ts': now,
             }
-        except (TypeError, ValueError):
-            pass
-    # Forget stale observations (an emitter that moved on, a station that stopped)
-    per_mac = bearing_obs.get(mac) or {}
-    for nid in [k for k, o in per_mac.items() if now - o.get('ts', 0) > BEARING_OBS_KEEP_S]:
-        per_mac.pop(nid, None)
-    for stale_mac in [m for m, obs in list(bearing_obs.items()) if not obs]:
-        bearing_obs.pop(stale_mac, None)
+        # Forget stale observations (an emitter that moved on, a station that stopped)
+        per_mac = bearing_obs.get(mac) or {}
+        for nid in [k for k, o in per_mac.items() if now - o.get('ts', 0) > BEARING_OBS_KEEP_S]:
+            per_mac.pop(nid, None)
+        for stale_mac in [m for m, obs in list(bearing_obs.items()) if not obs]:
+            bearing_obs.pop(stale_mac, None)
+        per_mac = {k: dict(v) for k, v in per_mac.items()}
 
     # Everything the map needs to draw the rays, with the station geometry attached
     bearings = []
@@ -7628,19 +7701,23 @@ function generatePopupContent(detection, markerType) {
     const chLabel = (detection.band || '') + (detection.ch !== undefined && detection.ch !== null ? detection.ch : '');
     if (detection.freq_mhz) html += stat('CHANNEL', (chLabel ? chLabel + ' · ' : '') + detection.freq_mhz + ' MHz', '#fff');
     if (detection.video) html += stat('VIDEO', detection.video === 'none' ? 'carrier, no sync found' : detection.video + (detection.sync_hz ? ' · ' + detection.sync_hz + ' Hz lines' : ''), detection.video === 'none' ? '#dde6ee' : '#ffd9a0');
-    if (detection.fp) html += stat('FINGERPRINT', detection.fp);
+    if (detection.fp) html += stat('FINGERPRINT', l1Esc(detection.fp));
     if (detection.freq_peak) html += stat('CARRIER', detection.freq_peak + ' MHz');
     const fixed = detection.pos_src === 'bearing_fix';
-    html += stat('POSITION', fixed ? ('bearing fix ±' + Math.round(detection.fix_error_m || 0) + ' m from ' + (detection.fix_stations || []).join(', '))
+    html += stat('POSITION', fixed ? ('bearing fix ±' + Math.round(detection.fix_error_m || 0) + ' m from ' + l1Esc((detection.fix_stations || []).join(', ')))
                                    : 'bearing only — needs a second station', fixed ? '#88ff99' : '#ffcc66');
     const bl = Array.isArray(detection.bearings) ? detection.bearings : [];
     if (bl.length) {
       html += '<div style="font-size:0.72em; color:' + muted + '; letter-spacing:1.5px; margin:6px 0 2px 0;">BEARINGS</div>';
       bl.forEach(b => {
         const age = (b.age_s !== undefined) ? Math.round(b.age_s) + 's' : '';
-        const placed = (b.station_lat !== null && b.station_lat !== undefined && b.station_lon !== null && b.station_lon !== undefined);
-        html += stat(b.station_name || b.node_id,
-                     Math.round(b.bearing_true_deg) + '° ±' + Math.round(b.sigma_deg || 0) + '°'
+        const stn = (typeof l1Stations !== 'undefined') ? l1Stations[b.node_id] : null;
+        const placed = stn ? (stn.lat !== null && stn.lat !== undefined && stn.lon !== null && stn.lon !== undefined)
+                           : (b.station_lat !== null && b.station_lat !== undefined && b.station_lon !== null && b.station_lon !== undefined);
+        const hdg = stn ? (Number(stn.heading_deg) || 0) : (Number(b.station_heading_deg) || 0);
+        const trueDeg = ((Number(b.bearing_deg) || 0) + hdg) % 360;   // same rotation as the ray on the map
+        html += stat(l1Esc(b.station_name || b.node_id),
+                     Math.round(trueDeg) + '° ±' + Math.round(b.sigma_deg || 0) + '°'
                      + (b.rssi_dbm !== undefined && b.rssi_dbm !== null ? ' · ' + Math.round(b.rssi_dbm) + ' dBm' : '')
                      + (age ? ' · ' + age : '') + (placed ? '' : ' · <span style="color:#ff8866">station not placed</span>'),
                      placed ? '#dde6ee' : '#ffcc66');
@@ -7654,10 +7731,14 @@ function generatePopupContent(detection, markerType) {
   // the identity fields rendered in the section above.
   const skip = new Set(['mac','basic_id','last_update','userLocked','lockTime','_simulated',
     'id_type','basic_id2','id_type2','ua_type','op_id','desc','eu_cat','eu_class',
-    'src','vendor','model','ssid','conf','role',
-    'bearings','fix_stations','fix_ranges_m','sectors','type','receiver','hw','band','ch','freq_mhz',
-    'video','fp','freq_peak','pos_src','fix_error_m','sync_hz','field_hz','sync_q','sync_score',
-    'video_windows','rssi_raw','rssi_min','rssi_max','rssi_n','heading','seq','source_port','status','reported_mac']);
+    'src','vendor','model','ssid','conf','role']);
+  if (detection.type === 'analog_fm') {
+    // Shown in the LEVEL 1 section above, or internal to the bearing bookkeeping
+    ['bearings','fix_stations','fix_ranges_m','sectors','type','receiver','hw','band','ch','freq_mhz',
+     'video','fp','freq_peak','pos_src','fix_error_m','sync_hz','field_hz','sync_q','sync_score',
+     'video_windows','rssi_raw','rssi_min','rssi_max','rssi_n','station_heading','seq','source_port',
+     'reported_mac'].forEach(k => skip.add(k));
+  }
   const telemetryKeys = Object.keys(detection).filter(k => !skip.has(k) && detection[k] !== '' && detection[k] !== null && detection[k] !== undefined);
   if (telemetryKeys.length > 0) {
     html += '<div style="height:1px; background:rgba(255,255,255,0.07); margin:8px 0;"></div>';
@@ -12337,6 +12418,11 @@ var previousActive = {};
 // the station list (stations.json) and the fusion; this is presentation and
 // the small editing panel.
 // =============================================================================
+const l1Esc = s => String(s === null || s === undefined ? '' : s)
+  .replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+// One DOM id per station, collision-free (RX-01 and RX_01 stay apart)
+const l1Dom = id => 'l1_' + Array.from(String(id)).map(c => /[A-Za-z0-9]/.test(c) ? c : '_' + c.charCodeAt(0).toString(16)).join('');
+const l1Dirty = {};             // node_id -> {name, lat, lon, hdg} typed but not yet saved
 const l1Stations = {};          // node_id -> station record (from the server)
 const l1Status = {};            // node_id -> last heartbeat
 let   l1RayKm = 3.0;
@@ -12373,14 +12459,17 @@ function l1StationAlive(nodeId) {
   return !!(stt && stt.last_seen && (Date.now() / 1000 - stt.last_seen) < 300);
 }
 
+function l1Placed(st) {
+  return !!st && st.lat !== null && st.lat !== undefined && st.lon !== null && st.lon !== undefined;
+}
 function l1StationPopup(st) {
   const stt = l1Status[st.node_id] || {};
   const age = stt.last_seen ? Math.round(Date.now() / 1000 - stt.last_seen) + ' s ago' : 'never';
-  const row = (k, v) => '<div style="display:flex; justify-content:space-between; gap:10px;"><span style="color:#a87f40;">' + k + '</span><span>' + v + '</span></div>';
+  const row = (k, v) => '<div style="display:flex; justify-content:space-between; gap:10px;"><span style="color:#a87f40;">' + k + '</span><span>' + l1Esc(v) + '</span></div>';
   let h = '<div style="font-family:monospace; font-size:0.85em; color:#ffd9a0; min-width:200px;">'
-    + '<div style="font-weight:bold; color:#ffbb55; margin-bottom:4px;">LEVEL 1 STATION ' + (st.name || st.node_id) + '</div>'
+    + '<div style="font-weight:bold; color:#ffbb55; margin-bottom:4px;">LEVEL 1 STATION ' + l1Esc(st.name || st.node_id) + '</div>'
     + row('node_id', st.node_id) + row('heading of face N', (Number(st.heading_deg) || 0) + '°')
-    + row('position', (st.lat !== null && st.lat !== undefined) ? Number(st.lat).toFixed(5) + ', ' + Number(st.lon).toFixed(5) : 'not set')
+    + row('position', l1Placed(st) ? Number(st.lat).toFixed(5) + ', ' + Number(st.lon).toFixed(5) : 'not set')
     + row('heartbeat', age);
   if (stt.sweeps !== undefined) h += row('sweeps', stt.sweeps);
   if (stt.nf_dbm !== undefined) h += row('noise floor', stt.nf_dbm + ' dBm');
@@ -12392,25 +12481,30 @@ function l1StationPopup(st) {
   return h;
 }
 
+let l1PanelSig = '';
+const l1MarkerSig = {};
 function l1RenderStations() {
   // Markers
   for (const id in l1StationMarkers) {
-    if (!l1Stations[id] || l1Stations[id].lat === null || l1Stations[id].lat === undefined) {
+    if (!l1Placed(l1Stations[id])) {
       l1Layer.removeLayer(l1StationMarkers[id]); delete l1StationMarkers[id];
     }
   }
   for (const id in l1Stations) {
     const st = l1Stations[id];
-    if (st.lat === null || st.lat === undefined || st.lon === null || st.lon === undefined) continue;
+    if (!l1Placed(st)) continue;
     const ll = [Number(st.lat), Number(st.lon)];
+    const sig = ll.join(',') + '|' + (Number(st.heading_deg) || 0) + '|' + (l1StationAlive(id) ? 1 : 0);
     if (!l1StationMarkers[id]) {
       l1StationMarkers[id] = L.marker(ll, { icon: l1StationIcon(st, l1StationAlive(id)), zIndexOffset: 500 })
         .bindPopup(l1StationPopup(st), { className: 'drone-popup', maxWidth: 320 }).addTo(l1Layer);
-    } else {
+      l1MarkerSig[id] = sig;
+    } else if (l1MarkerSig[id] !== sig) {
       l1StationMarkers[id].setLatLng(ll);
       l1StationMarkers[id].setIcon(l1StationIcon(st, l1StationAlive(id)));
-      if (!l1StationMarkers[id].isPopupOpen()) l1StationMarkers[id].setPopupContent(l1StationPopup(st));
+      l1MarkerSig[id] = sig;
     }
+    if (!l1StationMarkers[id].isPopupOpen()) l1StationMarkers[id].setPopupContent(l1StationPopup(st));
   }
   // Panel
   const list = document.getElementById('l1StationList');
@@ -12421,7 +12515,18 @@ function l1RenderStations() {
     count.textContent = n ? ('(' + alive + '/' + n + ' alive)') : '';
   }
   if (!list) return;
-  if (document.activeElement && list.contains(document.activeElement)) return;   // typing: leave the inputs alone
+  // Typing in one of the inputs: leave the DOM alone (unsaved values also survive
+  // a rebuild through l1Dirty, filled by the input listener below).
+  const ae = document.activeElement;
+  if (ae && ae.tagName === 'INPUT' && list.contains(ae)) return;
+  // Rebuild the panel only when what it shows has changed (ages are shown to the second but
+  // only re-rendered every 5 s by the timer, so round them into the signature)
+  const sigNow = JSON.stringify([Object.keys(l1Stations).sort().map(id => {
+    const st = l1Stations[id], stt = l1Status[id] || {};
+    return [id, st.name, st.lat, st.lon, st.heading_deg, l1StationAlive(id), stt.last_seen ? Math.round((Date.now() / 1000 - stt.last_seen) / 5) : -1, stt.nf_dbm];
+  }), Object.keys(l1Dirty), l1PlaceFor]);
+  if (sigNow === l1PanelSig && list.children.length) return;
+  l1PanelSig = sigNow;
   let h = '';
   const ids = Object.keys(l1Stations).sort();
   if (!ids.length) h = '<div style="color:#a87f40;">— no stations yet — a station registers itself with its first heartbeat; or ADD one below —</div>';
@@ -12430,30 +12535,40 @@ function l1RenderStations() {
     const alive = l1StationAlive(id);
     const stt = l1Status[id] || {};
     const age = stt.last_seen ? Math.round(Date.now() / 1000 - stt.last_seen) + 's' : 'no heartbeat';
-    const safe = id.replace(/[^A-Za-z0-9_]/g, '_');
-    const placed = st.lat !== null && st.lat !== undefined && st.lon !== null && st.lon !== undefined;
+    const dom = l1Dom(id), eid = l1Esc(id);
+    const placed = l1Placed(st);
+    const d = l1Dirty[id] || {};
+    const val = (k, server) => l1Esc(d[k] !== undefined ? d[k] : server);
     h += '<div style="margin-top:6px; padding:4px; border:1px solid ' + (placed ? '#7a5a2a' : '#aa5533') + '; border-radius:3px;">'
       + '<div style="display:flex; justify-content:space-between; align-items:center;">'
-      + '<span><span class="l1-dot" style="background:' + (alive ? '#88ff99' : '#664433') + '"></span><b>' + id + '</b>'
-      + (st.name && st.name !== id ? ' · ' + st.name : '') + '</span>'
-      + '<span style="color:#a87f40;">' + age + (stt.nf_dbm !== undefined ? ' · nf ' + stt.nf_dbm : '') + '</span></div>'
+      + '<span><span class="l1-dot" style="background:' + (alive ? '#88ff99' : '#664433') + '"></span><b>' + eid + '</b>'
+      + (st.name && st.name !== id ? ' · ' + l1Esc(st.name) : '') + '</span>'
+      + '<span style="color:#a87f40;">' + l1Esc(age) + (stt.nf_dbm !== undefined ? ' · nf ' + l1Esc(stt.nf_dbm) : '') + '</span></div>'
       + '<div class="l1-row">'
-      + '<input id="l1name_' + safe + '" type="text" value="' + (st.name || '') + '" placeholder="name" style="width:84px;"/>'
-      + '<input id="l1lat_' + safe + '" type="text" value="' + (placed ? Number(st.lat).toFixed(6) : '') + '" placeholder="lat" style="width:86px;"/>'
-      + '<input id="l1lon_' + safe + '" type="text" value="' + (placed ? Number(st.lon).toFixed(6) : '') + '" placeholder="lon" style="width:86px;"/>'
-      + '<input id="l1hdg_' + safe + '" type="number" min="0" max="359" value="' + (Number(st.heading_deg) || 0) + '" title="true-north heading of face N" style="width:52px;"/>°'
+      + '<input id="l1name_' + dom + '" data-id="' + eid + '" data-k="name" type="text" value="' + val('name', st.name || '') + '" placeholder="name" style="width:84px;"/>'
+      + '<input id="l1lat_' + dom + '" data-id="' + eid + '" data-k="lat" type="text" value="' + val('lat', placed ? Number(st.lat).toFixed(6) : '') + '" placeholder="lat" style="width:86px;"/>'
+      + '<input id="l1lon_' + dom + '" data-id="' + eid + '" data-k="lon" type="text" value="' + val('lon', placed ? Number(st.lon).toFixed(6) : '') + '" placeholder="lon" style="width:86px;"/>'
+      + '<input id="l1hdg_' + dom + '" data-id="' + eid + '" data-k="hdg" type="number" min="0" max="359" value="' + val('hdg', Number(st.heading_deg) || 0) + '" title="true-north heading of face N" style="width:52px;"/>°'
       + '</div><div class="l1-row">'
-      + '<button class="l1-btn' + (l1PlaceFor === id ? ' active' : '') + '" data-act="place" data-id="' + id + '" title="click the map to place">' + (l1PlaceFor === id ? 'CLICK MAP…' : 'PLACE') + '</button>'
-      + '<button class="l1-btn" data-act="here" data-id="' + id + '" title="use my position">HERE</button>'
-      + '<button class="l1-btn" data-act="save" data-id="' + id + '">SAVE</button>'
-      + (placed ? '<button class="l1-btn" data-act="zoom" data-id="' + id + '">ZOOM</button>' : '')
-      + '<button class="l1-btn" style="margin-left:auto; border-color:#aa5533; color:#ffaaaa;" data-act="del" data-id="' + id + '">DEL</button>'
+      + '<button class="l1-btn' + (l1PlaceFor === id ? ' active' : '') + '" data-act="place" data-id="' + eid + '" title="click the map to place">' + (l1PlaceFor === id ? 'CLICK MAP…' : 'PLACE') + '</button>'
+      + '<button class="l1-btn" data-act="here" data-id="' + eid + '" title="use my position">HERE</button>'
+      + '<button class="l1-btn" data-act="save" data-id="' + eid + '">SAVE' + (l1Dirty[id] ? ' *' : '') + '</button>'
+      + (placed ? '<button class="l1-btn" data-act="zoom" data-id="' + eid + '">ZOOM</button>' : '')
+      + '<button class="l1-btn" style="margin-left:auto; border-color:#aa5533; color:#ffaaaa;" data-act="del" data-id="' + eid + '">DEL</button>'
       + '</div>'
       + (placed ? '' : '<div style="color:#ff9966; font-size:0.9em; margin-top:2px;">position not set — its bearings cannot be drawn or fused</div>')
       + '</div>';
   });
   list.innerHTML = h;
+  if (!ids.length) l1PanelSig = '';   // the empty notice has no children to detect; always redraw
 }
+document.addEventListener('input', ev => {
+  const inp = ev.target;
+  if (!inp || inp.tagName !== 'INPUT' || !inp.closest || !inp.closest('#l1StationList')) return;
+  const id = inp.getAttribute('data-id'), k = inp.getAttribute('data-k');
+  if (!id || !k) return;
+  (l1Dirty[id] = l1Dirty[id] || {})[k] = inp.value;
+});
 document.addEventListener('click', ev => {
   const btn = ev.target && ev.target.closest ? ev.target.closest('#l1StationList button[data-act]') : null;
   if (!btn) return;
@@ -12469,19 +12584,20 @@ document.addEventListener('click', ev => {
 });
 
 async function l1Save(id) {
-  const safe = id.replace(/[^A-Za-z0-9_]/g, '_');
-  const g = k => { const el = document.getElementById('l1' + k + '_' + safe); return el ? el.value.trim() : ''; };
+  const dom = l1Dom(id);
+  const g = k => { const el = document.getElementById('l1' + k + '_' + dom); return el ? el.value.trim() : ''; };
   const body = { node_id: id, name: g('name'), lat: g('lat'), lon: g('lon'), heading_deg: g('hdg') || 0 };
   try {
     const r = await fetch('/api/stations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const j = await r.json();
     const hint = document.getElementById('l1Hint');
     if (hint) hint.textContent = r.ok ? ('saved ' + id) : ('error: ' + (j.error || r.status));
-    if (r.ok) await l1Fetch();
+    if (r.ok) { delete l1Dirty[id]; await l1Fetch(); }
   } catch (e) { console.error('station save failed', e); }
 }
 async function l1Delete(id) {
-  if (!confirm('Remove level 1 station ' + id + ' from the mapper?')) return;
+  if (!confirm('Remove level 1 station ' + id + ' from the mapper? A station that is still running re-registers itself, without a position, on its next heartbeat.')) return;
+  delete l1Dirty[id];
   try { await fetch('/api/stations/' + encodeURIComponent(id), { method: 'DELETE' }); await l1Fetch(); } catch (e) { console.error(e); }
 }
 function l1Place(id) {
@@ -12500,14 +12616,16 @@ function l1UseHere(id) {
   }
 }
 function l1SetInputs(id, lat, lon) {
-  const safe = id.replace(/[^A-Za-z0-9_]/g, '_');
-  const la = document.getElementById('l1lat_' + safe), lo = document.getElementById('l1lon_' + safe);
+  const dom = l1Dom(id);
+  const la = document.getElementById('l1lat_' + dom), lo = document.getElementById('l1lon_' + dom);
   if (la) la.value = Number(lat).toFixed(6);
   if (lo) lo.value = Number(lon).toFixed(6);
+  (l1Dirty[id] = l1Dirty[id] || {}).lat = Number(lat).toFixed(6);
+  l1Dirty[id].lon = Number(lon).toFixed(6);
 }
 function l1Zoom(id) {
   const st = l1Stations[id];
-  if (st && st.lat !== null && st.lat !== undefined) safeSetView([Number(st.lat), Number(st.lon)], 15);
+  if (l1Placed(st)) safeSetView([Number(st.lat), Number(st.lon)], 15);
 }
 map.on('click', ev => {
   if (!l1PlaceFor) return;
@@ -12516,7 +12634,6 @@ map.on('click', ev => {
   l1PlaceFor = null;
   l1Save(id);
 });
-window.l1Save = l1Save; window.l1Delete = l1Delete; window.l1Place = l1Place; window.l1UseHere = l1UseHere; window.l1Zoom = l1Zoom;
 
 function l1Apply(msg) {
   if (!msg) return;
@@ -12558,21 +12675,29 @@ document.addEventListener('DOMContentLoaded', () => {
 // Rays and wedges for one emitter. Called from updateData() for every tracked
 // entry, before the no-position early-out, and on removal.
 function removeBearingLayers(mac) {
+  delete l1RaySig[mac];
   const rays = l1Rays[mac];
   if (rays) { for (const id in rays) { l1Layer.removeLayer(rays[id].ray); l1Layer.removeLayer(rays[id].wedge); } delete l1Rays[mac]; }
   if (l1FixCircles[mac]) { l1Layer.removeLayer(l1FixCircles[mac]); delete l1FixCircles[mac]; }
 }
+const l1RaySig = {};
 function updateBearingLayers(mac, det, currentTime) {
   if (!det || det.type !== 'analog_fm') return;
   const color = get_color_for_mac(mac);
   const bl = Array.isArray(det.bearings) ? det.bearings : [];
+  // Nothing to redraw while the detection and the station geometry are unchanged
+  // (freshness only flips at the fuse window, so age is bucketed by that)
+  const sig = [det.last_update, det.pos_src, det.fix_error_m, Math.floor((currentTime - (det.last_update || 0)) / l1FuseWindowS)]
+    .concat(bl.map(b => { const st = l1Stations[b.node_id]; return b.node_id + ':' + (st ? [st.lat, st.lon, st.heading_deg].join('/') : '-'); })).join('|');
+  if (l1RaySig[mac] === sig && l1Rays[mac]) return;
+  l1RaySig[mac] = sig;
   const rays = l1Rays[mac] || (l1Rays[mac] = {});
   const seen = new Set();
   const detAge = det.last_update ? (currentTime - det.last_update) : 0;
   bl.forEach(b => {
     const st = l1Stations[b.node_id];
-    const lat = (st && st.lat !== null && st.lat !== undefined) ? Number(st.lat) : b.station_lat;
-    const lon = (st && st.lon !== null && st.lon !== undefined) ? Number(st.lon) : b.station_lon;
+    const lat = l1Placed(st) ? Number(st.lat) : b.station_lat;
+    const lon = l1Placed(st) ? Number(st.lon) : b.station_lon;
     if (lat === null || lat === undefined || lon === null || lon === undefined) return;
     const hdg = st ? (Number(st.heading_deg) || 0) : (Number(b.station_heading_deg) || 0);
     const brg = ((Number(b.bearing_deg) || 0) + hdg) % 360;
@@ -12590,13 +12715,13 @@ function updateBearingLayers(mac, det, currentTime) {
         ray: L.polyline([[lat, lon], end], { color: color, weight: 2, opacity: op, dashArray: fresh ? null : '4,6' }).addTo(l1Layer),
         wedge: L.polygon(wedge, { color: color, weight: 0, fillColor: color, fillOpacity: fresh ? 0.12 : 0.05, interactive: false }).addTo(l1Layer)
       };
-      rays[b.node_id].ray.bindTooltip((b.station_name || b.node_id) + ' → ' + Math.round(brg) + '° ±' + Math.round(sig) + '°', { sticky: true });
+      rays[b.node_id].ray.bindTooltip(l1Esc(b.station_name || b.node_id) + ' → ' + Math.round(brg) + '° ±' + Math.round(sig) + '°', { sticky: true });
     } else {
       rays[b.node_id].ray.setLatLngs([[lat, lon], end]);
       rays[b.node_id].ray.setStyle({ color: color, opacity: op, dashArray: fresh ? null : '4,6' });
       rays[b.node_id].wedge.setLatLngs(wedge);
       rays[b.node_id].wedge.setStyle({ fillColor: color, fillOpacity: fresh ? 0.12 : 0.05 });
-      rays[b.node_id].ray.setTooltipContent((b.station_name || b.node_id) + ' → ' + Math.round(brg) + '° ±' + Math.round(sig) + '°');
+      rays[b.node_id].ray.setTooltipContent(l1Esc(b.station_name || b.node_id) + ' → ' + Math.round(brg) + '° ±' + Math.round(sig) + '°');
     }
   });
   for (const id in rays) if (!seen.has(id)) { l1Layer.removeLayer(rays[id].ray); l1Layer.removeLayer(rays[id].wedge); delete rays[id]; }
@@ -12631,7 +12756,7 @@ async function updateData() {
           delete historicalDrones[mac];
           localStorage.setItem('historicalDrones', JSON.stringify(historicalDrones));
           if (droneBroadcastRings[mac]) { map.removeLayer(droneBroadcastRings[mac]); delete droneBroadcastRings[mac]; }
-        } else { continue; }
+        } else { removeBearingLayers(mac); continue; }
       }
       const det = data[mac];
       if (!det.last_update || (currentTime - det.last_update > STALE_THRESHOLD)) {
@@ -13323,6 +13448,8 @@ def post_detection():
         if detection.get('node_id') and detection.get('receiver'):
             register_station_heartbeat(detection, source='api')
         return jsonify({"status": "ok"}), 200
+    if 'info' in detection:
+        return jsonify({"status": "ignored"}), 200
     update_detection(detection)
     return jsonify({"status": "ok"}), 200
 
@@ -13332,42 +13459,52 @@ def post_detection():
 # ----------------------
 @app.route('/api/stations', methods=['GET'])
 def api_stations():
-    return jsonify({'stations': STATIONS, 'status': station_status,
+    stations, status = _stations_snapshot()
+    return jsonify({'stations': stations, 'status': status,
                     'ray_km': BEARING_RAY_KM, 'fuse_window_s': BEARING_FUSE_WINDOW_S})
 
 
 @app.route('/api/stations', methods=['POST'])
 def api_station_set():
     data = request.get_json(silent=True) or {}
-    node_id = str(data.get('node_id') or '').strip()[:32]
+    if not isinstance(data, dict):
+        return jsonify({'error': 'JSON object expected'}), 400
+    node_id = _norm_node_id(data.get('node_id'))
     if not node_id:
-        return jsonify({'error': 'node_id required'}), 400
+        return jsonify({'error': 'node_id required (letters, digits, _ . : -)'}), 400
 
     def num(key):
         v = data.get(key)
         if v in (None, ''):
             return None
-        return float(v)
+        f = _safe_float(v)
+        if f is None:
+            raise ValueError(key)
+        return f
     try:
         lat, lon, heading = num('lat'), num('lon'), num('heading_deg')
-    except (TypeError, ValueError):
-        return jsonify({'error': 'lat, lon and heading_deg must be numbers'}), 400
+    except ValueError as e:
+        return jsonify({'error': f'{e} must be a finite number'}), 400
     if lat is not None and not -90 <= lat <= 90:
         return jsonify({'error': 'lat out of range'}), 400
     if lon is not None and not -180 <= lon <= 180:
         return jsonify({'error': 'lon out of range'}), 400
     with STATIONS_LOCK:
-        st = STATIONS.setdefault(node_id, {'node_id': node_id, 'kind': 'level1', 'lat': None, 'lon': None, 'heading_deg': 0.0})
+        st = STATIONS.get(node_id)
+        if st is None:
+            st = _auto_station(node_id, None, None)
+            STATIONS[node_id] = st
         if data.get('name'):
-            st['name'] = str(data['name'])[:40]
+            st['name'] = _NODE_ID_RE.sub(' ', str(data['name'])).strip()[:40] or node_id
         st.setdefault('name', node_id)
-        if 'lat' in data:
-            st['lat'] = lat
-        if 'lon' in data:
-            st['lon'] = lon
+        new_lat = lat if 'lat' in data else st.get('lat')
+        new_lon = lon if 'lon' in data else st.get('lon')
+        if (new_lat is None) != (new_lon is None):
+            return jsonify({'error': 'lat and lon go together'}), 400
+        st['lat'], st['lon'] = new_lat, new_lon
         if 'heading_deg' in data:
             st['heading_deg'] = (heading or 0.0) % 360.0
-        st['auto'] = False
+            st['heading_auto'] = False          # set by hand: the heartbeat no longer overrides it
         save_stations()
         result = dict(st)
     emit_stations()
@@ -13376,18 +13513,28 @@ def api_station_set():
 
 @app.route('/api/stations/<node_id>', methods=['DELETE'])
 def api_station_delete(node_id):
+    node_id = _norm_node_id(node_id)
     with STATIONS_LOCK:
         existed = STATIONS.pop(node_id, None) is not None
         if existed:
             save_stations()
     station_status.pop(node_id, None)
+    with BEARINGS_LOCK:
+        # Its bearings go with it; otherwise they linger in popups and fixes for BEARING_OBS_KEEP_S
+        for obs in bearing_obs.values():
+            obs.pop(node_id, None)
+        for stale_mac in [m for m, obs in list(bearing_obs.items()) if not obs]:
+            bearing_obs.pop(stale_mac, None)
     emit_stations()
+    # A station that is still running re-registers itself (unplaced) on its next heartbeat.
     return jsonify({'status': 'deleted' if existed else 'not_found', 'node_id': node_id})
 
 
 @app.route('/api/bearings', methods=['GET'])
 def api_bearings():
-    return jsonify(bearing_obs)
+    with BEARINGS_LOCK:
+        snapshot = {m: {k: dict(v) for k, v in obs.items()} for m, obs in bearing_obs.items()}
+    return jsonify(snapshot)
 
 @app.route('/api/detections_history', methods=['GET'])
 def api_detections_history():
@@ -13751,6 +13898,11 @@ def serial_reader(port):
                             register_station_heartbeat(detection, source=port)
                         else:
                             logger.debug(f"Skipping heartbeat from {port}")
+                        continue
+                    if 'info' in detection:
+                        # Boot, status and bench lines of a level 1 station's console: never a
+                        # detection, and never to be given the port's last MAC below
+                        logger.debug(f"Station info line from {port}: {json_str[:120]}")
                         continue
 
                     # MAC tracking logic...
