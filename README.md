@@ -21,7 +21,7 @@
 
 ---
 
-| **Level 1** · [`level1`](../../tree/level1) branch (in bench testing) | **Level 2** · this branch |
+| **Level 1** · [`level1`](../../tree/level1) branch (in bench testing) | **Level 2** · [`level2-main`](../../tree/level2-main) branch (this one) |
 |---|---|
 | Finds drones by their **5.8 GHz analog FPV video link**, including drones that broadcast nothing else | Finds drones by what they **broadcast**: Remote ID (BLE + WiFi), DJI DroneID, MAVLink, WiFi/BLE fingerprints |
 | XIAO ESP32-C5 and four patch antennas: each station measures a **compass bearing** to the transmitter | XIAO ESP32-S3 **decodes** the broadcast: position, altitude, serial / operator ID, pilot position |
@@ -364,6 +364,10 @@ The firmware is built and flashed with PlatformIO in VS Code. The steps below
 flash a XIAO ESP32-S3. Other boards and variants are in the
 [reference](docs/REFERENCE.md#firmware-variants-and-build-options).
 
+There is no web flasher for this firmware. The `flasher/` folder is a retired
+page whose images predate the current detection code, so build from source as
+below.
+
 **1. Install the tools (once)**
 
 1. Install [VS Code](https://code.visualstudio.com/) and [Git](https://git-scm.com/downloads).
@@ -471,8 +475,14 @@ python3 mesh-mapper.py
 
 The virtual environment keeps the packages away from the system Python, which
 recent Raspberry Pi OS and Debian releases protect. If `venv` is missing,
-`sudo apt install python3-venv`. The Pi auto-start installer still fetches
-the upstream mapper; see the [reference](docs/REFERENCE.md#raspberry-pi-installer).
+`sudo apt install python3-venv`. On a Raspberry Pi, the
+[installer](docs/REFERENCE.md#raspberry-pi-installer) does all of this and
+starts the mapper on boot:
+
+```bash
+wget https://raw.githubusercontent.com/tsuinami-1112/drone-mesh-custom/HEAD/RPI/install_rpi.py
+python3 install_rpi.py
+```
 
 Open `http://localhost:5000` (or the machine's IP from another device) and
 pick the XIAO's serial port. Saved ports reconnect automatically on the next

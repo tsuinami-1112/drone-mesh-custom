@@ -44,11 +44,11 @@
 #endif
 
 // ============================================================================
-// UART Pins - same wiring as remoteid-mesh-dualcore (Heltec LoRa V3)
+// UART Pins - same wiring as remoteid-mesh-dualcore (Heltec LoRa V4)
 // ============================================================================
 
-const int SERIAL1_TX_PIN = 5;   // GPIO5 -> Heltec RX
-const int SERIAL1_RX_PIN = 6;   // GPIO6 -> Heltec TX
+const int SERIAL1_TX_PIN = 5;   // GPIO5 -> Heltec RX (pin 47)
+const int SERIAL1_RX_PIN = 6;   // GPIO6 <- Heltec TX (pin 48)
 
 // ============================================================================
 // Board-specific configuration
