@@ -837,7 +837,10 @@ DETECTION_CSV_FIELDS = [
     # messages, DJI DroneID, MAVLink, WiFi/BLE fingerprints)
     'id_type', 'op_id', 'ua_type', 'desc', 'eu_cat', 'eu_class',
     'height', 'speed', 'heading', 'home_lat', 'home_long',
-    'src', 'vendor', 'model', 'ssid', 'conf', 'node_id', 'ch'
+    'src', 'vendor', 'model', 'ssid', 'conf', 'node_id', 'ch',
+    # Added with the level 1 (bearing-only analog video) stations
+    'type', 'freq_mhz', 'band', 'rssi_dbm', 'bearing_deg', 'bearing_sigma_deg',
+    'bearing_true_deg', 'video', 'fp', 'pos_src', 'fix_error_m'
 ]
 
 # Fields that identify the aircraft or its operator rather than describe the
@@ -848,7 +851,10 @@ DETECTION_CSV_FIELDS = [
 IDENTITY_FIELDS = [
     'basic_id', 'id_type', 'basic_id2', 'id_type2', 'ua_type', 'op_id', 'desc',
     'eu_cat', 'eu_class', 'src', 'vendor', 'model', 'ssid', 'conf', 'role',
-    'sysid', 'mavtype', 'autopilot', 'node_id'
+    'sysid', 'mavtype', 'autopilot', 'node_id',
+    # Level 1 analog video stations: the emitter's channel is its identity
+    # (ch itself stays per-frame: for WiFi sources it describes the frame)
+    'type', 'receiver', 'freq_mhz', 'band', 'fp'
 ]
 
 _csv_header_cache = {}
@@ -1684,10 +1690,540 @@ generate_cumulative_kml()
 # ----------------------
 # Detection Update & CSV Logging
 # ----------------------
+
+# ----------------------
+# Level 1 stations: bearing-only 5.8 GHz analog video receivers
+# ----------------------
+# A level 1 station (level1-c5phy firmware: XIAO ESP32-C5 as the receiver,
+# four patch antennas on an RF switch) hears the analog FM video link of a
+# drone that broadcasts nothing else and reports
+#   {"type":"analog_fm","mac":"AF:00:52:03:16:64","freq_mhz":5732,"band":"R",
+#    "ch":3,"rssi":-68,"bearing_deg":32,"bearing_sigma_deg":15,"video":"NTSC",
+#    "fp":"NTSC/15736/5734","node_id":"RX01"}
+# - a compass bearing from the station, never a position. bearing_deg is
+# relative to the box's face N; the mapper holds each station's position and
+# true-north heading (stations.json, LEVEL 1 STATIONS panel), rotates the
+# bearing, draws it as a ray from the station, and when two or more stations
+# with known positions report the same emitter within BEARING_FUSE_WINDOW_S
+# it intersects the bearing lines (weighted least squares) into a position
+# fix with an error radius. The fix is written into drone_lat/drone_long with
+# pos_src "bearing_fix", so markers, paths, geofences, CSV, KML and webhooks
+# treat it like any other position. A station registers itself from its
+# first heartbeat ({"heartbeat":true,"node_id":..,"receiver":"c5phy",..});
+# only its position has to be typed in or placed on the map.
+STATIONS_FILE = os.path.join(BASE_DIR, "stations.json")
+STATIONS = {}                   # node_id -> {node_id, name, lat, lon, heading_deg, kind, auto}
+STATIONS_LOCK = threading.Lock()
+station_status = {}             # node_id -> last heartbeat fields + last_seen (epoch s)
+bearing_obs = {}                # mac -> {node_id -> {bearing_deg, sigma_deg, rssi_dbm, ts, ...}}
+BEARINGS_LOCK = threading.Lock()  # serial reader threads and request threads both write bearing_obs
+BEARING_FUSE_WINDOW_S = 30      # bearings older than this take no part in a fix
+BEARING_OBS_KEEP_S = 300        # observations older than this are forgotten
+BEARING_RAY_KM = 3.0            # ray length drawn on the map
+ANALOG_FM_MERGE_MHZ = 10        # reports within this many MHz are the same emitter: the R3 5732 / B1 5733 /
+                                # F1 5740 cluster spans 8 MHz. The station itself folds hits within
+                                # PEAK_PICK_MHZ (20) of a stronger one, so two stations can still label one
+                                # carrier with any channel of the cluster; this window joins them again.
+MAX_STATIONS = 64               # auto-registration stops here (a flood of node_ids is not a deployment)
+BEARING_MIN_CROSSING_DEG = 8    # bearings closer to parallel than this give no fix
+BEARING_MAX_RANGE_M = 20000     # a fix further than this from a station is rejected
+BEARING_OUTLIER_DEG = 20        # a line missing the fix by more than max(3 sigma, this) is dropped
+STATION_HEARTBEAT_FIELDS = ('receiver', 'hw', 'heading', 'scanning', 'channels', 'sectors', 'sweeps',
+                            'video_seen', 'tune_fail', 'cap_err', 'bus_stuck', 'alias_drop', 'usb_drop',
+                            'mesh_drop', 'nf_dbm', 'temp_c', 'uptime_s', 'threshold_dbm', 'fe_gain_db')
+STATION_TEXT_FIELDS = ('receiver', 'hw')
+RESERVED_IDS = ('__proto__', 'constructor', 'prototype')
+last_fix = {}                   # mac -> (fix dict, epoch s): a fix is held through a short gap instead of flickering
+app.config.setdefault('MAX_CONTENT_LENGTH', 1 << 20)   # one JSON line, not a megabyte of 'bearings'
+BEARING_SIGMA_MIN_DEG = 2.0
+BEARING_SIGMA_MAX_DEG = 60.0
+import re as _re
+_NODE_ID_RE = _re.compile(r'[^A-Za-z0-9_.:-]')
+
+
+def _norm_node_id(value):
+    # node_id as used for the station key everywhere (API, heartbeat, detection):
+    # a string of id characters only, at most 32 of them; never a JSON object or
+    # number, never a name that is special to a JavaScript object.
+    if not isinstance(value, str):
+        return ''
+    nid = _NODE_ID_RE.sub('', value.strip())[:32]
+    return '' if nid in RESERVED_IDS else nid
+
+
+def _norm_text(value, limit=32):
+    # Short device-supplied text (receiver, hw): same character class as node_id
+    if not isinstance(value, str):
+        return None
+    return _NODE_ID_RE.sub('', value.strip())[:limit] or None
+
+
+def _reject_constant(name):
+    raise ValueError(f'{name} is not valid JSON')
+
+
+def _json_loads_strict(text):
+    # Python's json accepts NaN/Infinity, which jsonify then re-emits as tokens no
+    # browser can parse; one such value would stop every client's map updates.
+    return json.loads(text, parse_constant=_reject_constant)
+
+
+def _safe_float(value, default=None):
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return default
+    return f if math.isfinite(f) else default
+
+
+def _clamp_sigma(value):
+    f = _safe_float(value, 15.0)
+    return min(BEARING_SIGMA_MAX_DEG, max(BEARING_SIGMA_MIN_DEG, f))
+
+
+def _auto_station(node_id, heading, receiver):
+    # A station the mapper learned about from the station itself. Its position is
+    # unknown until set in the panel; its heading follows the installer-flashed
+    # value until someone sets one by hand (heading_auto).
+    return {'node_id': node_id, 'name': node_id, 'lat': None, 'lon': None,
+            'heading_deg': (heading or 0.0) % 360.0, 'kind': 'level1',
+            'receiver': receiver, 'heading_auto': True}
+
+
+def _stations_snapshot():
+    with STATIONS_LOCK:
+        return ({k: dict(v) for k, v in STATIONS.items()},
+                {k: dict(v) for k, v in station_status.items()})
+
+
+def load_stations():
+    global STATIONS
+    if not os.path.exists(STATIONS_FILE):
+        return
+    try:
+        with open(STATIONS_FILE, "r") as f:
+            data = _json_loads_strict(f.read())
+        if isinstance(data, dict):
+            STATIONS = {}
+            for k, v in data.items():
+                if not isinstance(v, dict):
+                    continue
+                nid = _norm_node_id(k)
+                if not nid:
+                    continue
+                v['node_id'] = nid
+                v.setdefault('name', nid)
+                v.setdefault('kind', 'level1')
+                v['heading_deg'] = (_safe_float(v.get('heading_deg'), 0.0) or 0.0) % 360.0
+                v['lat'] = _safe_float(v.get('lat'))
+                v['lon'] = _safe_float(v.get('lon'))
+                if v['lat'] is None or v['lon'] is None:
+                    v['lat'] = v['lon'] = None
+                if 'heading_auto' not in v:
+                    v['heading_auto'] = bool(v.pop('auto', False))
+                STATIONS[nid] = v
+    except Exception as e:
+        # Keep the damaged file instead of letting the next heartbeat overwrite the
+        # surveyed positions; the operator can repair it by hand.
+        kept = STATIONS_FILE + '.corrupt-' + datetime.now().strftime('%Y%m%d-%H%M%S')
+        try:
+            os.replace(STATIONS_FILE, kept)
+        except OSError:
+            kept = STATIONS_FILE
+        logger.error(f"Error loading {STATIONS_FILE}: {e} - file kept as {kept}; station positions must be re-entered")
+
+
+def save_stations():
+    # Called with STATIONS_LOCK held. Write-then-rename like the other stores.
+    try:
+        tmp = STATIONS_FILE + '.tmp'
+        with open(tmp, "w") as f:
+            json.dump(STATIONS, f, indent=2, allow_nan=False)
+        os.replace(tmp, STATIONS_FILE)
+    except Exception as e:
+        logger.error(f"Error saving {STATIONS_FILE}: {e}")
+
+
+def emit_stations():
+    try:
+        stations, status = _stations_snapshot()
+        socketio.emit('stations', {'stations': stations, 'status': status,
+                                   'ray_km': BEARING_RAY_KM, 'fuse_window_s': BEARING_FUSE_WINDOW_S})
+    except Exception as e:
+        logger.debug(f"Error emitting stations: {e}")
+
+
+def _station_heading(st):
+    try:
+        return float(st.get('heading_deg') or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def register_station_heartbeat(hb, source=None):
+    """A heartbeat with node_id + receiver comes from a station. Remember it
+    (and its reported heading as the default) so the panel can list it before
+    anyone has typed its position in."""
+    node_id = _norm_node_id(hb.get('node_id'))
+    if not node_id:
+        return
+    heading = _safe_float(hb.get('heading'))
+    receiver = _norm_text(hb.get('receiver'))
+    created = False
+    status = {}
+    for k in STATION_HEARTBEAT_FIELDS:
+        if k not in hb:
+            continue
+        v = hb.get(k)
+        if k in STATION_TEXT_FIELDS:
+            v = _norm_text(v)
+        elif isinstance(v, bool):
+            pass
+        else:
+            v = _safe_float(v)
+        if v is not None:
+            status[k] = v
+    status['last_seen'] = time.time()
+    status['source'] = str(source)[:64] if source is not None else None
+    with STATIONS_LOCK:
+        st = STATIONS.get(node_id)
+        if st is None:
+            if len(STATIONS) >= MAX_STATIONS:
+                logger.debug(f"Station registry full ({MAX_STATIONS}); heartbeat from {node_id} not registered")
+                return
+            st = _auto_station(node_id, heading, receiver)
+            STATIONS[node_id] = st
+            created = True
+            save_stations()
+        elif st.get('heading_auto') and heading is not None and st.get('heading_deg') != heading % 360.0:
+            # Heading not set by hand yet: follow what the installer flashed
+            st['heading_deg'] = heading % 360.0
+            save_stations()
+        station_status[node_id] = status
+    if created:
+        logger.info(f"Level 1 station {node_id} ({receiver}) registered from its heartbeat; set its position in the LEVEL 1 STATIONS panel")
+    emit_stations()
+
+
+def _analog_basic_id(det):
+    band = det.get('band')
+    ch = det.get('ch')
+    freq = det.get('freq_mhz')
+    if band and ch is not None and freq:
+        return f"5.8G-{band}{ch}-{freq}MHz"
+    if freq:
+        return f"5.8G-{freq}MHz"
+    return None
+
+
+def _analog_canonical_mac(det, now):
+    """Two stations may label the same carrier with overlapping channels (R3
+    5732, B1 5733, F1 5740) and so with different synthesized MACs. Fold a
+    report onto the live analog track within ANALOG_FM_MERGE_MHZ."""
+    mac = det.get('mac')
+    freq = det.get('freq_mhz')
+    if freq is None:
+        return mac
+    try:
+        freq = float(freq)
+    except (TypeError, ValueError):
+        return mac
+    own = tracked_pairs.get(mac)
+    if own and own.get('type') == 'analog_fm' and now - float(own.get('last_update') or 0) <= BEARING_OBS_KEEP_S:
+        return mac                      # already a live track of its own: keep it
+    best, best_d = None, None
+    for other_mac, other in list(tracked_pairs.items()):
+        if other_mac == mac or other.get('type') != 'analog_fm':
+            continue
+        if now - float(other.get('last_update') or 0) > BEARING_OBS_KEEP_S:
+            continue
+        try:
+            d = abs(float(other.get('freq_mhz')) - freq)
+        except (TypeError, ValueError):
+            continue
+        if d <= ANALOG_FM_MERGE_MHZ and (best_d is None or d < best_d):
+            best, best_d = other_mac, d
+    return best or mac
+
+
+def _solve_bearing_lines(lines):
+    # One weighted-least-squares pass pair over the given lines (each a dict with
+    # lat, lon, theta, sigma, node_id). Returns the fix with the list of lines that
+    # the returned solution contradicts, worst first: a line that misses the fix by
+    # more than max(3 sigma, BEARING_OUTLIER_DEG) (a station the drone is over, a
+    # bearing from the wrong aircraft; 'behind the station' is the >90 degree case)
+    # or whose range to the fix is implausible. None when nothing crosses at all.
+    n = len(lines)
+    lat0 = sum(l['lat'] for l in lines) / n
+    lon0 = sum(l['lon'] for l in lines) / n
+    kx = 111320.0 * math.cos(math.radians(lat0))
+    ky = 110540.0
+    for l in lines:
+        l['px'], l['py'] = (l['lon'] - lon0) * kx, (l['lat'] - lat0) * ky
+        l['dx'], l['dy'] = math.sin(l['theta']), math.cos(l['theta'])    # unit direction, east/north
+    max_cross = max(abs(math.sin(lines[i]['theta'] - lines[j]['theta']))
+                    for i in range(n) for j in range(i + 1, n))
+    if max_cross < math.sin(math.radians(BEARING_MIN_CROSSING_DEG)):
+        return None                                  # every pair near-parallel: no crossing
+
+    def solve(weights):
+        a00 = a01 = a11 = b0 = b1 = 0.0
+        for l, w in zip(lines, weights):
+            nx, ny = l['dy'], -l['dx']                     # unit normal
+            c = nx * l['px'] + ny * l['py']
+            a00 += w * nx * nx
+            a01 += w * nx * ny
+            a11 += w * ny * ny
+            b0 += w * nx * c
+            b1 += w * ny * c
+        det = a00 * a11 - a01 * a01
+        if abs(det) < 1e-18:
+            return None
+        return ((b0 * a11 - b1 * a01) / det, (a00 * b1 - a01 * b0) / det, a11 / det, a00 / det)
+
+    first = solve([1.0 / (l['sigma'] ** 2) for l in lines])
+    if first is None:
+        return None
+    x, y = first[0], first[1]
+    # Second pass: weight every line by its cross-range uncertainty at the range
+    # just found (r * tan sigma); the covariance of that solve is the error radius.
+    weights = []
+    for l in lines:
+        r = math.hypot(x - l['px'], y - l['py'])
+        s_cross = max(5.0, r * math.tan(l['sigma']))
+        weights.append(1.0 / (s_cross * s_cross))
+    second = solve(weights)
+    if second is None:
+        return None
+    x, y, cov_xx, cov_yy = second
+    err = math.sqrt(max(cov_xx + cov_yy, 0.0))     # 1-sigma radius (drms)
+    if err > BEARING_MAX_RANGE_M:
+        return None
+    ranges, bad = {}, []
+    for l in lines:
+        rx, ry = x - l['px'], y - l['py']
+        r = math.hypot(rx, ry)
+        ranges[l['node_id']] = round(r)
+        # angle between the reported bearing and the direction to the fix, 0..180
+        residual = abs((math.atan2(rx, ry) - l['theta'] + math.pi) % (2 * math.pi) - math.pi)
+        limit = max(3.0 * l['sigma'], math.radians(BEARING_OUTLIER_DEG))
+        score = max(residual / limit, r / BEARING_MAX_RANGE_M)   # > 1: this line contradicts the fix
+        if score > 1.0:
+            bad.append((score, l['node_id']))
+    bad.sort(reverse=True)
+    return {'lat': lat0 + y / ky, 'lon': lon0 + x / kx, 'error_m': round(err),
+            'stations': [l['node_id'] for l in lines], 'ranges_m': ranges,
+            'bad': [nid for _, nid in bad]}
+
+
+def _bearing_fix(mac, now):
+    # Intersect the fresh bearings of the stations with known positions. The line
+    # that disagrees most with the solution (typically the station the drone is
+    # flying over, whose four-sector bearing is then meaningless, or a report from
+    # a different aircraft on the same channel) is dropped and the rest re-solved,
+    # as long as two lines that cross remain. Returns None when fewer than two
+    # usable stations are left; the caller holds the previous fix through a
+    # short gap so one bad report does not make the position flicker.
+    with BEARINGS_LOCK:
+        obs = {k: dict(v) for k, v in (bearing_obs.get(mac) or {}).items()}
+    with STATIONS_LOCK:
+        stations = {k: dict(v) for k, v in STATIONS.items()}
+    lines = []
+    for node_id, o in obs.items():
+        if now - o.get('ts', 0) > BEARING_FUSE_WINDOW_S:
+            continue
+        st = stations.get(node_id)
+        if not st or st.get('lat') in (None, '') or st.get('lon') in (None, ''):
+            continue
+        try:
+            lines.append({'lat': float(st['lat']), 'lon': float(st['lon']), 'node_id': node_id,
+                          'theta': math.radians((float(o['bearing_deg']) + _station_heading(st)) % 360.0),
+                          'sigma': math.radians(_clamp_sigma(o.get('sigma_deg')))})
+        except (TypeError, ValueError, KeyError):
+            continue
+    excluded = []
+    while len(lines) >= 2:
+        sol = _solve_bearing_lines(lines)
+        if sol is None:
+            return None
+        if not sol['bad']:
+            sol['excluded'] = excluded
+            return sol
+        worst = sol['bad'][0]
+        lines = [l for l in lines if l['node_id'] != worst]
+        excluded.append(worst)
+    return None
+
+def level1_prepare_detection(detection):
+    """Normalise an analog_fm report, record its bearing, attach every live
+    bearing for the UI and, when the geometry allows, a position fix."""
+    now = time.time()
+    detection.setdefault('src', 'analog_fm')
+    # Only the mapper writes these; a client that sends them is lying
+    for k in ('bearings', 'fix_stations', 'fix_ranges_m', 'fix_error_m', 'fix_excluded', 'fix_age_s', 'pos_src',
+              'bearing_true_deg', 'drone_lat', 'drone_long'):
+        detection.pop(k, None)
+    # The analog fields the page prints and the fusion uses, bounded to what the firmware emits
+    band = detection.get('band')
+    detection['band'] = band.strip()[:1].upper() if isinstance(band, str) and band.strip()[:1].isalpha() else None
+    for k in ('ch', 'sync_hz', 'field_hz', 'sync_q', 'sync_score', 'video_windows', 'gain', 'q_phase', 'cfo_khz',
+              'sector', 'seq', 'rssi', 'rssi_raw', 'rssi_min', 'rssi_max', 'rssi_n'):
+        if k in detection:
+            v = _safe_float(detection.get(k))
+            if v is None:
+                detection.pop(k, None)
+            else:
+                detection[k] = int(v) if abs(v) < 1e9 else None
+    for k in ('freq_mhz', 'freq_peak', 'rssi_dbm', 'level_db', 'bearing_deg', 'bearing_sigma_deg', 'station_heading'):
+        if k in detection:
+            v = _safe_float(detection.get(k))
+            if v is None:
+                detection.pop(k, None)
+            else:
+                detection[k] = round(v, 1)
+    video = detection.get('video')
+    if video is not None:
+        detection['video'] = video if video in ('NTSC', 'PAL', 'none') else 'none'
+    for k, limit in (('fp', 40), ('basic_id', 40), ('receiver', 16), ('hw', 8), ('carrier', 8)):
+        if k in detection:
+            v = _norm_text(detection.get(k), limit) if k not in ('fp', 'basic_id') else (
+                _re.sub(r'[^A-Za-z0-9/._:-]', '', str(detection.get(k)))[:limit] if isinstance(detection.get(k), str) else None)
+            if v:
+                detection[k] = v
+            else:
+                detection.pop(k, None)
+    sectors = detection.get('sectors')
+    if sectors is not None:
+        detection['sectors'] = [round(_safe_float(x, -120.0), 1) for x in sectors[:8]] if isinstance(sectors, list) else None
+        if detection['sectors'] is None:
+            detection.pop('sectors', None)
+    if not detection.get('basic_id'):
+        bid = _analog_basic_id(detection)
+        if bid:
+            detection['basic_id'] = bid
+    reported_mac = detection.get('mac')
+    detection['mac'] = _analog_canonical_mac(detection, now)
+    mac = detection['mac']
+    track = tracked_pairs.get(mac) or {}
+    merged = mac != reported_mac
+    for k in ('basic_id', 'freq_mhz', 'band', 'ch'):
+        # Folded onto a live track labelled with an overlapping channel: keep that
+        # track's identity so the list does not flicker between R3 and B1. A report
+        # on the same channel only fills in what the mesh copy dropped.
+        if track.get(k) in (None, ''):
+            continue
+        if merged or detection.get(k) in (None, ''):
+            detection[k] = track[k]
+    if merged:
+        detection['reported_mac'] = reported_mac
+    node_id = _norm_node_id(detection.get('node_id'))
+    if node_id:
+        detection['node_id'] = node_id
+    station = None
+    created = False
+    with STATIONS_LOCK:
+        if node_id:
+            station = STATIONS.get(node_id)
+            if station is None and len(STATIONS) < MAX_STATIONS:
+                # station_heading is the installer's note of the face-N heading; 'heading'
+                # in a detection means the aircraft's course and is never used here
+                heading = _safe_float(detection.get('station_heading'))
+                station = _auto_station(node_id, heading, _norm_text(detection.get('receiver')))
+                STATIONS[node_id] = station
+                save_stations()
+                created = True
+            if station is not None:
+                station = dict(station)
+                # A station that reports is alive, heartbeat or not
+                stt = station_status.setdefault(node_id, {})
+                stt['last_seen'] = now
+                if 'receiver' not in stt and _norm_text(detection.get('receiver')):
+                    stt['receiver'] = _norm_text(detection.get('receiver'))
+    if created:
+        logger.info(f"Level 1 station {node_id} registered from a detection; set its position in the LEVEL 1 STATIONS panel")
+        emit_stations()
+    rel = _safe_float(detection.get('bearing_deg')) if (node_id and station is not None) else None
+    with BEARINGS_LOCK:
+        if rel is not None:
+            rel = rel % 360.0
+            true_deg = (rel + _station_heading(station)) % 360.0
+            detection['bearing_true_deg'] = round(true_deg, 1)
+            per_mac = bearing_obs.setdefault(mac, {})
+            per_mac[node_id] = {
+                'node_id': node_id, 'bearing_deg': rel, 'bearing_true_deg': round(true_deg, 1),
+                'sigma_deg': _clamp_sigma(detection.get('bearing_sigma_deg')),
+                'rssi_dbm': detection.get('rssi_dbm', detection.get('rssi')),
+                'freq_mhz': detection.get('freq_mhz'), 'video': detection.get('video'),
+                'fp': detection.get('fp'), 'sector': detection.get('sector'), 'ts': now,
+            }
+        # Forget stale observations everywhere (an emitter that moved on, a station that
+        # stopped, a MAC that was reported once and never again)
+        for m, obs in list(bearing_obs.items()):
+            for nid in [k for k, o in obs.items() if now - o.get('ts', 0) > BEARING_OBS_KEEP_S]:
+                obs.pop(nid, None)
+            if not obs:
+                bearing_obs.pop(m, None)
+        for m in [k for k, (_, ts) in list(last_fix.items()) if now - ts > BEARING_OBS_KEEP_S]:
+            last_fix.pop(m, None)
+        per_mac = {k: dict(v) for k, v in (bearing_obs.get(mac) or {}).items()}
+
+    # Everything the map needs to draw the rays, with the station geometry attached
+    bearings = []
+    with STATIONS_LOCK:
+        for nid, o in per_mac.items():
+            st = STATIONS.get(nid) or {}
+            row = dict(o)
+            row['age_s'] = round(now - o.get('ts', now), 1)
+            row['station_lat'] = st.get('lat')
+            row['station_lon'] = st.get('lon')
+            row['station_heading_deg'] = _station_heading(st) if st else 0.0
+            row['station_name'] = st.get('name', nid)
+            row['bearing_true_deg'] = round((float(o['bearing_deg']) + _station_heading(st)) % 360.0, 1) if st else o.get('bearing_true_deg')
+            bearings.append(row)
+    detection['bearings'] = bearings
+
+    fix = _bearing_fix(mac, now)
+    held = last_fix.get(mac)
+    if fix:
+        last_fix[mac] = (fix, now)
+        detection['drone_lat'] = fix['lat']
+        detection['drone_long'] = fix['lon']
+        detection['pos_src'] = 'bearing_fix'
+        detection['fix_error_m'] = fix['error_m']
+        detection['fix_stations'] = fix['stations']
+        detection['fix_ranges_m'] = fix['ranges_m']
+        if fix.get('excluded'):
+            detection['fix_excluded'] = fix['excluded']
+    elif held and now - held[1] <= BEARING_FUSE_WINDOW_S:
+        # No crossing this time (one station's turn to report, an outlier that left too
+        # few lines): keep the last fix for one fuse window rather than dropping the
+        # position and re-announcing the aircraft when it comes back
+        prev = held[0]
+        detection['drone_lat'] = prev['lat']
+        detection['drone_long'] = prev['lon']
+        detection['pos_src'] = 'bearing_fix_held'
+        detection['fix_error_m'] = prev['error_m']
+        detection['fix_stations'] = prev['stations']
+        detection['fix_ranges_m'] = prev['ranges_m']
+        detection['fix_age_s'] = round(now - held[1])
+    else:
+        # A bearing is not a position: never let a stale fix or a stray field pretend it is
+        detection.pop('drone_lat', None)
+        detection.pop('drone_long', None)
+        detection['pos_src'] = 'bearing_only'
+        detection['fix_stations'] = [b['node_id'] for b in bearings if now - b.get('ts', 0) <= BEARING_FUSE_WINDOW_S]
+    return detection
+
+
+load_stations()
+
 def update_detection(detection):
     mac = detection.get("mac")
     if not mac:
         return
+    if detection.get('type') == 'analog_fm':
+        detection = level1_prepare_detection(detection)
+        mac = detection['mac']
     prev = tracked_pairs.get(mac)
 
     # Retrieve new drone coordinates from the detection
@@ -4910,6 +5446,16 @@ HTML_PAGE = '''
     }
     .drone-item.src-mavlink { border-left: 3px solid #66aaff !important; }
     .drone-item.src-dji     { border-left: 3px solid #ff66ff !important; }
+    /* Level 1 station hits: an analog 5.8 GHz video carrier located by bearing
+       (no Remote ID; a position only once two stations' bearings cross). */
+    .drone-item.src-analog  { border-left: 3px solid #ffaa33 !important; }
+    .l1-station-icon { position:relative; }
+    .l1-station-icon svg { display:block; overflow:visible; }
+    .l1-row { display:flex; gap:4px; align-items:center; margin-top:4px; flex-wrap:wrap; }
+    .l1-row input { background:rgba(51,51,51,0.7); color:#ffd9a0; border:1px solid #cc8829; font-family:monospace; padding:2px 4px; font-size:0.95em; box-sizing:border-box; }
+    .l1-btn { padding:3px 6px; background:#1a1000; border:1px solid #ffaa33; color:#ffd9a0; font-family:monospace; font-size:0.9em; border-radius:3px; cursor:pointer; }
+    .l1-btn.active { background:#ffaa33; color:#1a1000; }
+    .l1-dot { display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:5px; vertical-align:middle; }
     /* #activePlaceholder .drone-item.no-gps:hover::after {
       content: "no gps lock";
       position: absolute;
@@ -6450,6 +6996,27 @@ HTML_PAGE = '''
       </div>
     </div>
 
+    <!-- LEVEL 1 STATIONS: bearing-only 5.8 GHz analog video receivers. Each
+         station registers itself from its heartbeat; its position and
+         true-north heading are set here (or by clicking the map). -->
+    <div style="margin:8px 8px 0 8px; padding:6px; border:1px solid #ffaa33; background:rgba(0,0,0,0.5); border-radius:4px; box-sizing:border-box; font-family:monospace; font-size:0.75em; color:#ffd9a0;">
+      <div style="display:flex; justify-content:space-between; align-items:center; cursor:pointer;" id="l1Toggle">
+        <span style="color:#ffbb55; font-weight:bold; letter-spacing:1px;">&#9660; LEVEL 1 STATIONS <span id="l1HeaderCount" style="color:#a87f40; font-weight:normal; letter-spacing:0;"></span></span>
+        <span id="l1ToggleArrow" style="color:#ffbb55;">+</span>
+      </div>
+      <div id="l1Panel" style="display:none; margin-top:6px;">
+        <div style="font-size:0.9em; color:#c9a06a; line-height:1.35; margin-bottom:4px;">
+          Analog 5.8 GHz video receivers report a compass bearing, not a position. Set each station's
+          position and the true-north heading of its face N; two crossing bearings give a fix.
+        </div>
+        <div id="l1StationList"></div>
+        <div class="l1-row" style="margin-top:6px; padding-top:4px; border-top:1px dashed #553300;">
+          <input id="l1NewId" type="text" placeholder="node_id (e.g. RX01)" style="flex:1; min-width:90px;"/>
+          <button id="l1AddBtn" class="l1-btn">ADD</button>
+        </div>
+        <div id="l1Hint" style="font-size:0.9em; color:#a87f40; margin-top:4px;"></div>
+      </div>
+    </div>
     <!-- GEOFENCING toolkit (draw, list, edit, delete + alerts) -->
     <div style="margin:8px 8px 0 8px; padding:6px; border:1px solid #ff5577; background:rgba(0,0,0,0.5); border-radius:4px; box-sizing:border-box; font-family:monospace; font-size:0.75em; color:#ffaaaa;">
       <div style="display:flex; justify-content:space-between; align-items:center; cursor:pointer;" id="geofenceToggle">
@@ -7213,7 +7780,8 @@ function generatePopupContent(detection, markerType) {
   const EU_CLASS_LABEL = {1:'C0', 2:'C1', 3:'C2', 4:'C3', 5:'C4', 6:'C5', 7:'C6'};
   const SRC_LABEL = {odid_ble:'Remote ID · BLE 4', odid_ble5:'Remote ID · BLE 5 Long Range',
     odid_nan:'Remote ID · WiFi NAN', odid_bcn:'Remote ID · WiFi Beacon', dji:'DJI DroneID · WiFi beacon',
-    mavlink:'MAVLink telemetry · WiFi', wifi:'WiFi fingerprint', ble:'BLE fingerprint'};
+    mavlink:'MAVLink telemetry · WiFi', wifi:'WiFi fingerprint', ble:'BLE fingerprint',
+    analog_fm:'5.8 GHz analog video · level 1 station'};
   const CONF_COLOR = {high:'#88ff99', med:'#ffcc66', low:'#ff8866'};
   const isFingerprint = detection.src === 'wifi' || detection.src === 'ble';
   const hasIdentity = detection.basic_id || detection.op_id || detection.desc || detection.src
@@ -7221,7 +7789,7 @@ function generatePopupContent(detection, markerType) {
   if (hasIdentity) {
     html += '<div style="height:1px; background:rgba(255,255,255,0.07); margin:8px 0;"></div>';
     html += '<div style="font-size:0.72em; color:' + muted + '; letter-spacing:1.5px; margin-bottom:4px;">'
-         +  (isFingerprint ? 'IDENTIFICATION (HEURISTIC)' : 'REMOTE ID') + '</div>';
+         +  (isFingerprint ? 'IDENTIFICATION (HEURISTIC)' : (detection.type === 'analog_fm' ? 'IDENTIFICATION (ANALOG VIDEO CHANNEL)' : 'REMOTE ID')) + '</div>';
     if (detection.src) html += stat('SOURCE', SRC_LABEL[detection.src] || detection.src, '#dde6ee');
     if (detection.basic_id) {
       const t = ID_TYPE_LABEL[detection.id_type];
@@ -7254,6 +7822,46 @@ function generatePopupContent(detection, markerType) {
     }
   }
 
+  // ── Level 1: analog video carrier located by bearing ──
+  if (detection.type === 'analog_fm') {
+    html += '<div style="height:1px; background:rgba(255,255,255,0.07); margin:8px 0;"></div>';
+    html += '<div style="font-size:0.72em; color:' + muted + '; letter-spacing:1.5px; margin-bottom:4px;">ANALOG VIDEO · LEVEL 1</div>';
+    const chLabel = (detection.band || '') + (detection.ch !== undefined && detection.ch !== null ? detection.ch : '');
+    if (detection.freq_mhz) html += stat('CHANNEL', l1Esc((chLabel ? chLabel + ' · ' : '') + detection.freq_mhz + ' MHz'), '#fff');
+    if (detection.video) html += stat('VIDEO', detection.video === 'none' ? 'carrier, no sync found' : l1Esc(detection.video + (detection.sync_hz ? ' · ' + detection.sync_hz + ' Hz lines' : '')), detection.video === 'none' ? '#dde6ee' : '#ffd9a0');
+    if (detection.fp) html += stat('FINGERPRINT', l1Esc(detection.fp));
+    if (detection.freq_peak) html += stat('CARRIER', l1Esc(detection.freq_peak + ' MHz'));
+    const fixed = detection.pos_src === 'bearing_fix', held = detection.pos_src === 'bearing_fix_held';
+    let posText = 'bearing only — needs a second station';
+    if (fixed || held) {
+      posText = (held ? 'last fix held ' + Math.round(detection.fix_age_s || 0) + ' s · ' : 'bearing fix ') + '±' + Math.round(detection.fix_error_m || 0) + ' m from ' + l1Esc((detection.fix_stations || []).join(', '));
+      if (detection.fix_excluded && detection.fix_excluded.length) posText += ' · outlier: ' + l1Esc(detection.fix_excluded.join(', '));
+    }
+    html += stat('POSITION', posText, fixed ? '#88ff99' : '#ffcc66');
+    if (detection.node_id) {
+      html += stat('LAST REPORT', l1Esc(detection.node_id + (detection.rssi_dbm !== undefined ? ' · ' + Math.round(detection.rssi_dbm) + ' dBm' : '')
+        + (detection.level_db !== undefined ? ' · ' + Math.round(detection.level_db) + ' dB' : '') + (detection.q_phase !== undefined ? ' · q ' + detection.q_phase + '%' : '')
+        + (detection.carrier ? ' · ' + detection.carrier : '')));
+    }
+    const bl = Array.isArray(detection.bearings) ? detection.bearings : [];
+    if (bl.length) {
+      html += '<div style="font-size:0.72em; color:' + muted + '; letter-spacing:1.5px; margin:6px 0 2px 0;">BEARINGS</div>';
+      bl.forEach(b => {
+        const age = (b.age_s !== undefined) ? Math.round(b.age_s) + 's' : '';
+        const stn = l1Stations[b.node_id];
+        const placed = stn ? (stn.lat !== null && stn.lat !== undefined && stn.lon !== null && stn.lon !== undefined)
+                           : (b.station_lat !== null && b.station_lat !== undefined && b.station_lon !== null && b.station_lon !== undefined);
+        const hdg = stn ? (Number(stn.heading_deg) || 0) : (Number(b.station_heading_deg) || 0);
+        const trueDeg = ((Number(b.bearing_deg) || 0) + hdg) % 360;   // same rotation as the ray on the map
+        html += stat(l1Esc(b.station_name || b.node_id),
+                     Math.round(trueDeg) + '° ±' + Math.round(b.sigma_deg || 0) + '°'
+                     + (b.rssi_dbm !== undefined && b.rssi_dbm !== null ? ' · ' + Math.round(b.rssi_dbm) + ' dBm' : '')
+                     + (age ? ' · ' + age : '') + (placed ? '' : ' · <span style="color:#ff8866">station not placed</span>'),
+                     placed ? '#dde6ee' : '#ffcc66');
+      });
+    }
+  }
+
   // ── Telemetry (key/value, smart-filtered) ──
   // Hide internal/dev fields the user doesn't care about (_simulated comes
   // from the demo flight injector; lockTime/userLocked are UI bookkeeping) and
@@ -7261,6 +7869,14 @@ function generatePopupContent(detection, markerType) {
   const skip = new Set(['mac','basic_id','last_update','userLocked','lockTime','_simulated',
     'id_type','basic_id2','id_type2','ua_type','op_id','desc','eu_cat','eu_class',
     'src','vendor','model','ssid','conf','role']);
+  if (detection.type === 'analog_fm') {
+    // Shown in the LEVEL 1 section above, or internal to the bearing bookkeeping
+    ['bearings','fix_stations','fix_ranges_m','fix_excluded','fix_age_s','sectors','type','receiver','hw','band','ch','freq_mhz',
+     'video','fp','freq_peak','pos_src','fix_error_m','sync_hz','field_hz','sync_q','sync_score',
+     'video_windows','rssi_raw','rssi_min','rssi_max','rssi_n','station_heading','seq','source_port',
+     'reported_mac','bearing_deg','bearing_sigma_deg','bearing_true_deg','node_id','sector','rssi','rssi_dbm',
+     'carrier','cfo_khz','gain','level_db','q_phase'].forEach(k => skip.add(k));
+  }
   const telemetryKeys = Object.keys(detection).filter(k => !skip.has(k) && detection[k] !== '' && detection[k] !== null && detection[k] !== undefined);
   if (telemetryKeys.length > 0) {
     html += '<div style="height:1px; background:rgba(255,255,255,0.07); margin:8px 0;"></div>';
@@ -11808,6 +12424,7 @@ function updateComboList(data) {
                // restorePaths reconcile.
                if (droneMarkers[mac]) { map.removeLayer(droneMarkers[mac]); delete droneMarkers[mac]; }
                if (pilotMarkers[mac]) { map.removeLayer(pilotMarkers[mac]); delete pilotMarkers[mac]; }
+               if (typeof removeBearingLayers === 'function') removeBearingLayers(mac);
                if (dronePolylines[mac]) { dronePathLayer.removeLayer(dronePolylines[mac]); delete dronePolylines[mac]; }
                if (pilotPolylines[mac]) { pilotPathLayer.removeLayer(pilotPolylines[mac]); delete pilotPolylines[mac]; }
                delete dronePathCoords[mac];
@@ -11859,9 +12476,14 @@ function updateComboList(data) {
     item.classList.toggle('src-fingerprint', srcKind === 'wifi' || srcKind === 'ble');
     item.classList.toggle('src-mavlink', srcKind === 'mavlink');
     item.classList.toggle('src-dji', srcKind === 'dji');
+    item.classList.toggle('src-analog', srcKind === 'analog_fm' || (det && det.type === 'analog_fm'));
     if (det) {
       const bits = [];
-      if (det.src) bits.push(det.src);
+      if (det.type === 'analog_fm') {
+        bits.push('analog video ' + (det.freq_mhz || '') + ' MHz');
+        if (det.video && det.video !== 'none') bits.push(det.video);
+        bits.push(det.pos_src === 'bearing_fix' ? 'bearing fix' : 'bearing only');
+      } else if (det.src) bits.push(det.src);
       if (det.vendor) bits.push(det.vendor + (det.model ? ' ' + det.model : ''));
       if (det.ssid) bits.push(det.ssid);
       if (det.basic_id) bits.push(det.basic_id);
@@ -11926,6 +12548,370 @@ var previousActive = {};
     } catch(e) { console.error("Failed to parse persisted trackedPairs", e); }
   }
 })();
+// =============================================================================
+// LEVEL 1 STATIONS - bearing-only analog video receivers
+// Station markers (a four-sector rose turned to the station heading), one ray
+// per fresh bearing from the station that reported it, a translucent wedge of
+// +/- sigma, and a dashed error circle around a bearing fix. The server owns
+// the station list (stations.json) and the fusion; this is presentation and
+// the small editing panel.
+// =============================================================================
+const l1Esc = s => String(s === null || s === undefined ? '' : s)
+  .replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+// One DOM id per station, collision-free (RX-01 and RX_01 stay apart)
+const l1Dom = id => 'l1_' + Array.from(String(id)).map(c => /[A-Za-z0-9]/.test(c) ? c : '_' + c.charCodeAt(0).toString(16)).join('');
+const l1Dirty = {};             // node_id -> {name, lat, lon, hdg} typed but not yet saved
+const l1Stations = {};          // node_id -> station record (from the server)
+const l1Status = {};            // node_id -> last heartbeat
+let   l1RayKm = 3.0;
+let   l1FuseWindowS = 30;
+const l1StationMarkers = {};    // node_id -> L.marker
+const l1Rays = {};              // mac -> { node_id -> {ray, wedge} }
+const l1FixCircles = {};        // mac -> L.circle
+let   l1PlaceFor = null;        // node_id being placed by a map click
+let   l1StationsLoaded = false; // first /api/stations or 'stations' event seen
+let   l1PointerDown = false;    // a press in the panel is in progress: do not rebuild under it
+const l1Layer = L.layerGroup().addTo(map);
+
+function l1Destination(lat, lon, bearingDeg, distM) {
+  const R = 6371000, br = bearingDeg * Math.PI / 180;
+  const la1 = lat * Math.PI / 180, lo1 = lon * Math.PI / 180, d = distM / R;
+  const la2 = Math.asin(Math.sin(la1) * Math.cos(d) + Math.cos(la1) * Math.sin(d) * Math.cos(br));
+  const lo2 = lo1 + Math.atan2(Math.sin(br) * Math.sin(d) * Math.cos(la1), Math.cos(d) - Math.sin(la1) * Math.sin(la2));
+  return [la2 * 180 / Math.PI, ((lo2 * 180 / Math.PI + 540) % 360) - 180];
+}
+
+function l1StationIcon(st, alive) {
+  const hdg = Number(st.heading_deg) || 0;
+  const col = alive ? '#ffaa33' : '#8a6a3a';
+  const svg = '<svg viewBox="-20 -20 40 40" width="34" height="34" style="transform:rotate(' + hdg + 'deg)">'
+    + '<g fill="' + col + '" fill-opacity="0.22" stroke="' + col + '" stroke-width="1.2">'
+    + '<path d="M0,0 L-11,-16 A19,19 0 0 1 11,-16 Z"/>'
+    + '<path d="M0,0 L16,-11 A19,19 0 0 1 16,11 Z"/>'
+    + '<path d="M0,0 L11,16 A19,19 0 0 1 -11,16 Z"/>'
+    + '<path d="M0,0 L-16,11 A19,19 0 0 1 -16,-11 Z"/>'
+    + '</g><circle r="3.5" fill="' + col + '"/><line x1="0" y1="0" x2="0" y2="-19" stroke="#fff" stroke-width="1.5"/></svg>';
+  return L.divIcon({ html: svg, className: 'l1-station-icon', iconSize: [34, 34], iconAnchor: [17, 17] });
+}
+
+function l1StationAlive(nodeId) {
+  const stt = l1Status[nodeId];
+  return !!(stt && stt.last_seen && (Date.now() / 1000 - stt.last_seen) < 300);
+}
+
+function l1Placed(st) {
+  return !!st && st.lat !== null && st.lat !== undefined && st.lon !== null && st.lon !== undefined;
+}
+function l1StationPopup(st) {
+  const stt = l1Status[st.node_id] || {};
+  const age = stt.last_seen ? Math.round(Date.now() / 1000 - stt.last_seen) + ' s ago' : 'never';
+  const row = (k, v) => '<div style="display:flex; justify-content:space-between; gap:10px;"><span style="color:#a87f40;">' + k + '</span><span>' + l1Esc(v) + '</span></div>';
+  let h = '<div style="font-family:monospace; font-size:0.85em; color:#ffd9a0; min-width:200px;">'
+    + '<div style="font-weight:bold; color:#ffbb55; margin-bottom:4px;">LEVEL 1 STATION ' + l1Esc(st.name || st.node_id) + '</div>'
+    + row('node_id', st.node_id) + row('heading of face N', (Number(st.heading_deg) || 0) + '°')
+    + row('position', l1Placed(st) ? Number(st.lat).toFixed(5) + ', ' + Number(st.lon).toFixed(5) : 'not set')
+    + row('heartbeat', age);
+  if (stt.sweeps !== undefined) h += row('sweeps', stt.sweeps);
+  if (stt.nf_dbm !== undefined) h += row('noise floor', stt.nf_dbm + ' dBm');
+  if (stt.temp_c !== undefined) h += row('temp', stt.temp_c + ' °C');
+  if (stt.tune_fail !== undefined) h += row('tune_fail / cap_err', stt.tune_fail + ' / ' + (stt.cap_err !== undefined ? stt.cap_err : '-'));
+  if (stt.bus_stuck !== undefined) h += row('bus_stuck', stt.bus_stuck + (Number(stt.bus_stuck) > 0 ? ' (I/Q bus not streaming!)' : ''));
+  if (stt.alias_drop !== undefined) h += row('alias_drop', stt.alias_drop);
+  if (stt.video_seen !== undefined) h += row('video seen', stt.video_seen);
+  if (stt.channels !== undefined) h += row('plan', stt.channels + ' ch × ' + (stt.sectors || 4) + ' sectors');
+  h += '</div>';
+  return h;
+}
+
+let l1PanelSig = '';
+const l1MarkerSig = {};
+function l1RenderStations() {
+  // Markers
+  for (const id in l1StationMarkers) {
+    if (!l1Placed(l1Stations[id])) {
+      l1Layer.removeLayer(l1StationMarkers[id]); delete l1StationMarkers[id];
+    }
+  }
+  for (const id in l1Stations) {
+    const st = l1Stations[id];
+    if (!l1Placed(st)) continue;
+    const ll = [Number(st.lat), Number(st.lon)];
+    const sig = ll.join(',') + '|' + (Number(st.heading_deg) || 0) + '|' + (l1StationAlive(id) ? 1 : 0);
+    if (!l1StationMarkers[id]) {
+      l1StationMarkers[id] = L.marker(ll, { icon: l1StationIcon(st, l1StationAlive(id)), zIndexOffset: 500 })
+        .bindPopup(l1StationPopup(st), { className: 'drone-popup', maxWidth: 320 }).addTo(l1Layer);
+      l1MarkerSig[id] = sig;
+    } else if (l1MarkerSig[id] !== sig) {
+      l1StationMarkers[id].setLatLng(ll);
+      l1StationMarkers[id].setIcon(l1StationIcon(st, l1StationAlive(id)));
+      l1MarkerSig[id] = sig;
+    }
+    if (!l1StationMarkers[id].isPopupOpen()) l1StationMarkers[id].setPopupContent(l1StationPopup(st));
+  }
+  // Panel
+  const list = document.getElementById('l1StationList');
+  const count = document.getElementById('l1HeaderCount');
+  if (count) {
+    const n = Object.keys(l1Stations).length;
+    const alive = Object.keys(l1Stations).filter(l1StationAlive).length;
+    count.textContent = n ? ('(' + alive + '/' + n + ' alive)') : '';
+  }
+  if (!list) return;
+  // Typing in one of the inputs: leave the DOM alone (unsaved values also survive
+  // a rebuild through l1Dirty, filled by the input listener below).
+  const ae = document.activeElement;
+  if (ae && ae.tagName === 'INPUT' && list.contains(ae)) return;
+  if (l1PointerDown) return;                       // a click is in flight: do not swap the DOM under it
+  // Rebuild the panel only when its structure changed (stations, names, positions,
+  // headings, alive state, dirty inputs, placement mode); ages and noise floors are
+  // patched into the existing rows in place so buttons are never replaced under a press.
+  const ids = Object.keys(l1Stations).sort();
+  const ageText = id => { const stt = l1Status[id] || {}; return (stt.last_seen ? Math.round(Date.now() / 1000 - stt.last_seen) + 's' : 'no heartbeat') + (stt.nf_dbm !== undefined ? ' · nf ' + stt.nf_dbm : ''); };
+  const sigNow = JSON.stringify([ids.map(id => {
+    const st = l1Stations[id];
+    return [id, st.name, st.lat, st.lon, st.heading_deg, !!st.heading_auto, l1StationAlive(id)];
+  }), Object.keys(l1Dirty), l1PlaceFor]);
+  if (sigNow === l1PanelSig && list.children.length) {
+    list.querySelectorAll('[data-age]').forEach(el => { const t = ageText(el.getAttribute('data-age')); if (el.textContent !== t) el.textContent = t; });
+    return;
+  }
+  l1PanelSig = sigNow;
+  let h = '';
+  if (!ids.length) h = '<div style="color:#a87f40;">— no stations yet — a station registers itself with its first heartbeat; or ADD one below —</div>';
+  ids.forEach(id => {
+    const st = l1Stations[id];
+    const alive = l1StationAlive(id);
+    const dom = l1Dom(id), eid = l1Esc(id);
+    const placed = l1Placed(st);
+    const d = l1Dirty[id] || {};
+    const val = (k, server) => l1Esc(d[k] !== undefined ? d[k] : server);
+    h += '<div style="margin-top:6px; padding:4px; border:1px solid ' + (placed ? '#7a5a2a' : '#aa5533') + '; border-radius:3px;">'
+      + '<div style="display:flex; justify-content:space-between; align-items:center;">'
+      + '<span><span class="l1-dot" style="background:' + (alive ? '#88ff99' : '#664433') + '"></span><b>' + eid + '</b>'
+      + (st.name && st.name !== id ? ' · ' + l1Esc(st.name) : '') + '</span>'
+      + '<span style="color:#a87f40;" data-age="' + eid + '">' + l1Esc(ageText(id)) + '</span></div>'
+      + '<div class="l1-row">'
+      + '<input id="l1name_' + dom + '" data-id="' + eid + '" data-k="name" type="text" value="' + val('name', st.name || '') + '" placeholder="name" style="width:84px;"/>'
+      + '<input id="l1lat_' + dom + '" data-id="' + eid + '" data-k="lat" type="text" value="' + val('lat', placed ? Number(st.lat).toFixed(6) : '') + '" placeholder="lat" style="width:86px;"/>'
+      + '<input id="l1lon_' + dom + '" data-id="' + eid + '" data-k="lon" type="text" value="' + val('lon', placed ? Number(st.lon).toFixed(6) : '') + '" placeholder="lon" style="width:86px;"/>'
+      + '<input id="l1hdg_' + dom + '" data-id="' + eid + '" data-k="hdg" type="number" min="0" max="359" value="' + val('hdg', Number(st.heading_deg) || 0) + '" title="true-north heading of face N" style="width:52px;"/>°'
+      + (st.heading_auto ? '<span title="follows the heading the station reports until one is saved here" style="color:#a87f40; font-size:0.85em;">auto</span>' : '')
+      + '</div><div class="l1-row">'
+      + '<button class="l1-btn' + (l1PlaceFor === id ? ' active' : '') + '" data-act="place" data-id="' + eid + '" title="click the map to place">' + (l1PlaceFor === id ? 'CLICK MAP…' : 'PLACE') + '</button>'
+      + '<button class="l1-btn" data-act="here" data-id="' + eid + '" title="use my position">HERE</button>'
+      + '<button class="l1-btn" data-act="save" data-id="' + eid + '">SAVE' + (l1Dirty[id] ? ' *' : '') + '</button>'
+      + (placed ? '<button class="l1-btn" data-act="zoom" data-id="' + eid + '">ZOOM</button>' : '')
+      + '<button class="l1-btn" style="margin-left:auto; border-color:#aa5533; color:#ffaaaa;" data-act="del" data-id="' + eid + '">DEL</button>'
+      + '</div>'
+      + (placed ? '' : '<div style="color:#ff9966; font-size:0.9em; margin-top:2px;">position not set — its bearings cannot be drawn or fused</div>')
+      + '</div>';
+  });
+  list.innerHTML = h;
+  if (!ids.length) l1PanelSig = '';   // the empty notice has no children to detect; always redraw
+}
+document.addEventListener('input', ev => {
+  const inp = ev.target;
+  if (!inp || inp.tagName !== 'INPUT' || !inp.closest || !inp.closest('#l1StationList')) return;
+  const id = inp.getAttribute('data-id'), k = inp.getAttribute('data-k');
+  if (!id || !k) return;
+  (l1Dirty[id] = l1Dirty[id] || {})[k] = inp.value;
+});
+document.addEventListener('click', ev => {
+  const btn = ev.target && ev.target.closest ? ev.target.closest('#l1StationList button[data-act]') : null;
+  if (!btn) return;
+  ev.preventDefault();
+  const id = btn.getAttribute('data-id');
+  switch (btn.getAttribute('data-act')) {
+    case 'place': l1Place(id); break;
+    case 'here':  l1UseHere(id); break;
+    case 'save':  l1Save(id); break;
+    case 'zoom':  l1Zoom(id); break;
+    case 'del':   l1Delete(id); break;
+  }
+});
+
+async function l1Save(id) {
+  const dom = l1Dom(id);
+  const g = k => { const el = document.getElementById('l1' + k + '_' + dom); return el ? el.value.trim() : ''; };
+  // Send only what the operator touched: a heading the server receives is a heading set
+  // by hand, and from then on the station's own reported heading is ignored.
+  const d = l1Dirty[id] || {};
+  const body = { node_id: id, lat: g('lat'), lon: g('lon') };
+  if (d.name !== undefined) body.name = g('name');
+  if (d.hdg !== undefined) body.heading_deg = g('hdg') || 0;
+  try {
+    const r = await fetch('/api/stations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const j = await r.json();
+    const hint = document.getElementById('l1Hint');
+    if (hint) hint.textContent = r.ok ? ('saved ' + id) : ('error: ' + (j.error || r.status));
+    if (r.ok) { delete l1Dirty[id]; await l1Fetch(); }
+  } catch (e) { console.error('station save failed', e); }
+}
+async function l1Delete(id) {
+  if (!confirm('Remove level 1 station ' + id + ' from the mapper? A station that is still running re-registers itself, without a position, on its next heartbeat.')) return;
+  delete l1Dirty[id];
+  try { await fetch('/api/stations/' + encodeURIComponent(id), { method: 'DELETE' }); await l1Fetch(); } catch (e) { console.error(e); }
+}
+function l1Place(id) {
+  l1PlaceFor = (l1PlaceFor === id) ? null : id;
+  const hint = document.getElementById('l1Hint');
+  if (hint) hint.textContent = l1PlaceFor ? ('click the map where ' + id + ' stands') : '';
+  l1RenderStations();
+}
+function l1UseHere(id) {
+  if (typeof observerMarker !== 'undefined' && observerMarker) {
+    const ll = observerMarker.getLatLng();
+    l1SetInputs(id, ll.lat, ll.lng);
+  } else if (navigator.geolocation) {
+    navigator.geolocation.getCurrentPosition(p => l1SetInputs(id, p.coords.latitude, p.coords.longitude),
+      () => { const hint = document.getElementById('l1Hint'); if (hint) hint.textContent = 'no position from this device'; });
+  }
+}
+function l1SetInputs(id, lat, lon) {
+  const dom = l1Dom(id);
+  const la = document.getElementById('l1lat_' + dom), lo = document.getElementById('l1lon_' + dom);
+  if (la) la.value = Number(lat).toFixed(6);
+  if (lo) lo.value = Number(lon).toFixed(6);
+  (l1Dirty[id] = l1Dirty[id] || {}).lat = Number(lat).toFixed(6);
+  l1Dirty[id].lon = Number(lon).toFixed(6);
+}
+function l1Zoom(id) {
+  const st = l1Stations[id];
+  if (l1Placed(st)) safeSetView([Number(st.lat), Number(st.lon)], 15);
+}
+map.on('click', ev => {
+  if (!l1PlaceFor) return;
+  const id = l1PlaceFor;
+  l1SetInputs(id, ev.latlng.lat, ev.latlng.lng);
+  l1PlaceFor = null;
+  l1Save(id);
+});
+
+const L1_RESERVED = new Set(['__proto__', 'constructor', 'prototype']);
+function l1Apply(msg) {
+  if (!msg) return;
+  for (const k in l1Stations) delete l1Stations[k];
+  for (const k in l1Status) delete l1Status[k];
+  // Copy key by key: Object.assign with a JSON key named __proto__ would write the prototype
+  for (const k of Object.keys(msg.stations || {})) if (!L1_RESERVED.has(k)) Object.defineProperty(l1Stations, k, { value: msg.stations[k], writable: true, enumerable: true, configurable: true });
+  for (const k of Object.keys(msg.status || {})) if (!L1_RESERVED.has(k)) Object.defineProperty(l1Status, k, { value: msg.status[k], writable: true, enumerable: true, configurable: true });
+  if (msg.ray_km) l1RayKm = msg.ray_km;
+  if (msg.fuse_window_s) l1FuseWindowS = msg.fuse_window_s;
+  l1StationsLoaded = true;
+  for (const mac in l1RaySig) delete l1RaySig[mac];   // station geometry may have changed: redraw rays
+  l1RenderStations();
+}
+document.addEventListener('mousedown', ev => { if (ev.target && ev.target.closest && ev.target.closest('#l1StationList')) l1PointerDown = true; }, true);
+document.addEventListener('touchstart', ev => { if (ev.target && ev.target.closest && ev.target.closest('#l1StationList')) l1PointerDown = true; }, { capture: true, passive: true });
+document.addEventListener('mouseup', () => { l1PointerDown = false; }, true);
+document.addEventListener('touchend', () => { l1PointerDown = false; }, true);
+async function l1Fetch() {
+  try { const r = await fetch('/api/stations'); if (r.ok) l1Apply(await r.json()); } catch (e) { console.error('stations fetch failed', e); }
+}
+socket.on('stations', l1Apply);
+document.addEventListener('DOMContentLoaded', () => {
+  const t = document.getElementById('l1Toggle'), pnl = document.getElementById('l1Panel'), arrow = document.getElementById('l1ToggleArrow');
+  if (t && pnl) {
+    const open = localStorage.getItem('l1PanelOpen') === 'true';
+    pnl.style.display = open ? 'block' : 'none'; if (arrow) arrow.textContent = open ? '−' : '+';
+    t.addEventListener('click', () => {
+      const show = pnl.style.display === 'none';
+      pnl.style.display = show ? 'block' : 'none'; if (arrow) arrow.textContent = show ? '−' : '+';
+      localStorage.setItem('l1PanelOpen', show ? 'true' : 'false');
+    });
+  }
+  const add = document.getElementById('l1AddBtn'), newId = document.getElementById('l1NewId');
+  const doAdd = async () => {
+    const id = newId.value.trim();
+    const hint = document.getElementById('l1Hint');
+    if (!id) return;
+    try {
+      const r = await fetch('/api/stations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ node_id: id, name: id }) });
+      const j = await r.json().catch(() => ({}));
+      if (hint) hint.textContent = r.ok ? ('added ' + ((j.station && j.station.node_id) || id) + ((j.station && j.station.node_id !== id) ? ' (id normalised)' : '')) : ('error: ' + (j.error || r.status));
+      if (r.ok) { newId.value = ''; await l1Fetch(); }
+    } catch (e) { if (hint) hint.textContent = 'error: ' + e; }
+  };
+  if (add && newId) {
+    add.addEventListener('click', doAdd);
+    newId.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); doAdd(); } });
+  }
+  l1Fetch();
+  setInterval(l1RenderStations, 5000);   // heartbeat ages and alive dots
+});
+
+// Rays and wedges for one emitter. Called from updateData() for every tracked
+// entry, before the no-position early-out, and on removal.
+function removeBearingLayers(mac) {
+  delete l1RaySig[mac];
+  const rays = l1Rays[mac];
+  if (rays) { for (const id in rays) { l1Layer.removeLayer(rays[id].ray); l1Layer.removeLayer(rays[id].wedge); } delete l1Rays[mac]; }
+  if (l1FixCircles[mac]) { l1Layer.removeLayer(l1FixCircles[mac]); delete l1FixCircles[mac]; }
+}
+const l1RaySig = {};
+function updateBearingLayers(mac, det, currentTime) {
+  if (!det || det.type !== 'analog_fm') return;
+  const color = get_color_for_mac(mac);
+  const bl = Array.isArray(det.bearings) ? det.bearings : [];
+  // Nothing to redraw while the detection and the station geometry are unchanged
+  // (freshness only flips at the fuse window, so age is bucketed by that)
+  const sig = [det.last_update, det.pos_src, det.fix_error_m, l1StationsLoaded, Math.floor((currentTime - (det.last_update || 0)) / l1FuseWindowS)]
+    .concat(bl.map(b => { const st = l1Stations[b.node_id]; return b.node_id + ':' + (st ? [st.lat, st.lon, st.heading_deg].join('/') : '-'); })).join('|');
+  if (l1RaySig[mac] === sig && l1Rays[mac]) return;
+  l1RaySig[mac] = sig;
+  const rays = l1Rays[mac] || (l1Rays[mac] = {});
+  const seen = new Set();
+  const detAge = det.last_update ? (currentTime - det.last_update) : 0;
+  bl.forEach(b => {
+    const st = l1Stations[b.node_id];
+    // The station list is the truth once it has loaded; the geometry the server copied
+    // into the detection is only a stop-gap for the first second of the page
+    if (l1StationsLoaded && !l1Placed(st)) return;
+    const lat = l1Placed(st) ? Number(st.lat) : b.station_lat;
+    const lon = l1Placed(st) ? Number(st.lon) : b.station_lon;
+    if (lat === null || lat === undefined || lon === null || lon === undefined) return;
+    const hdg = st ? (Number(st.heading_deg) || 0) : (Number(b.station_heading_deg) || 0);
+    const brg = ((Number(b.bearing_deg) || 0) + hdg) % 360;
+    const sig = Math.max(2, Math.min(60, Number(b.sigma_deg) || 15));
+    const age = (Number(b.age_s) || 0) + detAge;
+    if (age > l1FuseWindowS * 4) return;
+    seen.add(b.node_id);
+    const fresh = age <= l1FuseWindowS;
+    const op = fresh ? 0.9 : 0.35;
+    const end = l1Destination(lat, lon, brg, l1RayKm * 1000);
+    const wedge = [[lat, lon]];
+    for (let a = -sig; a <= sig + 0.01; a += sig / 4) wedge.push(l1Destination(lat, lon, brg + a, l1RayKm * 1000));
+    if (!rays[b.node_id]) {
+      rays[b.node_id] = {
+        ray: L.polyline([[lat, lon], end], { color: color, weight: 2, opacity: op, dashArray: fresh ? null : '4,6' }).addTo(l1Layer),
+        wedge: L.polygon(wedge, { color: color, weight: 0, fillColor: color, fillOpacity: fresh ? 0.12 : 0.05, interactive: false }).addTo(l1Layer)
+      };
+      rays[b.node_id].ray.bindTooltip(l1Esc(b.station_name || b.node_id) + ' → ' + Math.round(brg) + '° ±' + Math.round(sig) + '°', { sticky: true });
+    } else {
+      rays[b.node_id].ray.setLatLngs([[lat, lon], end]);
+      rays[b.node_id].ray.setStyle({ color: color, opacity: op, dashArray: fresh ? null : '4,6' });
+      rays[b.node_id].wedge.setLatLngs(wedge);
+      rays[b.node_id].wedge.setStyle({ fillColor: color, fillOpacity: fresh ? 0.12 : 0.05 });
+      rays[b.node_id].ray.setTooltipContent(l1Esc(b.station_name || b.node_id) + ' → ' + Math.round(brg) + '° ±' + Math.round(sig) + '°');
+    }
+  });
+  for (const id in rays) if (!seen.has(id)) { l1Layer.removeLayer(rays[id].ray); l1Layer.removeLayer(rays[id].wedge); delete rays[id]; }
+  // Error circle around a fix
+  const fixed = (det.pos_src === 'bearing_fix' || det.pos_src === 'bearing_fix_held') && det.drone_lat && det.drone_long;
+  if (fixed) {
+    const r = Math.max(15, Number(det.fix_error_m) || 50);
+    if (!l1FixCircles[mac]) {
+      l1FixCircles[mac] = L.circle([det.drone_lat, det.drone_long], { radius: r, color: color, weight: 1.5, dashArray: '6,6', fillColor: color, fillOpacity: 0.08, interactive: false }).addTo(l1Layer);
+    } else {
+      l1FixCircles[mac].setLatLng([det.drone_lat, det.drone_long]);
+      l1FixCircles[mac].setRadius(r);
+      l1FixCircles[mac].setStyle({ color: color, fillColor: color });
+    }
+  } else if (l1FixCircles[mac]) {
+    l1Layer.removeLayer(l1FixCircles[mac]); delete l1FixCircles[mac];
+  }
+}
+
 async function updateData() {
   try {
     const response = await fetch(window.location.origin + '/api/detections')
@@ -11941,7 +12927,7 @@ async function updateData() {
           delete historicalDrones[mac];
           localStorage.setItem('historicalDrones', JSON.stringify(historicalDrones));
           if (droneBroadcastRings[mac]) { map.removeLayer(droneBroadcastRings[mac]); delete droneBroadcastRings[mac]; }
-        } else { continue; }
+        } else { removeBearingLayers(mac); continue; }
       }
       const det = data[mac];
       if (!det.last_update || (currentTime - det.last_update > STALE_THRESHOLD)) {
@@ -11952,12 +12938,15 @@ async function updateData() {
         if (dronePolylines[mac]) { dronePathLayer.removeLayer(dronePolylines[mac]); delete dronePolylines[mac]; }
         if (pilotPolylines[mac]) { pilotPathLayer.removeLayer(pilotPolylines[mac]); delete pilotPolylines[mac]; }
         if (droneBroadcastRings[mac]) { map.removeLayer(droneBroadcastRings[mac]); delete droneBroadcastRings[mac]; }
+        removeBearingLayers(mac);
         delete dronePathCoords[mac];
         delete pilotPathCoords[mac];
         // Mark as inactive to enable revival popups
         previousActive[mac] = false;
         continue;
       }
+      // Level 1 bearings are drawn whether or not a fix exists yet
+      try { updateBearingLayers(mac, det, currentTime); } catch (e) { console.error('bearing layers', e); }
       const droneLat = det.drone_lat, droneLng = det.drone_long;
       const pilotLat = det.pilot_lat, pilotLng = det.pilot_long;
       const validDrone = !!(droneLat && droneLng);
@@ -12621,11 +13610,122 @@ def index():
 def api_detections():
     return jsonify(tracked_pairs)
 
+def _request_json_object():
+    # Strict parse of a request body: a JSON object, no NaN/Infinity, bounded size
+    limit = app.config.get('MAX_CONTENT_LENGTH') or (1 << 20)
+    if request.content_length is not None and request.content_length > limit:
+        return None
+    raw = request.get_data(cache=False)
+    if len(raw) > limit:
+        return None
+    try:
+        obj = _json_loads_strict(raw.decode('utf-8'))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
 @app.route('/api/detections', methods=['POST'])
 def post_detection():
-    detection = request.get_json()
+    detection = _request_json_object()
+    if detection is None:
+        return jsonify({"error": "JSON object expected (no NaN/Infinity, at most 1 MiB)"}), 400
+    if 'heartbeat' in detection:
+        if detection.get('node_id') and detection.get('receiver'):
+            register_station_heartbeat(detection, source='api')
+        return jsonify({"status": "ok"}), 200
+    if 'info' in detection:
+        return jsonify({"status": "ignored"}), 200
     update_detection(detection)
     return jsonify({"status": "ok"}), 200
+
+
+# ----------------------
+# Level 1 stations API
+# ----------------------
+@app.route('/api/stations', methods=['GET'])
+def api_stations():
+    stations, status = _stations_snapshot()
+    return jsonify({'stations': stations, 'status': status,
+                    'ray_km': BEARING_RAY_KM, 'fuse_window_s': BEARING_FUSE_WINDOW_S})
+
+
+@app.route('/api/stations', methods=['POST'])
+def api_station_set():
+    data = _request_json_object()
+    if data is None:
+        return jsonify({'error': 'JSON object expected (no NaN/Infinity, at most 1 MiB)'}), 400
+    node_id = _norm_node_id(data.get('node_id'))
+    if not node_id:
+        return jsonify({'error': 'node_id required (letters, digits, _ . : -)'}), 400
+
+    def num(key):
+        v = data.get(key)
+        if v in (None, ''):
+            return None
+        f = _safe_float(v)
+        if f is None:
+            raise ValueError(key)
+        return f
+    try:
+        lat, lon, heading = num('lat'), num('lon'), num('heading_deg')
+    except ValueError as e:
+        return jsonify({'error': f'{e} must be a finite number'}), 400
+    if lat is not None and not -90 <= lat <= 90:
+        return jsonify({'error': 'lat out of range'}), 400
+    if lon is not None and not -180 <= lon <= 180:
+        return jsonify({'error': 'lon out of range'}), 400
+    name = _NODE_ID_RE.sub(' ', str(data['name'])).strip()[:40] if isinstance(data.get('name'), str) and data.get('name') else None
+    with STATIONS_LOCK:
+        st = STATIONS.get(node_id)
+        # Decide everything before touching the registry: a rejected request leaves no trace
+        new_lat = lat if 'lat' in data else (st or {}).get('lat')
+        new_lon = lon if 'lon' in data else (st or {}).get('lon')
+        if (new_lat is None) != (new_lon is None):
+            return jsonify({'error': 'lat and lon go together'}), 400
+        if st is None:
+            if len(STATIONS) >= MAX_STATIONS:
+                return jsonify({'error': f'station registry full ({MAX_STATIONS})'}), 400
+            st = _auto_station(node_id, None, None)
+            STATIONS[node_id] = st
+        if name:
+            st['name'] = name
+        st.setdefault('name', node_id)
+        st['lat'], st['lon'] = new_lat, new_lon
+        if 'heading_deg' in data:
+            st['heading_deg'] = (heading or 0.0) % 360.0
+            st['heading_auto'] = False          # set by hand: the heartbeat no longer overrides it
+        save_stations()
+        result = dict(st)
+    emit_stations()
+    return jsonify({'status': 'ok', 'station': result})
+
+
+@app.route('/api/stations/<node_id>', methods=['DELETE'])
+def api_station_delete(node_id):
+    node_id = _norm_node_id(node_id)
+    with STATIONS_LOCK:
+        existed = STATIONS.pop(node_id, None) is not None
+        if existed:
+            save_stations()
+    with STATIONS_LOCK:
+        station_status.pop(node_id, None)
+    with BEARINGS_LOCK:
+        # Its bearings go with it; otherwise they linger in popups and fixes for BEARING_OBS_KEEP_S
+        for obs in bearing_obs.values():
+            obs.pop(node_id, None)
+        for stale_mac in [m for m, obs in list(bearing_obs.items()) if not obs]:
+            bearing_obs.pop(stale_mac, None)
+    emit_stations()
+    # A station that is still running re-registers itself (unplaced) on its next heartbeat.
+    return jsonify({'status': 'deleted' if existed else 'not_found', 'node_id': node_id})
+
+
+@app.route('/api/bearings', methods=['GET'])
+def api_bearings():
+    with BEARINGS_LOCK:
+        snapshot = {m: {k: dict(v) for k, v in obs.items()} for m, obs in bearing_obs.items()}
+    return jsonify(snapshot)
 
 @app.route('/api/detections_history', methods=['GET'])
 def api_detections_history():
@@ -12977,14 +14077,25 @@ def serial_reader(port):
                     json_str = line[line.find('{'):]
                     
                 try:
-                    detection = json.loads(json_str)
+                    detection = _json_loads_strict(json_str)
+                    if not isinstance(detection, dict):
+                        raise json.JSONDecodeError('JSON object expected', json_str, 0)
                     logger.debug(f"Parsed JSON from {port}: {detection}")
                     
                     # Heartbeats and command acks are normal traffic, not
                     # detections - drop them before the MAC logic below, which
                     # would otherwise log a WARNING for every one of them.
                     if 'heartbeat' in detection:
-                        logger.debug(f"Skipping heartbeat from {port}")
+                        if detection.get('node_id') and detection.get('receiver'):
+                            # A level 1 station announcing itself (position unknown until set)
+                            register_station_heartbeat(detection, source=port)
+                        else:
+                            logger.debug(f"Skipping heartbeat from {port}")
+                        continue
+                    if 'info' in detection:
+                        # Boot, status and bench lines of a level 1 station's console: never a
+                        # detection, and never to be given the port's last MAC below
+                        logger.debug(f"Station info line from {port}: {json_str[:120]}")
                         continue
 
                     # MAC tracking logic...
@@ -13021,7 +14132,7 @@ def serial_reader(port):
                         logger.info(f"Detection from {port}: MAC {detection['mac']}, "
                                    f"RSSI {detection.get('rssi', 'N/A')}")
                         
-                except json.JSONDecodeError as e:
+                except (json.JSONDecodeError, ValueError) as e:
                     # Log non-JSON data for debugging
                     logger.debug(f"Non-JSON data from {port}: {line[:100]}")
                     continue
@@ -13397,6 +14508,7 @@ def handle_connect():
     emit_serial_status()
     emit_paths()
     emit_cumulative_log()
+    emit_stations()
 
 # Helper functions to emit all real-time data
 
