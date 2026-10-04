@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/img/standalone-workbench.svg" width="768" alt="Pixel art of a dark makerspace: a laptop running the mapper on a workbench crowded with electronics, next to a window with half-drawn blinds. Outside, drones sweep searchlights over a cyberpunk city while their blips drift slowly across the laptop's map.">
+</p>
+
 # Drone Mesh Mapper - standalone mapper (experimental)
 
 > Placeholder README for an experimental branch. This branch holds only the
