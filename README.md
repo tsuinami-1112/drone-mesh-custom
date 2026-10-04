@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/img/claude-level1.svg" width="420" alt="A small friendly orange sunburst character holding a 5.8 GHz patch antenna">
+  <img src="docs/img/claude-level1.svg" width="768" alt="Pixel art of Claude, an orange block-shaped mascot in a yellow hard hat, waving on a cyberpunk rooftop at night while drones hover overhead. A speech bubble reads: currently under construction.">
 </p>
 
 <h1 align="center">drone-mesh-custom · level 1</h1>
