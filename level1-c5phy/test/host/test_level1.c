@@ -113,11 +113,12 @@ static void test_noise(void)
     iq_metrics(buf, N, &m);
     printf("noise: p_mean=%.2f q=%.1f%% clip=%.2f%% cv2=%.2f step_std=%.1f noise=%d mod=%d\n",
            m.p_mean, m.q_phase_pct, m.clip_pct, m.env_cv2, m.step_std_deg, m.noise, m.mod);
-    /* sigma = 1 LSB truncated to 4 bits reads 2.7 (the -0.5 truncation bias adds
-     * 0.25 per component); the 3-lane midpoint decode reads 2.75. C5VRX measured
-     * 2.0 on hardware, and the bench measures RF_NOISE_POWER (stage 1); these pin
-     * the decode, not the board. */
-    CHECK(fabs(m.p_mean - (demod_lane_bits() == 4 ? 2.70 : 2.75)) < 0.3, "noise p_mean %.2f (%d lanes)", m.p_mean, demod_lane_bits());
+    /* sigma = 1 LSB: truncation to 4 bits (floor) adds E[u^2] = 1/3 per component,
+     * 2.67 for I^2+Q^2; the 3-lane midpoint decode, whose codes are never 0,
+     * reads about 2.75. C5VRX measured 2.0 on hardware, and the bench measures
+     * RF_NOISE_POWER (stage 1); these pin the decode, not the board. */
+    CHECK(fabs(m.p_mean - (demod_lane_bits() == 4 ? 2.67 : 2.75)) < 0.15, "noise p_mean %.2f (%d lanes)", m.p_mean, demod_lane_bits());
+    CHECK(m.mod == 0, "noise is not a modulated carrier (mod %d)", m.mod);
     CHECK(m.stuck == 0, "noise must not read as a stuck bus");
     CHECK(m.q_phase_pct < 10, "noise q_phase %.1f", m.q_phase_pct);
     CHECK(m.noise == 1, "noise flag");
@@ -225,6 +226,17 @@ static void test_bearing(void)
     float h[4] = { 40, 39, 0, 0 };          /* clamp at +/-45 from the axis */
     bearing_estimate(h, az, 4, 3.0f, 45.0f, 10.0f, 8.0f, &b);
     CHECK(fabs(b.bearing_deg - 45.0f) < 0.01, "clamp %.1f", b.bearing_deg);
+    /* A neighbour whose capture failed: no offset, wide sigma, instead of a
+     * confident bearing thrown to the clamp by a sentinel level. */
+    float m1[4] = { 20, 14, 2, 8 };
+    int ok1[4] = { 1, 0, 1, 1 };
+    bearing_estimate_masked(m1, ok1, az, 4, 3.0f, 45.0f, 10.0f, 8.0f, &b);
+    CHECK(b.sector == 0 && fabs(b.bearing_deg - 0.0f) < 0.01 && b.sigma_deg > 25, "masked neighbour: %.1f deg sigma %.1f", b.bearing_deg, b.sigma_deg);
+    int ok2[4] = { 0, 1, 1, 1 };            /* the strongest sector itself missing: next best is used */
+    bearing_estimate_masked(m1, ok2, az, 4, 3.0f, 45.0f, 10.0f, 8.0f, &b);
+    CHECK(b.sector == 1, "masked strongest -> sector %d", b.sector);
+    bearing_estimate_masked(m1, NULL, az, 4, 3.0f, 45.0f, 10.0f, 8.0f, &b);
+    CHECK(b.sector == 0 && fabs(b.bearing_deg - 18.0f) < 0.01, "NULL mask = all valid");
 }
 
 static void test_channels(void)
@@ -239,6 +251,10 @@ static void test_channels(void)
     CHECK(fpv_wifi_bootstrap(5732, &ch, &mhz) && ch == 144 && mhz == 5720, "bootstrap R3 -> ch144");
     CHECK(fpv_wifi_bootstrap(5865, &ch, &mhz) && ch == 173 && mhz == 5865, "bootstrap A1 exact");
     CHECK(!fpv_wifi_bootstrap(5100, &ch, &mhz), "out of window");
+    CHECK(fpv_wifi_bootstrap_rank(5865, 1, &ch, &mhz) && (ch == 169 || ch == 177), "second nearest centre for A1 (%d)", ch);
+    CHECK(fpv_wifi_bootstrap_rank(5865, 11, &ch, &mhz) && ch == 132, "farthest centre");
+    CHECK(!fpv_wifi_bootstrap_rank(5865, 12, &ch, &mhz), "rank past the table");
+    CHECK(fpv_wifi_top_centre_mhz() == 5885, "top centre 5885");
 }
 
 static void test_report(void)

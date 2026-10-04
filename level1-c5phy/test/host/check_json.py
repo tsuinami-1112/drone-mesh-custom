@@ -35,5 +35,10 @@ with open(sys.argv[1]) as fh:
 if count == 0:
     print("no JSON lines found")
     ok = False
+with open(sys.argv[1]) as fh:
+    text = fh.read()
+if "ALL TESTS PASSED" not in text or "\nFAIL " in text:
+    print("test_level1 did not pass")
+    ok = False
 print(f"check_json: {count} JSON lines {'OK' if ok else 'FAILED'}")
 sys.exit(0 if ok else 1)

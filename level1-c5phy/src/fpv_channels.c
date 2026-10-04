@@ -7,7 +7,10 @@
 #define LOWBAND 0
 #endif
 
-static const FpvChannel k_channels[] = {
+#ifndef C5PHY_MAX_MHZ
+#define C5PHY_MAX_MHZ 5945
+#endif
+static const FpvChannel k_channels_all[] = {
     /* RaceBand */
     {'R',1,5658},{'R',2,5695},{'R',3,5732},{'R',4,5769},{'R',5,5806},{'R',6,5843},{'R',7,5880},{'R',8,5917},
     /* Boscam A */
@@ -23,11 +26,25 @@ static const FpvChannel k_channels[] = {
 #endif
 };
 
-int fpv_channel_count(void) { return (int)(sizeof(k_channels) / sizeof(k_channels[0])); }
+/* The scan plan: every table channel inside the tuning window, in table order. */
+static FpvChannel k_channels[sizeof(k_channels_all) / sizeof(k_channels_all[0])];
+static int k_channel_count = -1;
+
+static void build_plan(void)
+{
+    if (k_channel_count >= 0) return;
+    int n = 0;
+    for (unsigned i = 0; i < sizeof(k_channels_all) / sizeof(k_channels_all[0]); i++)
+        if (k_channels_all[i].freq_mhz <= C5PHY_MAX_MHZ) k_channels[n++] = k_channels_all[i];
+    k_channel_count = n;
+}
+
+int fpv_channel_count(void) { build_plan(); return k_channel_count; }
 
 const FpvChannel* fpv_channel(int index)
 {
-    if (index < 0 || index >= fpv_channel_count()) return NULL;
+    build_plan();
+    if (index < 0 || index >= k_channel_count) return NULL;
     return &k_channels[index];
 }
 
@@ -67,17 +84,40 @@ static const Wifi5Centre k_centres[] = {
     {157,5785},{161,5805},{165,5825},{169,5845},{173,5865},{177,5885},
 };
 #define C5_5G_MIN_MHZ 5180
-#define C5_5G_MAX_MHZ 5945   /* E8; the bench proves how far above 5885 the synthesizer follows */
+/* Top of the window. C5VRX proved tuning up to the last public centre (5885);
+ * R8 5917 and E6/E7/E8 5905-5945 need phy_set_freq to pull the synthesizer
+ * 20-60 MHz past it, which bench stage 2 (h E8) proves or disproves. Until
+ * then run_sweep's alias guard drops a hit above 5885 that merely mirrors a
+ * carrier at the last centre; -DC5PHY_MAX_MHZ=5885 removes those channels
+ * from the plan altogether. */
+#ifndef C5PHY_MAX_MHZ
+#define C5PHY_MAX_MHZ 5945
+#endif
+#define N_CENTRES ((int)(sizeof(k_centres) / sizeof(k_centres[0])))
+
+int fpv_wifi_top_centre_mhz(void) { return k_centres[N_CENTRES - 1].mhz; }
+
+int fpv_wifi_bootstrap_rank(int freq_mhz, int rank, uint8_t* wifi_channel, uint16_t* centre_mhz)
+{
+    if (freq_mhz < C5_5G_MIN_MHZ || freq_mhz > C5PHY_MAX_MHZ) return 0;
+    if (rank < 0 || rank >= N_CENTRES) return 0;
+    /* rank-th smallest distance (ties broken by table order) */
+    int order[N_CENTRES];
+    for (int i = 0; i < N_CENTRES; i++) order[i] = i;
+    for (int i = 1; i < N_CENTRES; i++) {
+        int k = order[i], j = i - 1;
+        while (j >= 0 && abs((int)k_centres[order[j]].mhz - freq_mhz) > abs((int)k_centres[k].mhz - freq_mhz)) {
+            order[j + 1] = order[j];
+            j--;
+        }
+        order[j + 1] = k;
+    }
+    if (wifi_channel) *wifi_channel = k_centres[order[rank]].ch;
+    if (centre_mhz) *centre_mhz = k_centres[order[rank]].mhz;
+    return 1;
+}
 
 int fpv_wifi_bootstrap(int freq_mhz, uint8_t* wifi_channel, uint16_t* centre_mhz)
 {
-    if (freq_mhz < C5_5G_MIN_MHZ || freq_mhz > C5_5G_MAX_MHZ) return 0;
-    int best = 0, best_d = 1 << 30;
-    for (unsigned i = 0; i < sizeof(k_centres) / sizeof(k_centres[0]); i++) {
-        int d = abs((int)k_centres[i].mhz - freq_mhz);
-        if (d < best_d) { best_d = d; best = (int)i; }
-    }
-    if (wifi_channel) *wifi_channel = k_centres[best].ch;
-    if (centre_mhz) *centre_mhz = k_centres[best].mhz;
-    return 1;
+    return fpv_wifi_bootstrap_rank(freq_mhz, 0, wifi_channel, centre_mhz);
 }

@@ -41,6 +41,8 @@
 #include <math.h>
 #include <string.h>
 #include <stdarg.h>
+#include <ctype.h>
+#include <esp_log.h>
 
 #include "config.h"
 #include "fpv_channels.h"
@@ -64,7 +66,7 @@ static int      s_hold_sector = 0;
 static int      s_hold_gain = -1;       // -1 = automatic
 static int      s_gain = GAIN_MAX;      // PHY gain index currently applied
 
-static uint32_t s_sweeps = 0, s_tune_fail = 0, s_video_seen = 0, s_bus_stuck = 0;
+static uint32_t s_sweeps = 0, s_tune_fail = 0, s_video_seen = 0, s_bus_stuck = 0, s_alias_drop = 0;
 static uint32_t s_usb_drop = 0, s_mesh_drop = 0;
 static unsigned s_seq = 0;
 static float    s_nf_level_min = 1e9f;  // quietest sector level this sweep
@@ -112,12 +114,18 @@ static void set_gain(int g)
 // =============================================================================
 // Output: USB never blocks, mesh lines are paced
 // =============================================================================
+/* A line goes out whole or not at all: a record whose terminator did not fit
+ * would glue the next record onto the same line. */
 static void usb_println(const char* s)
 {
+    static char line[USB_JSON_MAX + 2];
     size_t n = strlen(s);
-    size_t w = Serial.write((const uint8_t*)s, n);
-    w += Serial.write((const uint8_t*)"\r\n", 2);
-    if (w < n + 2) s_usb_drop++;
+    if (n > USB_JSON_MAX) n = USB_JSON_MAX;
+    memcpy(line, s, n);
+    line[n++] = '\r';
+    line[n++] = '\n';
+    if (Serial.availableForWrite() < (int)n) { s_usb_drop++; return; }
+    if (Serial.write((const uint8_t*)line, n) < n) s_usb_drop++;
 }
 
 static void usb_printf(const char* fmt, ...)
@@ -310,13 +318,17 @@ static void report_hit(int idx, bool do_video)
     const SectorMeasure& b = r.sec[r.best];
 
     float levels[SECTOR_COUNT], dbm[SECTOR_COUNT];
+    int valid[SECTOR_COUNT];
     for (int s = 0; s < SECTOR_COUNT; s++) {
-        levels[s] = r.sec[s].windows ? r.sec[s].level_db : -30.0f;
+        valid[s] = r.sec[s].windows > 0;
+        /* a sector whose capture failed is reported at the sweep's noise floor, not at a
+         * fantasy -30 dB that would throw the bearing to the clamp */
+        levels[s] = valid[s] ? r.sec[s].level_db : (s_nf_level_min < 1e8f ? s_nf_level_min : 0.0f);
         dbm[s] = dbm_from_level(levels[s]);
     }
     BearingResult br;
-    bearing_estimate(levels, s_az, SECTOR_COUNT, BEARING_K_DEG_PER_DB, BEARING_MAX_OFFSET_DEG,
-                     BEARING_SIGMA_BASE_DEG, DETECT_LEVEL_DB, &br);
+    bearing_estimate_masked(levels, valid, s_az, SECTOR_COUNT, BEARING_K_DEG_PER_DB, BEARING_MAX_OFFSET_DEG,
+                            BEARING_SIGMA_BASE_DEG, DETECT_LEVEL_DB, &br);
 
     VideoVerdict vv = {};
     strcpy(vv.std, "none");
@@ -390,6 +402,7 @@ static void send_heartbeat(bool usb, bool mesh)
     h.tune_fail = s_tune_fail;
     h.cap_err = iq_capture_errors();
     h.bus_stuck = s_bus_stuck;
+    h.alias_drop = s_alias_drop;
     h.sweeps = s_sweeps;
     h.usb_drop = s_usb_drop;
     h.mesh_drop = s_mesh_drop;
@@ -457,6 +470,26 @@ static void run_sweep()
                 if (!drop[j] && abs((int)fpv_channel(hits[i])->freq_mhz - (int)fpv_channel(hits[j])->freq_mhz) <= PEAK_PICK_MHZ) drop[j] = true;
         }
     }
+#if ALIAS_GUARD
+    // A synthesizer that did not follow phy_set_freq past the last public centre
+    // leaves the receiver at that centre while the firmware believes it is 20-60
+    // MHz higher: a carrier near the centre then shows up again, at the same
+    // level, on every channel above it. Drop such a mirror image.
+    const int top = fpv_wifi_top_centre_mhz();
+    for (int i = 0; i < nh; i++) {
+        if (drop[i]) continue;
+        const FpvChannel* ci = fpv_channel(hits[i]);
+        if ((int)ci->freq_mhz <= top) continue;
+        float li = s_results[hits[i]].sec[s_results[hits[i]].best].level_db;
+        for (int j = 0; j < nh; j++) {
+            if (j == i || drop[j]) continue;
+            const FpvChannel* cj = fpv_channel(hits[j]);
+            if (abs((int)cj->freq_mhz - top) > 5) continue;         // a carrier the parked receiver sees
+            float lj = s_results[hits[j]].sec[s_results[hits[j]].best].level_db;
+            if (fabsf(li - lj) <= 2.0f) { drop[i] = true; s_alias_drop++; break; }
+        }
+    }
+#endif
     int videos = 0;
     for (int i = 0; i < nh; i++) {
         if (drop[i]) continue;
@@ -464,6 +497,7 @@ static void run_sweep()
         if (do_video) videos++;
         report_hit(hits[i], do_video);
         service_io();
+        if (s_mode != MODE_SCAN) return;   // a bench 'h' arrived: leave the radio where the console put it
     }
 }
 
@@ -475,12 +509,12 @@ static void print_status()
     const FpvChannel* c = s_hold_ch >= 0 ? fpv_channel(s_hold_ch) : nullptr;
     usb_printf("{\"info\":\"status\",\"node_id\":\"%s\",\"mode\":\"%s\",\"rf\":%s,\"rf_error\":\"%s\","
                "\"ch\":\"%c%d\",\"freq_mhz\":%u,\"wifi_ch\":%u,\"sector\":%d,\"gain\":%d,\"gain_mode\":\"%s\",\"bw40\":%d,"
-               "\"captures\":%u,\"cap_err\":%u,\"cap_err_last\":\"%s\",\"bus_stuck\":%u,\"tune_fail\":%u,\"sweeps\":%u,\"video_seen\":%u,"
+               "\"captures\":%u,\"cap_err\":%u,\"cap_err_last\":\"%s\",\"bus_stuck\":%u,\"alias_drop\":%u,\"tune_fail\":%u,\"sweeps\":%u,\"video_seen\":%u,"
                "\"nf_dbm\":%.0f,\"usb_drop\":%u,\"mesh_drop\":%u,\"mesh_queued\":%d,\"heap\":%u,\"uptime_s\":%u}",
                s_node_id, s_mode == MODE_SCAN ? "scan" : "hold", s_rf_ok ? "true" : "false", s_rf_ok ? "" : rf_last_call(),
                c ? c->band : '-', c ? c->number : 0, rf_freq_mhz(), rf_wifi_channel(),
                s_mode == MODE_HOLD ? s_hold_sector : switch_current(), s_gain, s_hold_gain >= 0 ? "fixed" : "auto",
-               rf_bw40() ? 1 : 0, iq_capture_count(), iq_capture_errors(), iq_capture_last_error(), s_bus_stuck, s_tune_fail, s_sweeps,
+               rf_bw40() ? 1 : 0, iq_capture_count(), iq_capture_errors(), iq_capture_last_error(), s_bus_stuck, s_alias_drop, s_tune_fail, s_sweeps,
                s_video_seen, (double)s_nf_dbm, s_usb_drop, s_mesh_drop, s_mesh_count,
                (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), millis() / 1000);
 }
@@ -513,12 +547,20 @@ static void bench_video()
     int cfo = 0;
     int gain = s_hold_gain >= 0 ? s_hold_gain : s_gain;
     video_check(s_hold_ch, s_hold_sector, gain, &v, &cfo, w);
+    // Eight window records are ~95 bytes each: the verdict goes on one line, the
+    // windows on a second one, each bounded (snprintf returns the length it
+    // wanted, never past the buffer; n is clamped so the tail stays in range).
     char buf[USB_JSON_MAX];
-    int n = snprintf(buf, sizeof(buf), "{\"info\":\"video\",\"present\":%d,\"std\":\"%s\",\"line_hz\":%d,\"field_hz\":%d,\"sync_q\":%d,\"score\":%d,\"cfo_khz\":%d,\"windows\":[",
-                     v.present, v.std, v.sync_hz, v.field_hz, v.sync_q, v.sync_score, cfo);
-    for (int i = 0; i < v.windows && n < (int)sizeof(buf) - 8; i++)
-        n += snprintf(buf + n, sizeof(buf) - n, "%s{\"video\":%d,\"std\":\"%s\",\"line_hz\":%.0f,\"period\":%.1f,\"score\":%d,\"pulses\":%d,\"periods\":%d,\"swing\":%d,\"pol\":%d}",
-                      i ? "," : "", w[i].present, w[i].std, (double)w[i].line_hz, (double)w[i].line_period, w[i].score, w[i].pulses, w[i].periods, w[i].swing, w[i].polarity);
+    snprintf(buf, sizeof(buf), "{\"info\":\"video\",\"present\":%d,\"std\":\"%s\",\"line_hz\":%d,\"field_hz\":%d,\"sync_q\":%d,\"score\":%d,\"cfo_khz\":%d,\"windows\":%d}",
+             v.present, v.std, v.sync_hz, v.field_hz, v.sync_q, v.sync_score, cfo, v.windows);
+    usb_println(buf);
+    int n = snprintf(buf, sizeof(buf), "{\"info\":\"video_windows\",\"windows\":[");
+    for (int i = 0; i < v.windows; i++) {
+        int k = snprintf(buf + n, sizeof(buf) - n, "%s{\"video\":%d,\"std\":\"%s\",\"line_hz\":%.0f,\"period\":%.1f,\"score\":%d,\"pulses\":%d,\"periods\":%d,\"swing\":%d,\"pol\":%d}",
+                         i ? "," : "", w[i].present, w[i].std, (double)w[i].line_hz, (double)w[i].line_period, w[i].score, w[i].pulses, w[i].periods, w[i].swing, w[i].polarity);
+        if (k < 0 || n + k > (int)sizeof(buf) - 3) { buf[n] = 0; break; }   // does not fit: stop, keep what is complete
+        n += k;
+    }
     snprintf(buf + n, sizeof(buf) - n, "]}");
     usb_println(buf);
 }
@@ -538,8 +580,10 @@ static void handle_command(char* line)
     case '?': print_status(); break;
     case 'h': case 'H': hold_channel(arg); break;
     case 's': case 'S': {
-        int s = atoi(arg);
-        if (s < 0 || s >= SECTOR_COUNT) { usb_println("{\"info\":\"error\",\"cmd\":\"s\",\"err\":\"sector 0..3\"}"); break; }
+        if (!*arg) { usb_printf("{\"info\":\"sector\",\"sector\":%d,\"name\":\"%s\"}", s_hold_sector, switch_sector_name(s_hold_sector)); break; }
+        char* end = nullptr;
+        int s = (int)strtol(arg, &end, 10);
+        if (end == arg || s < 0 || s >= SECTOR_COUNT) { usb_println("{\"info\":\"error\",\"cmd\":\"s\",\"err\":\"sector 0..3\"}"); break; }
         s_hold_sector = s;
         switch_select(s);
         usb_printf("{\"info\":\"sector\",\"sector\":%d,\"name\":\"%s\"}", s, switch_sector_name(s));
@@ -563,13 +607,16 @@ static void handle_command(char* line)
         usb_println("{\"info\":\"scan\",\"scanning\":true}");
         break;
     case 't': case 'T': {
-        uint32_t bits = (uint32_t)strtoul(arg, nullptr, 0);
+        char* end = nullptr;
+        uint32_t bits = (uint32_t)strtoul(arg, &end, 0);
+        if (!*arg || end == arg) { usb_println("{\"info\":\"error\",\"cmd\":\"t\",\"err\":\"t <bits>, e.g. t 5\"}"); break; }
         switch_set_raw(bits);
         usb_printf("{\"info\":\"switch\",\"bits\":%u}", bits);
         break;
     }
     case 'b': case 'B':
-        rf_set_bw40(atoi(arg) != 0);
+        if (*arg == '0' || *arg == '1') rf_set_bw40(*arg == '1');
+        else if (*arg) { usb_println("{\"info\":\"error\",\"cmd\":\"b\",\"err\":\"b 0|1\"}"); break; }
         usb_printf("{\"info\":\"bw40\",\"bw40\":%d}", rf_bw40() ? 1 : 0);
         break;
     default:
@@ -581,16 +628,21 @@ static void console_poll()
 {
     static char line[96];
     static size_t pos = 0;
+    static bool discard = false;      // an overlong line is dropped whole, tail included
     while (Serial.available()) {
         char ch = (char)Serial.read();
         if (ch == '\n' || ch == '\r') {
             line[pos] = 0;
-            if (pos) handle_command(line);
+            if (pos && !discard) handle_command(line);
             pos = 0;
+            discard = false;
+        } else if (discard) {
+            continue;
         } else if (pos < sizeof(line) - 1) {
             line[pos++] = ch;
         } else {
-            pos = 0;    // overlong: discard
+            discard = true;
+            pos = 0;
         }
     }
 }
@@ -602,6 +654,11 @@ static void hold_service()
     if (!s_rf_ok || s_hold_ch < 0) return;
     if (millis() - last < BENCH_PRINT_MS) return;
     last = millis();
+    const FpvChannel* held = fpv_channel(s_hold_ch);
+    if (rf_freq_mhz() != held->freq_mhz) {       // a video check in flight moved it: back to the held channel
+        if (rf_tune(held->freq_mhz) != ESP_OK) { s_tune_fail++; return; }
+        delay(TUNE_SETTLE_MS);
+    }
     switch_select(s_hold_sector);
     IqMetrics m;
     int g = s_gain;
@@ -634,7 +691,13 @@ static void service_io()
 // =============================================================================
 static void make_node_id()
 {
-    if (NODE_ID[0]) { strlcpy(s_node_id, NODE_ID, sizeof(s_node_id)); return; }
+    // Id characters only: node_id is written into JSON unescaped and is the
+    // station key in the mapper, which accepts the same set.
+    size_t n = 0;
+    for (const char* p = NODE_ID; *p && n < sizeof(s_node_id) - 1; p++)
+        if (isalnum((unsigned char)*p) || *p == '_' || *p == '-' || *p == '.' || *p == ':') s_node_id[n++] = *p;
+    s_node_id[n] = 0;
+    if (n) return;
     uint8_t mac[6] = {};
     esp_efuse_mac_get_default(mac);
     snprintf(s_node_id, sizeof(s_node_id), "%02X%02X", mac[4], mac[5]);
@@ -653,6 +716,10 @@ void setup()
     delay(100);
 
     make_node_id();
+    // IDF's own log lines (a PARLIO timeout prints an ESP_LOGE) go straight to the
+    // USB-JTAG FIFO and would interleave with the JSON stream; the station reports
+    // the same conditions in its own lines (cap_err, cap_err_last).
+    esp_log_level_set("*", ESP_LOG_NONE);
     demod_init_bits(IQ_LANE_BITS);
     switch_init();
 

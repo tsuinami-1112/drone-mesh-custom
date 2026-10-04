@@ -175,6 +175,7 @@ int report_heartbeat_json(char* out, size_t cap, const HeartbeatReport* h, int f
         json_add(&j, "\"tune_fail\":%u", h->tune_fail);
         json_add(&j, "\"cap_err\":%u", h->cap_err);
         json_add(&j, "\"bus_stuck\":%u", h->bus_stuck);
+        json_add(&j, "\"alias_drop\":%u", h->alias_drop);
         json_add(&j, "\"sweeps\":%u", h->sweeps);
         json_add(&j, "\"usb_drop\":%u", h->usb_drop);
         json_add(&j, "\"mesh_drop\":%u", h->mesh_drop);
@@ -194,5 +195,7 @@ int report_heartbeat_json(char* out, size_t cap, const HeartbeatReport* h, int f
     json_add(&j, "\"uptime_s\":%u", h->uptime_s);
     json_add(&j, "\"tune_fail\":%u", h->tune_fail);
     json_add(&j, "\"cap_err\":%u", h->cap_err);
+    json_add(&j, "\"bus_stuck\":%u", h->bus_stuck);
+    json_add(&j, "\"alias_drop\":%u", h->alias_drop);
     return json_end(&j);
 }

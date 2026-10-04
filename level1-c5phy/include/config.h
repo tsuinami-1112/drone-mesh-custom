@@ -82,7 +82,8 @@
  *   because the decode never returns 0. The clip test fires one code early
  *   (|x| >= 6 instead of 7, about 1.3 dB), which with GAIN_STEP 6 costs nothing.
  * IQ_LANE_BITS 4: the eight lanes exactly as C5VRX proved them, which needs
- *   the underside GPIO2, 3, 4, 5 pads and gives D2 back to a lane. */
+ *   the underside GPIO2, 3, 4, 5 pads and frees D6 (GPIO11); D2 stays a lane
+ *   (Q8 in that mode, Q9 in this one). */
 #define IQ_LANE_COUNT 8
 #ifndef IQ_LANE_BITS
 #define IQ_LANE_BITS 3
@@ -127,8 +128,9 @@
 #ifndef RF_NOISE_POWER
 #define RF_NOISE_POWER 2.0f             /* mean I^2+Q^2 with no signal at GAIN_MAX: C5VRX's 4-lane
                                            measurement. Measure it on this board in the lane mode built
-                                           (bench stage 1); a dead I/Q bus reads exactly 2.0 in 3-lane
-                                           mode, which the firmware flags as bus_stuck. */
+                                           (bench stage 1). A dead I/Q bus shows every sample identical,
+                                           which the firmware flags (stuck / bus_stuck); when the stuck
+                                           pattern is all zeros it also reads exactly 2.0 in 3-lane mode. */
 #endif
 #ifndef WINDOWS_PER_SECTOR
 #define WINDOWS_PER_SECTOR 3            /* level = min over windows (drops Wi-Fi bursts), q = median */
@@ -141,6 +143,15 @@
 #endif
 #ifndef TUNE_SETTLE_MS
 #define TUNE_SETTLE_MS 8
+#endif
+#ifndef C5PHY_MAX_BOOTSTRAP_OFFSET_MHZ
+#define C5PHY_MAX_BOOTSTRAP_OFFSET_MHZ 60   /* how far phy_set_freq may pull the synthesizer from the
+                                               public centre it was parked on (E8 5945 from 5885 = 60) */
+#endif
+#ifndef ALIAS_GUARD
+#define ALIAS_GUARD 1                   /* drop a hit above the last public centre (5885) that merely
+                                           mirrors a carrier at that centre: what a synthesizer that did
+                                           not follow phy_set_freq would show (bench stage 2 settles it) */
 #endif
 
 /* ---- Detection ------------------------------------------------------------- */

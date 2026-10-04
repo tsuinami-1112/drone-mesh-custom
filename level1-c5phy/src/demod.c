@@ -22,7 +22,10 @@ int demod_decode_nibble(unsigned nib) { return s_val_lut[nib & 0xFu]; }
 #define BOX_SHIFT  5
 #define Q_POWER_MIN 8           /* a sample counts for coherence only above this power */
 #define COH_LIMIT  32           /* 45 deg in LUT units */
-#define MOD_STD_DEG 4.0f        /* box-averaged step std above this = FM deviation present */
+#define MOD_STD_DEG 4.0f        /* box-averaged step std above this, on a coherent carrier, = FM deviation
+                                   (a clean CW sits near 0.3; video 8-12). Noise alone would also exceed it,
+                                   so the flag is gated on coherence and reads 0 on an empty channel. */
+#define MOD_Q_MIN_PCT 20.0f
 
 void demod_init_bits(int bits)
 {
@@ -105,8 +108,10 @@ void iq_metrics(const uint8_t* buf, int n, IqMetrics* m)
     float var = (float)((double)p_sq / n) - pm * pm;
     m->env_cv2 = pm > 0 ? var / (pm * pm) : 0.0f;
 
-    /* Box-averaged discriminator: noise averages down by sqrt(BOX), a video
-     * swing (sync, blanking, picture) does not. */
+    /* Box-averaged discriminator: on a carrier the phase noise averages down by
+     * sqrt(BOX) while a video swing (sync, blanking, picture) does not, which
+     * separates FM video from a bare CW. Pure noise is not a carrier and is
+     * excluded by the coherence gate below. */
     int32_t acc = 0;                    /* sum of BOX int8 steps: |acc| <= 4096 */
     int64_t s_sum = 0, s_sq = 0;
     int32_t cnt = 0;
@@ -124,7 +129,7 @@ void iq_metrics(const uint8_t* buf, int n, IqMetrics* m)
         m->step_std_deg = sqrtf(v > 0 ? v : 0) / BOX * (360.0f / 256.0f);
     }
     m->noise = m->env_cv2 > 0.5f;
-    m->mod = m->step_std_deg > MOD_STD_DEG;
+    m->mod = m->step_std_deg > MOD_STD_DEG && m->q_phase_pct >= MOD_Q_MIN_PCT;
     m->stuck = stuck;
 }
 

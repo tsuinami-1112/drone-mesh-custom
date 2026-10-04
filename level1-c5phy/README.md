@@ -36,6 +36,12 @@ Everything is on the top-side castellations; no underside pad is used.
 | I/Q lane pads I7 I8 I9 | D3 D10 D6 | 7 10 11 | same rule |
 | user LED | on board | 27 | blinks on every report |
 
+The default scan plan has 40 channels; four of them (R8, E6, E7, E8 at 5905-5945
+MHz) sit above the last public 5 GHz centre and rely on `phy_set_freq` pulling
+the synthesizer up to 60 MHz past it, which bench stage 2 proves. A hit there
+that merely mirrors a carrier at 5885 is dropped (`alias_drop` in the heartbeat);
+`-DC5PHY_MAX_MHZ=5885` removes those channels from the plan.
+
 The eleven top-side GPIOs cannot hold the eight I/Q lanes C5VRX uses next to
 the D4/D5 UART and the switch lines, so this station wires six: bits 9..7 of
 Q and I, the sign and two magnitude bits. The firmware reads the missing bit
@@ -46,9 +52,10 @@ the six-lane decode tracks the eight-lane one within 0.2 dB and a few
 percent of coherence at every amplitude, with identical video detection at
 and above the hit threshold and a few lost video windows well below it. The
 floor itself reads a little higher (the decode never returns 0), so measure
-`RF_NOISE_POWER` on the bench in the lane mode you build. A dead I/Q bus
-reads exactly that reference in six-lane mode; the firmware flags it as
-`stuck` in the bench line and counts `bus_stuck` in the heartbeat.
+`RF_NOISE_POWER` on the bench in the lane mode you build. A dead I/Q bus shows
+every sample identical; the firmware flags that as `stuck` in the bench line
+and counts `bus_stuck` in the heartbeat (an all-zero stuck pattern also reads
+exactly 2.0, the noise reference, so the flag is what to trust).
 `-DIQ_LANE_BITS=4` restores the C5VRX lane set, which needs the underside
 GPIO2-5 pads.
 
@@ -81,8 +88,10 @@ Mesh (Serial1 to the Heltec, <= 191 bytes, at most one per emitter per
 
 Heartbeat every 60 s on USB (120 s on the mesh) with `"heartbeat":true`,
 `node_id`, `receiver`, `heading`, `sweeps`, `tune_fail`, `cap_err`, `bus_stuck`,
-`nf_dbm`, `temp_c`, `uptime_s`. The mapper registers a station from its first
-heartbeat. `heading` in the heartbeat and `station_heading` in the detection
+`alias_drop`, `nf_dbm`, `temp_c`, `uptime_s` (the USB copy adds `usb_drop`,
+`mesh_drop` and the thresholds). The mapper registers a station from its first
+heartbeat. `NODE_ID` may use letters, digits and `_ - . :`; anything else is
+dropped from it, and an empty result falls back to the MAC-derived id. `heading` in the heartbeat and `station_heading` in the detection
 line are the installer's note of the face-N heading; the drone's own course
 is never known to a level 1 station.
 

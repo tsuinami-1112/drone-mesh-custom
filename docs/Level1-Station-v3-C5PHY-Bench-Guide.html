@@ -185,7 +185,8 @@
       <tr><td class="n">4</td><td>Patch antenna</td><td>5.8 GHz, 8 dBi, ~70°, SMA</td><td class="c"><span class="cb"></span></td><td class="n">$32</td></tr>
       <tr><td class="n">1</td><td>SP4T RF switch</td><td>SKY13322-375LF / PE42442</td><td class="c"><span class="cb"></span></td><td class="n">$3</td></tr>
       <tr><td class="n">4</td><td>u.FL–SMA pigtail</td><td><b>equal length</b>, ≤ 15 cm</td><td class="c"><span class="cb"></span></td><td class="n">$8</td></tr>
-      <tr><td class="n">1</td><td>u.FL–u.FL pigtail</td><td>switch common → XIAO, ≤ 5 cm</td><td class="c"><span class="cb"></span></td><td class="n">$2</td></tr>
+      <tr><td class="n">4</td><td>SMA bulkhead feedthroughs</td><td>one per enclosure face</td><td class="c"><span class="cb"></span></td><td class="n">$8</td></tr>
+          <tr><td class="n">1</td><td>u.FL–u.FL pigtail</td><td>switch common → XIAO, ≤ 5 cm</td><td class="c"><span class="cb"></span></td><td class="n">$2</td></tr>
       <tr><td class="n">1</td><td>LNA + band-pass filter (optional)</td><td><span class="opt">Optional</span>5.8 GHz, ~20 dB, 3.3/5 V</td><td class="c"><span class="cb"></span></td><td class="n">$12</td></tr>
       <tr><td class="n">1</td><td>Heltec LoRa 32 V3</td><td>Meshtastic, TEXTMSG 115200</td><td class="c"><span class="cb"></span></td><td class="n">$20</td></tr>
       <tr><td class="n">1</td><td>Solar panel</td><td>20 W, 18 V nominal</td><td class="c"><span class="cb"></span></td><td class="n">$25</td></tr>
@@ -445,7 +446,7 @@
         <h3 style="margin-top:0">Method</h3>
         <p>Amplitude comparison. Take the strongest sector <code>k</code> and its two neighbours; with powers in dB the bearing is</p>
         <pre class="code nowrap">bearing = az[k] + K · (P[k+1] − P[k−1])</pre>
-        <p>K, in degrees per dB, comes from the measured patch pattern. A bench sweep of a VTX around the box every 15° fills the lookup table. Report <code>bearing_deg</code> and <code>bearing_sigma_deg</code>; sigma grows when the two neighbours are nearly equal, or the peak is weak.</p>
+        <p>K, in degrees per dB, is one constant (<code>BEARING_K_DEG_PER_DB</code>) taken from the stage 6 sweep of a VTX around the box in 15° steps. Report <code>bearing_deg</code> and <code>bearing_sigma_deg</code>; sigma grows when the strongest sector is within 3 dB of a neighbour (the emitter sits on a sector boundary), when the peak is weak, and when a neighbour's capture failed (then the axis of the strongest sector is reported with a wide sigma).</p>
         <h3>Per-channel scan loop</h3>
         <pre class="code nowrap" style="font-size:10.2px; line-height:1.36">rf_tune(channel); delay(8 ms)
 for sector in N,E,S,W:
@@ -514,7 +515,7 @@ hit = level[best] &gt;= 8 dB and q[best] &gt;= 40 %</pre>
   <div class="runhead">Level 1 Station v3 — Bench Guide</div>
   <div class="body">
     <h2>4 · Full bill of materials</h2>
-    <p>Single-unit planning prices, quantities per station. Total ≈ $170 all-in, ≈ $182 with the optional LNA; ≈ $80 / $92 electronics only (v2: ≈ $190 / $95).</p>
+    <p>Single-unit planning prices, quantities per station. Total ≈ $177 all-in, ≈ $189 with the optional LNA; ≈ $84 / $96 electronics only (v2: ≈ $190 / $95).</p>
 
     <h3>RF front end</h3>
     <table class="tight">
@@ -571,7 +572,7 @@ hit = level[best] &gt;= 8 dB and q[best] &gt;= 40 %</pre>
 
     <h4>Stage 1 — receiver alive</h4>
     <ul class="chk">
-      <li><span class="cb"></span><div class="t">No VTX on. <code>h A1</code>. <b>Expected:</b> <code>level_db</code> 0 ± 2, <code>p_mean</code> ≈ 2, <code>q_phase</code> under 15, <code>gain</code> 62, <code>clip</code> 0, <code>noise</code> 1, <code>stuck</code> 0 (a dead I/Q bus reads <code>p_mean</code> exactly 2.0 with every sample identical: <code>stuck</code> 1, <code>bus_stuck</code> climbing in the heartbeat). Measured: level_db <span class="bl"></span> p_mean <span class="bl"></span> q_phase <span class="bl"></span></div></li>
+      <li><span class="cb"></span><div class="t">No VTX on. <code>h A1</code>. <b>Expected:</b> <code>level_db</code> 0 ± 2, <code>p_mean</code> ≈ 2, <code>q_phase</code> under 15, <code>gain</code> 62, <code>clip</code> 0, <code>noise</code> 1, <code>stuck</code> 0 (a dead I/Q bus shows every sample identical: <code>stuck</code> 1 and <code>bus_stuck</code> climbing in the heartbeat; stuck at all zeros it also reads <code>p_mean</code> exactly 2.0, so trust the flag, not the number). Measured: level_db <span class="bl"></span> p_mean <span class="bl"></span> q_phase <span class="bl"></span></div></li>
       <li><span class="cb"></span><div class="t">Note the station's own no-signal noise floor: <code>nf_dbm</code> <span class="bl"></span> dBm. <code>p_mean</code> far from 2 means <code>RF_NOISE_POWER</code> is not this board's value — write it down for the calibration.</div></li>
       <li><span class="cb"></span><div class="t">Key a VTX on A1 (5865 MHz) a few metres away. <b>Expected:</b> <code>level_db</code> up by ≥ 30 dB, <code>gain</code> stepping below 62, <code>q_phase</code> ≥ 50, <code>mod</code> 1, <code>noise</code> 0, <code>cfo_khz</code> within ±2000. Measured: level_db <span class="bl"></span> gain <span class="bl"></span> q_phase <span class="bl"></span> cfo <span class="bl"></span></div></li>
       <li><span class="cb"></span><div class="t">Move the VTX away or unkey it. <b>Expected:</b> the readings return to the no-signal values on the next line. <code>level_db</code> rising without <code>q_phase</code> rising means power but no FM coherence: an off-channel carrier (check <code>cfo_khz</code>) or scrambled lane order.</div></li>
@@ -581,7 +582,7 @@ hit = level[best] &gt;= 8 dB and q[best] &gt;= 40 %</pre>
     <ul class="chk">
       <li><span class="cb"></span><div class="t"><code>x</code> to resume scanning; wait for the first heartbeat (60 s). <b>Expected:</b> <code>tune_fail</code> 0, <code>channels</code> 40. Measured: tune_fail <span class="bl"></span></div></li>
       <li><span class="cb"></span><div class="t">If not 0: <code>h</code> each band's channels and note the ones refused ("tune refused by regulatory table"): <span class="bl w"></span>. Set <code>RF_COUNTRY_CC</code> to the deployment country, reflash (erase first), repeat. Value used: <span class="bl"></span></div></li>
-      <li><span class="cb"></span><div class="t"><code>h E4</code> (5645, lowest) and <code>h E8</code> (5945, highest). <b>Expected:</b> both hold; <code>?</code> shows the bootstrap <code>wifi_ch</code> 132 and 177. Measured: <span class="bl"></span> / <span class="bl"></span></div></li>
+      <li><span class="cb"></span><div class="t"><code>h E4</code> (5645, lowest) and <code>h E8</code> (5945, highest). <b>Expected:</b> both hold; <code>?</code> shows the bootstrap <code>wifi_ch</code> 132 and 177. E8 is 60 MHz above the last public centre: if a VTX on E8 is not heard there but a VTX on E5 (5885) is heard on E5, E7 and E8 alike, the synthesizer does not follow <code>phy_set_freq</code> that far — build with <code>-DC5PHY_MAX_MHZ=5885</code> (36 channels) and note it here. Measured: <span class="bl"></span> / <span class="bl"></span></div></li>
     </ul>
 
     <h4>Stage 3 — selectivity</h4>

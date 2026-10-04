@@ -32,7 +32,7 @@ typedef struct {
     float threshold_dbm, threshold_level_db;
     int video_seen, gain_max, bw40;
     float fe_gain_db;
-    unsigned tune_fail, cap_err, bus_stuck, sweeps, usb_drop, mesh_drop;
+    unsigned tune_fail, cap_err, bus_stuck, alias_drop, sweeps, usb_drop, mesh_drop;
     float nf_dbm, temp_c;
     unsigned uptime_s, seq;
 } HeartbeatReport;

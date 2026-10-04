@@ -16,6 +16,7 @@
 #include "fpv_channels.h"
 
 #include <string.h>
+#include <stdlib.h>
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_netif.h"
@@ -242,10 +243,17 @@ esp_err_t rf_tune(uint16_t freq_mhz)
     uint8_t ch = 0;
     uint16_t centre = 0;
     if (!fpv_wifi_bootstrap(freq_mhz, &ch, &centre)) { s_last_call = "outside the C5 5 GHz window"; return ESP_ERR_NOT_SUPPORTED; }
-    if (freq_mhz != centre && !phy_set_freq) { s_last_call = "phy_set_freq (not exported by libphy)"; return ESP_ERR_NOT_SUPPORTED; }
 
-    /* Supported public centre first; the regulatory table may refuse it. */
-    esp_err_t e = esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+    /* A supported public centre first; the regulatory table may refuse the nearest
+     * one (173 and 177 in some tables), in which case the next nearest within
+     * reach of phy_set_freq is used. */
+    esp_err_t e = ESP_FAIL;
+    for (int rank = 0; fpv_wifi_bootstrap_rank(freq_mhz, rank, &ch, &centre); rank++) {
+        if (abs((int)freq_mhz - (int)centre) > C5PHY_MAX_BOOTSTRAP_OFFSET_MHZ) break;
+        if (freq_mhz != centre && !phy_set_freq) { s_last_call = "phy_set_freq (not exported by libphy)"; return ESP_ERR_NOT_SUPPORTED; }
+        e = esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+        if (e == ESP_OK) break;
+    }
     if (e != ESP_OK) { s_last_call = "esp_wifi_set_channel (regulatory table)"; return e; }
     uint8_t primary = 0;
     wifi_second_chan_t secondary = WIFI_SECOND_CHAN_NONE;

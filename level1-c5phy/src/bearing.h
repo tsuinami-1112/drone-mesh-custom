@@ -18,6 +18,13 @@ typedef struct {
 void bearing_estimate(const float* level_db, const float* az_deg, int n,
                       float k_deg_per_db, float max_offset_deg, float sigma_base_deg,
                       float threshold_db, BearingResult* r);
+/* Same, with valid[i] = 0 marking a sector whose capture failed: the strongest
+ * sector is chosen among the valid ones; a missing neighbour gives no offset
+ * (the axis of the strongest sector) and a wide sigma instead of a confident
+ * bearing thrown to the clamp. valid == NULL means all valid. */
+void bearing_estimate_masked(const float* level_db, const int* valid, const float* az_deg, int n,
+                             float k_deg_per_db, float max_offset_deg, float sigma_base_deg,
+                             float threshold_db, BearingResult* r);
 
 float bearing_wrap360(float deg);
 

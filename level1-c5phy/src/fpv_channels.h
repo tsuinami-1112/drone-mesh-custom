@@ -22,6 +22,13 @@ int fpv_nearest(int freq_mhz);
 /* Nearest public 5 GHz Wi-Fi centre the closed PHY can be parked on first.
  * Returns 0 if freq is outside the C5's 5 GHz window. */
 int fpv_wifi_bootstrap(int freq_mhz, uint8_t* wifi_channel, uint16_t* centre_mhz);
+/* The rank-th nearest centre (0 = nearest); 0 when rank is out of range or
+ * freq outside the window. rf_tune walks the ranks when a regulatory table
+ * refuses the nearest one. */
+int fpv_wifi_bootstrap_rank(int freq_mhz, int rank, uint8_t* wifi_channel, uint16_t* centre_mhz);
+/* Highest public centre: a tuned frequency above it relies on phy_set_freq
+ * pulling the synthesizer past the last Wi-Fi channel. */
+int fpv_wifi_top_centre_mhz(void);
 
 #ifdef __cplusplus
 }
