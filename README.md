@@ -16,6 +16,6 @@
 |---|---|
 | [`level1-c5phy/`](level1-c5phy/) | Station firmware for the Seeed XIAO ESP32-C5 (PlatformIO) and its desktop tests |
 | [`docs/Level1-Station-v3-C5PHY-Bench-Guide.pdf`](docs/Level1-Station-v3-C5PHY-Bench-Guide.pdf) | Hardware, wiring, BOM, calibration and the bench procedure, with the optional LNA + filter stage |
-| `mesh-mapper.py` | The shared mapper; the level 1 bearing support lives on `main` once merged |
+| `mesh-mapper.py` | The shared mapper. The version with level 1 bearing support is on [`level2-main`](../../tree/level2-main) |
 
-Level 2 (Remote ID, DJI DroneID, MAVLink, fingerprints) is on [`main`](../../tree/main).
+Level 2 (Remote ID, DJI DroneID, MAVLink, fingerprints) is on [`level2-main`](../../tree/level2-main).
