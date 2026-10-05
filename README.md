@@ -34,6 +34,9 @@
 
 ## How it works
 
+<details>
+<summary>Expand</summary>
+
 ```
  4 × 5.8 GHz patch antennas, one per box face (N E S W)
         │  equal-length coax
@@ -78,9 +81,14 @@ This branch holds only the level 1 station. See
 [Mesh, home station and mapper](#mesh-home-station-and-mapper) for what to take
 from `level2-main`.
 
+</details>
+
 ---
 
 ## Hardware
+
+<details>
+<summary>Expand</summary>
 
 Per station. Prices and the full list (enclosure, solar, passives) are in the
 [bench guide](docs/Level1-Station-v3-C5PHY-Bench-Guide.pdf), sheet 5.
@@ -103,6 +111,9 @@ step attenuator.
 
 ### Switch choice
 
+<details>
+<summary>Expand</summary>
+
 The firmware drives three control lines. Datasheet figures near 6 GHz:
 
 | | PE42442 (pSemi) | SKY13322-375LF (Skyworks) |
@@ -118,11 +129,21 @@ Expect about 2 dB of switch loss at 5.8 GHz with either part. The PE42442's
 higher isolation also means
 less of the strongest patch leaks into the other sectors.
 
+</details>
+
+</details>
+
 ---
 
 ## Wiring
 
+<details>
+<summary>Expand</summary>
+
 ### XIAO ESP32-C5 pins
+
+<details>
+<summary>Expand</summary>
 
 Every pin used is a top-side castellation; nothing is on the underside. Wire by
 the **D-labels** printed on the board.
@@ -165,7 +186,12 @@ the **D-labels** printed on the board.
 > lane and switch V3. The Heltec goes on **D4 (TX) and D5 (RX)**, the same two
 > pins every station tier in this repo uses (the card labels them SDA/SCL).
 
+</details>
+
 ### RF chain
+
+<details>
+<summary>Expand</summary>
 
 ```
  Patch N ─┐                                      (optional)
@@ -189,7 +215,12 @@ firmware, N goes on RF4. See the [next section](#antenna-sectors-how-the-switch-
   up. Point face N at true north if you can, and note the heading you actually
   got either way.
 
+</details>
+
 ### Heltec and power
+
+<details>
+<summary>Expand</summary>
 
 | From | To | Notes |
 |---|---|---|
@@ -212,9 +243,16 @@ LNA). A charger with a 1 A output is marginal; use one rated 1.5 A or more.
 Before plugging USB into an installed station's XIAO, take its 5V pin off the
 rail (or switch the rail off) so the USB port and the rail don't feed each other.
 
+</details>
+
+</details>
+
 ---
 
 ## Antenna sectors: how the switch lines cycle
+
+<details>
+<summary>Expand</summary>
 
 This section decides whether bearings come out right, so here it is in full.
 
@@ -234,6 +272,9 @@ All of this is in [`include/config.h`](level1-c5phy/include/config.h):
 ```
 
 ### Cycle order and timing
+
+<details>
+<summary>Expand</summary>
 
 For every channel, on every sweep, the station does this:
 
@@ -255,7 +296,12 @@ tune channel ─ 8 ms ─► sector 0 N ─► sector 1 E ─► sector 2 S ─�
   and `t 100` etc. puts a raw pattern on the lines that stays until `s` or `x`.
   Every bench and status line shows what is on the lines as `"switch":"100"`.
 
+</details>
+
 ### Line states for each sector (default table)
+
+<details>
+<summary>Expand</summary>
 
 The table value is a bit field: bit 0 is D8, bit 1 is D9, bit 2 is D7.
 
@@ -273,7 +319,12 @@ order. Both mean "D8 high, the rest low".
 
 With the default table **D7 (V3) never goes high**. It is spare on a 2-line part.
 
+</details>
+
 ### What that selects on a PE42442
+
+<details>
+<summary>Expand</summary>
 
 From the PE42442 datasheet, Tables 5 and 6:
 
@@ -318,7 +369,12 @@ step clockwise of it, and **every bearing that station reports is 90° too far
 clockwise**. Nothing in the output flags that, so one convention everywhere is
 safer.
 
+</details>
+
 ### Skyworks SKY13322-375LF
+
+<details>
+<summary>Expand</summary>
 
 This part has four control lines and wants exactly one of them high (J1 = V1
 only, J2 = V2 only, J3 = V3 only, J4 = V4 only; the datasheet calls any other
@@ -330,7 +386,12 @@ three lines (e.g. a 74LVC1G27 powered from 3V3) → V4. Then build with:
     -DSECTOR_SWITCH_TABLE='{0x1,0x2,0x4,0x0}'   ; N=J1 (V1) E=J2 (V2) S=J3 (V3) W=J4 (all low, NOR high)
 ```
 
+</details>
+
 ### Any other switch
+
+<details>
+<summary>Expand</summary>
 
 Look up its truth table and fill in `SECTOR_SWITCH_TABLE` so that:
 
@@ -344,7 +405,12 @@ Look up its truth table and fill in `SECTOR_SWITCH_TABLE` so that:
 The `sectors` array in every detection line is always in index order:
 `[N, E, S, W]`.
 
+</details>
+
 ### Checking the mapping on the bench
+
+<details>
+<summary>Expand</summary>
 
 This is bench stage 6. `t` maps the switch itself, whatever the firmware's
 table says, and `s` then confirms the table.
@@ -374,11 +440,21 @@ table says, and `s` then confirms the table.
 > than cut down to three bits. It needs a held channel: while the station is
 > scanning it answers with an error, because the sweep re-selects every sector.
 
+</details>
+
+</details>
+
 ---
 
 ## Software setup
 
+<details>
+<summary>Expand</summary>
+
 ### 1. Install the tools (once)
+
+<details>
+<summary>Expand</summary>
 
 - [VS Code](https://code.visualstudio.com/) with the **PlatformIO IDE** extension,
   or the PlatformIO CLI on its own: `pip install platformio`.
@@ -392,7 +468,12 @@ table says, and `s` then confirms the table.
   sudo usermod -a -G dialout $USER
   ```
 
+</details>
+
 ### 2. Get the code
+
+<details>
+<summary>Expand</summary>
 
 ```bash
 git clone -b level1 https://github.com/tsuinami-1112/drone-mesh-custom
@@ -403,7 +484,12 @@ In VS Code, **File → Open Folder…** and open `level1-c5phy` itself (Platform
 only activates in a folder with a `platformio.ini`). The first open downloads the
 pioarduino ESP32 platform and toolchain, several hundred MB; let it finish.
 
+</details>
+
 ### 3. Settings
+
+<details>
+<summary>Expand</summary>
 
 **Per station:** the node id, position and heading. Each station gets its own
 environment in `stations.ini`, written by the Station setup task; see
@@ -433,9 +519,16 @@ build_flags =
 | `RSSI_CAL_*`, `BEARING_K_DEG_PER_DB`, `DETECT_LEVEL_DB`, `RF_NOISE_POWER` | uncalibrated | From bench stages 1, 5 and 6 |
 | `C5PHY_MAX_MHZ` | `5945` | `5885` drops R8/E6/E7/E8 if stage 2 shows the synthesizer can't reach them |
 
+</details>
+
+</details>
+
 ---
 
 ## Station location and heading
+
+<details>
+<summary>Expand</summary>
 
 A station only measures a bearing relative to its own face N. To draw that
 bearing on the map and cross it with other stations' bearings, the mapper needs
@@ -452,6 +545,9 @@ at most 20 m, but a heading 5° off swings it by about 87 m at 1 km and 175 m at
 
 ### Give every station a NODE_ID
 
+<details>
+<summary>Expand</summary>
+
 The `NODE_ID` is the station's name in every report, and the key every mapper
 stores its position against. Pick a short one (`RX01`, `NORTH2`: letters, digits,
 `_` and `-`, up to 23 characters) and write it on the box. Short matters,
@@ -464,7 +560,12 @@ for a fleet, for two reasons:
   unplaced station;
 - two boards can end up with the same id (about 2 % odds across 50 stations).
 
+</details>
+
 ### Recommended: flash it with Station setup
+
+<details>
+<summary>Expand</summary>
 
 Flash the position and heading into the station, and every mapper that hears it
 places it by itself. Nothing has to be entered on any mapper.
@@ -508,7 +609,12 @@ About `stations.ini`:
   `.gitignore`). Keep your own backup, or share it privately with whoever
   flashes stations.
 
+</details>
+
 ### Getting good numbers
+
+<details>
+<summary>Expand</summary>
 
 - **Position:** a click on the satellite layer, the location of a phone or laptop
   at the station (the page shows its accuracy), or a GPS reading. A few metres is
@@ -526,7 +632,12 @@ About `stations.ini`:
   through it. If it misses by a constant angle, correct the heading by that
   angle.
 
+</details>
+
 ### Without flashing: the mapper panel
+
+<details>
+<summary>Expand</summary>
 
 For a station flashed without a location, or for a quick test, set it in the
 mapper's **LEVEL 1 STATIONS** panel:
@@ -539,7 +650,12 @@ This is stored only in that mapper's `stations.json`. With several mappers,
 repeat it on each one, or copy `stations.json` between them (a mapper reads it
 when it starts).
 
+</details>
+
 ### Which value a mapper uses
+
+<details>
+<summary>Expand</summary>
 
 | Situation | Position the mapper uses |
 |---|---|
@@ -552,7 +668,12 @@ The heading works the same way, except that clearing it doesn't bring the
 flashed one back. To return a station fully to its flashed values, press **DEL**
 in the panel; it registers again from its next heartbeat.
 
+</details>
+
 ### Moving or replacing a station
+
+<details>
+<summary>Expand</summary>
 
 - **Moved:**
   1. Run Station setup, pick the station, move the pin (and the heading),
@@ -563,9 +684,16 @@ in the panel; it registers again from its next heartbeat.
   comes up with the same `NODE_ID`, position and heading, and the mappers
   notice nothing.
 
+</details>
+
+</details>
+
 ---
 
 ## Flashing
+
+<details>
+<summary>Expand</summary>
 
 There is no prebuilt binary or web flasher for level 1. Build from source.
 
@@ -611,6 +739,9 @@ then every 60 s.
 
 ### Desktop tests
 
+<details>
+<summary>Expand</summary>
+
 The signal processing (`demod.c`, `bearing.c`, `report.c`, `fpv_channels.c`) is
 plain C and is tested on a PC with synthetic I/Q. It needs `gcc`, `make` and
 `python3`:
@@ -619,9 +750,16 @@ plain C and is tested on a PC with synthetic I/Q. It needs `gcc`, `make` and
 cd level1-c5phy/test/host && make           # ends with "ALL TESTS PASSED" and "check_json: ... OK"
 ```
 
+</details>
+
+</details>
+
 ---
 
 ## Mesh, home station and mapper
+
+<details>
+<summary>Expand</summary>
 
 The mesh radios, the home station and the mapper are shared with the level 2
 stations, so they live on [`level2-main`](../../tree/level2-main) and are built and set up from
@@ -646,6 +784,9 @@ report of a new emitter goes at once) and a heartbeat every 120 s.
 
 ### Commissioning a station in the mapper
 
+<details>
+<summary>Expand</summary>
+
 Open the mapper (`http://localhost:5000`) and pick the serial port: the home
 station's XIAO, or on the bench a level 1 station's XIAO directly. Then:
 
@@ -662,9 +803,16 @@ station's XIAO, or on the bench a level 1 station's XIAO directly. Then:
 A wrong heading rotates every ray from that station, so check it with a VTX at a
 known spot before trusting fixes.
 
+</details>
+
+</details>
+
 ---
 
 ## Bring-up checklist
+
+<details>
+<summary>Expand</summary>
 
 Condensed from the bench guide, which has the record sheets. Stages 0–5 run on a
 bare XIAO with its stock antenna; the switch comes in at stage 6. Don't move on
@@ -683,6 +831,9 @@ until a stage passes.
 
 ### Bench console
 
+<details>
+<summary>Expand</summary>
+
 Type into the serial monitor, Enter-terminated.
 
 | Command | Effect |
@@ -696,9 +847,16 @@ Type into the serial monitor, Enter-terminated.
 | `b 0` / `b 1` | Analog filter BW20 (+3 dB SNR) / BW40 (full video) |
 | `x` | Resume scanning |
 
+</details>
+
+</details>
+
 ---
 
 ## Serial output
+
+<details>
+<summary>Expand</summary>
 
 One JSON object per line on USB at 115200. Abbreviated:
 
@@ -716,9 +874,14 @@ One JSON object per line on USB at 115200. Abbreviated:
 The full contract (every field, the mesh line, the heartbeat) is in
 [`level1-c5phy/README.md`](level1-c5phy/README.md#serial-contract).
 
+</details>
+
 ---
 
 ## Troubleshooting
+
+<details>
+<summary>Expand</summary>
 
 | Symptom | Likely cause |
 |---|---|
@@ -740,9 +903,14 @@ The full contract (every field, the mesh line, the heartbeat) is in
 | A new station's environment isn't in PROJECT TASKS | Refresh PROJECT TASKS (↻ at the top of the PlatformIO sidebar) or reload the window |
 | Build stops with `station settings: …` | A value in `stations.ini` is wrong; the message names it |
 
+</details>
+
 ---
 
 ## Repository layout
+
+<details>
+<summary>Expand</summary>
 
 ```
 level1-c5phy/                       Level 1 station firmware (PlatformIO, env seeed_xiao_esp32c5)
@@ -766,10 +934,17 @@ That is the whole branch. The mapper, the home-station firmware, the Raspberry
 Pi installer and the level 2 detectors are on
 [`level2-main`](../../tree/level2-main).
 
+</details>
+
 ---
 
 ## Acknowledgments
 
+<details>
+<summary>Expand</summary>
+
 - **"Alik"** - UAV operator, 93rd OMBr "Black Ravens", AFU 🇺🇦
 - **"Ivan"** - ex-UAV operator, 427th Unmanned Aerial Brigade "Rarog", AFU 🇺🇦
 - **Meshtastic** - the mesh firmware the stations relay over
+
+</details>
