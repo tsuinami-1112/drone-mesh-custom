@@ -1946,7 +1946,7 @@ def register_station_heartbeat(hb, source=None):
         if pos is not None:
             logger.info(f"Level 1 station {node_id} ({receiver}) registered from its heartbeat at its flashed position {pos[0]:.6f}, {pos[1]:.6f}")
         else:
-            logger.info(f"Level 1 station {node_id} ({receiver}) registered from its heartbeat; set its position in the LEVEL 1 STATIONS panel")
+            logger.info(f"Level 1 station {node_id} ({receiver}) registered from its heartbeat; set its position in the LEVEL 1 STATIONS panel, or flash it into the station (level 1 Station setup)")
     emit_stations()
 
 
@@ -2185,7 +2185,7 @@ def level1_prepare_detection(detection):
                 if 'receiver' not in stt and _norm_text(detection.get('receiver')):
                     stt['receiver'] = _norm_text(detection.get('receiver'))
     if created:
-        logger.info(f"Level 1 station {node_id} registered from a detection; set its position in the LEVEL 1 STATIONS panel")
+        logger.info(f"Level 1 station {node_id} registered from a detection; its heartbeat places it if it was flashed with its position, otherwise set it in the LEVEL 1 STATIONS panel")
         emit_stations()
     rel = _safe_float(detection.get('bearing_deg')) if (node_id and station is not None) else None
     with BEARINGS_LOCK:
@@ -7051,8 +7051,9 @@ HTML_PAGE = '''
       </div>
       <div id="l1Panel" style="display:none; margin-top:6px;">
         <div style="font-size:0.9em; color:#c9a06a; line-height:1.35; margin-bottom:4px;">
-          Analog 5.8 GHz video receivers report a compass bearing, not a position. Set each station's
-          position and the true-north heading of its face N; two crossing bearings give a fix.
+          Analog 5.8 GHz video receivers report a compass bearing, not a position. A station flashed
+          with its position and the true-north heading of its face N (level 1 Station setup) places
+          itself; for any other, set them here. Two crossing bearings give a fix.
         </div>
         <div id="l1StationList"></div>
         <div class="l1-row" style="margin-top:6px; padding-top:4px; border-top:1px dashed #553300;">
