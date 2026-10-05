@@ -31,8 +31,10 @@
 V4 radio, wiring and Meshtastic settings, share one mesh channel and one home
 station, and `mesh-mapper.py` on this branch puts both on the same map: Remote
 ID tracks alongside level 1 bearing rays and the position fixes where they
-cross. Set each level 1 station's position and heading once in the mapper's
-LEVEL 1 STATIONS panel.
+cross. A level 1 station flashed with its position and heading (the level 1
+firmware's "Station setup (map)" task) is placed on every mapper by itself;
+otherwise set them once per mapper in the LEVEL 1 STATIONS panel. A value saved
+in the panel overrides the flashed one on that mapper.
 
 ---
 
