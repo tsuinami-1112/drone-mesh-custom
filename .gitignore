@@ -12,7 +12,7 @@
 level1-c5phy/test/host/test_level1
 level1-c5phy/test/host/json_samples.txt
 
-# ── Python (docs/img/make_claude_level1.py) ────────────────
+# ── Python (the scripts in docs/img/) ──────────────────────
 __pycache__/
 *.py[cod]
 .venv/

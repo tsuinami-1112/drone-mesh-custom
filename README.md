@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/img/claude-level1.svg" width="768" alt="Pixel art of Claude, an orange block-shaped mascot in a yellow hard hat, waving on a cyberpunk rooftop at night while drones hover overhead. A speech bubble reads: currently under construction.">
+  <img src="docs/img/level1-rooftop.svg" width="768" alt="Pixel art of a lonely rooftop at night, ringed by walls of lit apartment towers. A tiny Clawd in a black hoodie works at a laptop beside a mast of patch antennas wired to solar panels, with mesh links running to masts on distant roofs, while a hooded figure smokes on the roof's edge. When the laptop's map lights up with red dots, the smoker flicks away his cigarette and ducks into cover as two drones buzz past, their pings flying to the antennas. Then he lights another cigarette and sits back down.">
 </p>
 
 <h1 align="center">drone-mesh-custom · level 1</h1>
@@ -608,7 +608,7 @@ level1-c5phy/                       Level 1 station firmware (PlatformIO, env se
   src/report.c, fpv_channels.c      USB and mesh JSON; the 40-channel table
   test/host/                        desktop tests: make
 docs/Level1-Station-v3-C5PHY-Bench-Guide.{pdf,html}   hardware, BOM, power, bench stages 0-7
-docs/img/                           README art and the script that draws it
+docs/img/                           README header art and the script that draws it; retired art in archive/
 ```
 
 That is the whole branch. The mapper, the home-station firmware, the Raspberry
