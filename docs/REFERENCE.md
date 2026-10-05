@@ -525,7 +525,8 @@ drone-mesh-custom/
 |-- mesh-mapper.py              # Flask + SocketIO server, all UI inline
 |-- requirements.txt
 |-- docs/
-|   `-- REFERENCE.md            # This file
+|   |-- REFERENCE.md            # This file
+|   `-- img/                    # README images: architecture diagram, header trailer (SVG) and its script
 |-- static/                     # Vendored UI assets (offline-capable)
 |   |-- leaflet/                # Leaflet 1.9.4
 |   |-- maplibre/               # MapLibre GL 4.7.1 + leaflet plugin
