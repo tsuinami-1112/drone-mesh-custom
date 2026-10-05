@@ -15,7 +15,8 @@ mesh, and checks what the mapper made of each:
   - the same drone from a second field station inside 500 ms (dropped, as the
     ESP32 home node would)
   - level 1 heartbeats and analog_fm bearing reports from two stations for
-    the same emitter inside 500 ms (both kept, crossed into a fix)
+    the same emitter inside 500 ms (both kept, crossed into a fix), and a
+    station flashed with its position placing itself from its heartbeat
   - the standalone firmwares' text alerts: "Drone: ...", the C5's
     "Drone[5G]: ...", "Pilot: ..." and "Possible drone (...) ..."
   - chat text and a message on another channel (ignored)
@@ -199,6 +200,25 @@ def main():
             err = math.hypot((fix['drone_lat'] - DRONE[0]) * 111320,
                              (fix['drone_long'] - DRONE[1]) * 111320 * math.cos(math.radians(DRONE[0])))
             check(err < 150, f'fix lands {err:.0f} m from the true position')
+
+        print('\nlevel 1 flashed positions (lat/lon in the heartbeat)')
+        num1, (lat1, lon1) = STATIONS['RX01']
+        num2 = STATIONS['RX02'][0]
+        flashed = (round(DRONE[0] + 0.004, 6), round(DRONE[1] - 0.004, 6))
+        radio.serial_line(num2, j({"heartbeat": True, "node_id": "RX03", "receiver": "c5phy", "hw": "v3",
+                                   "heading": 42, "lat": flashed[0], "lon": flashed[1], "scanning": True}))
+        st3 = wait_for(lambda: (lambda s: s if (s.get('RX03') or {}).get('lat') is not None else None)(
+            api(base, '/api/stations')['stations']))
+        st3 = (st3 or {}).get('RX03') or {}
+        check((st3.get('lat'), st3.get('lon')) == flashed and st3.get('position_auto') is True
+              and st3.get('heading_deg') == 42,
+              'a station flashed with its position places itself from its heartbeat (auto)')
+        radio.serial_line(num1, j({"heartbeat": True, "node_id": "RX01", "receiver": "c5phy", "hw": "v3",
+                                   "heading": 0, "lat": flashed[0], "lon": flashed[1]}))
+        time.sleep(1.5)
+        s1 = api(base, '/api/stations')['stations'].get('RX01') or {}
+        check((s1.get('lat'), s1.get('lon')) == (lat1, lon1) and s1.get('position_auto') is False,
+              'a position set by hand in the panel is not moved by a reported one')
 
         print('\nstandalone detector text alerts')
         radio.serial_line(SA, "Drone: ee:ee:ee:00:00:05 RSSI:-71 ID:1581F5FHB229F00999XX OP:GBR-OP-ABC123DEF456 "

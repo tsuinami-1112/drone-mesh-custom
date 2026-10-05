@@ -20,6 +20,12 @@ deliberately non-zero: the mapper must rotate the box-relative bearings).
 The second station labels the carrier B1 (5733 MHz) instead of R3 (5732) to
 exercise the overlapping-channel merge. The script prints the mapper's fix
 against the true drone position every report.
+
+    python3 level1_bearing_sim.py --position-in-heartbeat
+
+does not place the stations through the API: their heartbeats carry lat/lon,
+as a station flashed with its position (Station setup) does, and the mapper
+places them by itself.
 """
 import argparse
 import json
@@ -83,6 +89,8 @@ def main():
     ap.add_argument('--spacing', type=float, default=600.0, help='station spacing, metres')
     ap.add_argument('--noise-deg', type=float, default=6.0, help='1-sigma bearing noise per report')
     ap.add_argument('--no-register', action='store_true', help='do not set station positions (exercise the "not placed" path)')
+    ap.add_argument('--position-in-heartbeat', action='store_true',
+                    help='stations report their position in the heartbeat (flashed with Station setup) instead of being placed through the API')
     ap.add_argument('--keep-stations', action='store_true', help='leave the simulated stations in the mapper when done')
     args = ap.parse_args()
 
@@ -103,8 +111,10 @@ def main():
               'channels': 40, 'sectors': 4, 'heading': int(st['heading']), 'threshold_dbm': -87.0, 'video_seen': 0,
               'gain_max': 62, 'bw40': 1, 'tune_fail': 0, 'cap_err': 0, 'sweeps': 0, 'nf_dbm': -98, 'temp_c': 38.5,
               'uptime_s': 0, 'seq': 0}
+        if args.position_in_heartbeat:
+            hb['lat'], hb['lon'] = round(st['lat'], 6), round(st['lon'], 6)
         api.post('/api/detections', hb)
-        if not args.no_register:
+        if not args.no_register and not args.position_in_heartbeat:
             api.post('/api/stations', {'node_id': st['node_id'], 'name': st['node_id'] + ' sim',
                                        'lat': st['lat'], 'lon': st['lon'], 'heading_deg': st['heading']})
         print(f"station {st['node_id']}: {st['lat']:.6f},{st['lon']:.6f} heading {st['heading']:.0f} deg")
@@ -169,9 +179,12 @@ def fly(args, api, rng, stations, clat, clon, t0):
             last_hb = time.time()
             for st in stations:
                 try:
-                    api.post('/api/detections', {'heartbeat': True, 'node_id': st['node_id'], 'receiver': 'c5phy', 'hw': 'v3',
-                                                 'scanning': True, 'heading': int(st['heading']), 'sweeps': sweeps,
-                                                 'nf_dbm': -98, 'temp_c': 39.0, 'uptime_s': int(t)})
+                    hb = {'heartbeat': True, 'node_id': st['node_id'], 'receiver': 'c5phy', 'hw': 'v3',
+                          'scanning': True, 'heading': int(st['heading']), 'sweeps': sweeps,
+                          'nf_dbm': -98, 'temp_c': 39.0, 'uptime_s': int(t)}
+                    if args.position_in_heartbeat:
+                        hb['lat'], hb['lon'] = round(st['lat'], 6), round(st['lon'], 6)
+                    api.post('/api/detections', hb)
                 except urllib.error.URLError as e:
                     print('heartbeat post failed:', e)
         # what did the mapper make of it?

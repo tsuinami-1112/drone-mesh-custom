@@ -1789,13 +1789,30 @@ def _clamp_sigma(value):
     return min(BEARING_SIGMA_MAX_DEG, max(BEARING_SIGMA_MIN_DEG, f))
 
 
-def _auto_station(node_id, heading, receiver):
-    # A station the mapper learned about from the station itself. Its position is
-    # unknown until set in the panel; its heading follows the installer-flashed
-    # value until someone sets one by hand (heading_auto).
-    return {'node_id': node_id, 'name': node_id, 'lat': None, 'lon': None,
+def _reported_position(msg):
+    """(lat, lon) a station reports in its heartbeat (STATION_LAT/LON flashed into
+    it with the Station setup task), or None. Both must be numbers in range; a
+    lone value or a JSON true/false is no position."""
+    lat, lon = msg.get('lat'), msg.get('lon')
+    if isinstance(lat, bool) or isinstance(lon, bool):
+        return None
+    lat, lon = _safe_float(lat), _safe_float(lon)
+    if lat is None or lon is None or not -90.0 <= lat <= 90.0 or not -180.0 <= lon <= 180.0:
+        return None
+    return round(lat, 6), round(lon, 6)
+
+
+def _auto_station(node_id, heading, receiver, pos=None):
+    # A station the mapper learned about from the station itself. Its heading
+    # follows the installer-flashed value until someone sets one by hand
+    # (heading_auto), and so does its position (position_auto): the one flashed
+    # into the station if it reports one, otherwise unknown until set in the panel.
+    # rep_lat/rep_lon keep the last position the station reported.
+    lat, lon = pos if pos else (None, None)
+    return {'node_id': node_id, 'name': node_id, 'lat': lat, 'lon': lon,
             'heading_deg': (heading or 0.0) % 360.0, 'kind': 'level1',
-            'receiver': receiver, 'heading_auto': True}
+            'receiver': receiver, 'heading_auto': True,
+            'position_auto': True, 'rep_lat': lat, 'rep_lon': lon}
 
 
 def _stations_snapshot():
@@ -1829,6 +1846,13 @@ def load_stations():
                     v['lat'] = v['lon'] = None
                 if 'heading_auto' not in v:
                     v['heading_auto'] = bool(v.pop('auto', False))
+                # Stations saved before flashed positions existed: one already placed
+                # was placed by hand; an unplaced one takes a reported position.
+                v['position_auto'] = bool(v.get('position_auto', v['lat'] is None))
+                rep_lat, rep_lon = _safe_float(v.get('rep_lat')), _safe_float(v.get('rep_lon'))
+                if rep_lat is None or rep_lon is None:
+                    rep_lat = rep_lon = None
+                v['rep_lat'], v['rep_lon'] = rep_lat, rep_lon
                 STATIONS[nid] = v
     except Exception as e:
         # Keep the damaged file instead of letting the next heartbeat overwrite the
@@ -1877,6 +1901,7 @@ def register_station_heartbeat(hb, source=None):
         return
     heading = _safe_float(hb.get('heading'))
     receiver = _norm_text(hb.get('receiver'))
+    pos = _reported_position(hb)
     created = False
     status = {}
     for k in STATION_HEARTBEAT_FIELDS:
@@ -1899,17 +1924,37 @@ def register_station_heartbeat(hb, source=None):
             if len(STATIONS) >= MAX_STATIONS:
                 logger.debug(f"Station registry full ({MAX_STATIONS}); heartbeat from {node_id} not registered")
                 return
-            st = _auto_station(node_id, heading, receiver)
+            st = _auto_station(node_id, heading, receiver, pos)
             STATIONS[node_id] = st
             created = True
             save_stations()
-        elif st.get('heading_auto') and heading is not None and st.get('heading_deg') != heading % 360.0:
-            # Heading not set by hand yet: follow what the installer flashed
-            st['heading_deg'] = heading % 360.0
-            save_stations()
-        station_status[node_id] = status
+        else:
+            changed = False
+            if st.get('heading_auto') and heading is not None and st.get('heading_deg') != heading % 360.0:
+                # Heading not set by hand yet: follow what the installer flashed
+                st['heading_deg'] = heading % 360.0
+                changed = True
+            if pos is not None:
+                if (st.get('rep_lat'), st.get('rep_lon')) != pos:
+                    st['rep_lat'], st['rep_lon'] = pos
+                    changed = True
+                if st.get('position_auto', True) and (st.get('lat'), st.get('lon')) != pos:
+                    # Position not set by hand: follow the one flashed into the station
+                    st['lat'], st['lon'] = pos
+                    changed = True
+            if changed:
+                save_stations()
+        # Merge, do not replace: the mesh copy of a heartbeat drops different tail
+        # fields depending on its length (the ones carrying the position drop
+        # uptime and temperature), and a missing field must not blank the panel.
+        merged = dict(station_status.get(node_id) or {})
+        merged.update(status)
+        station_status[node_id] = merged
     if created:
-        logger.info(f"Level 1 station {node_id} ({receiver}) registered from its heartbeat; set its position in the LEVEL 1 STATIONS panel")
+        if pos is not None:
+            logger.info(f"Level 1 station {node_id} ({receiver}) registered from its heartbeat at its flashed position {pos[0]:.6f}, {pos[1]:.6f}")
+        else:
+            logger.info(f"Level 1 station {node_id} ({receiver}) registered from its heartbeat; set its position in the LEVEL 1 STATIONS panel, or flash it into the station (level 1 Station setup)")
     emit_stations()
 
 
@@ -2148,7 +2193,7 @@ def level1_prepare_detection(detection):
                 if 'receiver' not in stt and _norm_text(detection.get('receiver')):
                     stt['receiver'] = _norm_text(detection.get('receiver'))
     if created:
-        logger.info(f"Level 1 station {node_id} registered from a detection; set its position in the LEVEL 1 STATIONS panel")
+        logger.info(f"Level 1 station {node_id} registered from a detection; its heartbeat places it if it was flashed with its position, otherwise set it in the LEVEL 1 STATIONS panel")
         emit_stations()
     rel = _safe_float(detection.get('bearing_deg')) if (node_id and station is not None) else None
     with BEARINGS_LOCK:
@@ -7014,8 +7059,9 @@ HTML_PAGE = '''
       </div>
       <div id="l1Panel" style="display:none; margin-top:6px;">
         <div style="font-size:0.9em; color:#c9a06a; line-height:1.35; margin-bottom:4px;">
-          Analog 5.8 GHz video receivers report a compass bearing, not a position. Set each station's
-          position and the true-north heading of its face N; two crossing bearings give a fix.
+          Analog 5.8 GHz video receivers report a compass bearing, not a position. A station flashed
+          with its position and the true-north heading of its face N (level 1 Station setup) places
+          itself; for any other, set them here. Two crossing bearings give a fix.
         </div>
         <div id="l1StationList"></div>
         <div class="l1-row" style="margin-top:6px; padding-top:4px; border-top:1px dashed #553300;">
@@ -12618,7 +12664,7 @@ function l1StationPopup(st) {
   let h = '<div style="font-family:monospace; font-size:0.85em; color:#ffd9a0; min-width:200px;">'
     + '<div style="font-weight:bold; color:#ffbb55; margin-bottom:4px;">LEVEL 1 STATION ' + l1Esc(st.name || st.node_id) + '</div>'
     + row('node_id', st.node_id) + row('heading of face N', (Number(st.heading_deg) || 0) + '°')
-    + row('position', l1Placed(st) ? Number(st.lat).toFixed(5) + ', ' + Number(st.lon).toFixed(5) : 'not set')
+    + row('position', l1Placed(st) ? Number(st.lat).toFixed(5) + ', ' + Number(st.lon).toFixed(5) + (st.position_auto ? ' (flashed)' : '') : 'not set')
     + row('heartbeat', age);
   if (stt.sweeps !== undefined) h += row('sweeps', stt.sweeps);
   if (stt.nf_dbm !== undefined) h += row('noise floor', stt.nf_dbm + ' dBm');
@@ -12678,7 +12724,7 @@ function l1RenderStations() {
   const ageText = id => { const stt = l1Status[id] || {}; return (stt.last_seen ? Math.round(Date.now() / 1000 - stt.last_seen) + 's' : 'no heartbeat') + (stt.nf_dbm !== undefined ? ' · nf ' + stt.nf_dbm : ''); };
   const sigNow = JSON.stringify([ids.map(id => {
     const st = l1Stations[id];
-    return [id, st.name, st.lat, st.lon, st.heading_deg, !!st.heading_auto, l1StationAlive(id)];
+    return [id, st.name, st.lat, st.lon, st.heading_deg, !!st.heading_auto, !!st.position_auto, l1StationAlive(id)];
   }), Object.keys(l1Dirty), l1PlaceFor]);
   if (sigNow === l1PanelSig && list.children.length) {
     list.querySelectorAll('[data-age]').forEach(el => { const t = ageText(el.getAttribute('data-age')); if (el.textContent !== t) el.textContent = t; });
@@ -12703,6 +12749,7 @@ function l1RenderStations() {
       + '<input id="l1name_' + dom + '" data-id="' + eid + '" data-k="name" type="text" value="' + val('name', st.name || '') + '" placeholder="name" style="width:84px;"/>'
       + '<input id="l1lat_' + dom + '" data-id="' + eid + '" data-k="lat" type="text" value="' + val('lat', placed ? Number(st.lat).toFixed(6) : '') + '" placeholder="lat" style="width:86px;"/>'
       + '<input id="l1lon_' + dom + '" data-id="' + eid + '" data-k="lon" type="text" value="' + val('lon', placed ? Number(st.lon).toFixed(6) : '') + '" placeholder="lon" style="width:86px;"/>'
+      + (placed && st.position_auto ? '<span title="the position flashed into the station (Station setup); a position saved here overrides it, and clearing both fields + SAVE follows the station again" style="color:#a87f40; font-size:0.85em;">auto</span>' : '')
       + '<input id="l1hdg_' + dom + '" data-id="' + eid + '" data-k="hdg" type="number" min="0" max="359" value="' + val('hdg', Number(st.heading_deg) || 0) + '" title="true-north heading of face N" style="width:52px;"/>°'
       + (st.heading_auto ? '<span title="follows the heading the station reports until one is saved here" style="color:#a87f40; font-size:0.85em;">auto</span>' : '')
       + '</div><div class="l1-row">'
@@ -12712,7 +12759,7 @@ function l1RenderStations() {
       + (placed ? '<button class="l1-btn" data-act="zoom" data-id="' + eid + '">ZOOM</button>' : '')
       + '<button class="l1-btn" style="margin-left:auto; border-color:#aa5533; color:#ffaaaa;" data-act="del" data-id="' + eid + '">DEL</button>'
       + '</div>'
-      + (placed ? '' : '<div style="color:#ff9966; font-size:0.9em; margin-top:2px;">position not set — its bearings cannot be drawn or fused</div>')
+      + (placed ? '' : '<div style="color:#ff9966; font-size:0.9em; margin-top:2px;">position not set — its bearings cannot be drawn or fused. Set it here, or flash it into the station (Station setup)</div>')
       + '</div>';
   });
   list.innerHTML = h;
@@ -12745,7 +12792,10 @@ async function l1Save(id) {
   // Send only what the operator touched: a heading the server receives is a heading set
   // by hand, and from then on the station's own reported heading is ignored.
   const d = l1Dirty[id] || {};
-  const body = { node_id: id, lat: g('lat'), lon: g('lon') };
+  const body = { node_id: id };
+  // The position goes only when it was edited: sending it pins the position by hand, so
+  // saving a name must not freeze a position the station reports. Both cleared = auto.
+  if (d.lat !== undefined || d.lon !== undefined) { body.lat = g('lat'); body.lon = g('lon'); }
   if (d.name !== undefined) body.name = g('name');
   if (d.hdg !== undefined) body.heading_deg = g('hdg') || 0;
   try {
@@ -13688,9 +13738,17 @@ def api_station_set():
     name = _NODE_ID_RE.sub(' ', str(data['name'])).strip()[:40] if isinstance(data.get('name'), str) and data.get('name') else None
     with STATIONS_LOCK:
         st = STATIONS.get(node_id)
-        # Decide everything before touching the registry: a rejected request leaves no trace
-        new_lat = lat if 'lat' in data else (st or {}).get('lat')
-        new_lon = lon if 'lon' in data else (st or {}).get('lon')
+        # Decide everything before touching the registry: a rejected request leaves no trace.
+        # lat/lon in the body set the position by hand; both sent empty go back to the
+        # position the station reports (flashed with Station setup); no lat/lon in the
+        # body (a name or heading change) leaves the position as it is.
+        pos_sent = 'lat' in data or 'lon' in data
+        to_auto = 'lat' in data and 'lon' in data and lat is None and lon is None
+        if to_auto:
+            new_lat, new_lon = (st or {}).get('rep_lat'), (st or {}).get('rep_lon')
+        else:
+            new_lat = lat if 'lat' in data else (st or {}).get('lat')
+            new_lon = lon if 'lon' in data else (st or {}).get('lon')
         if (new_lat is None) != (new_lon is None):
             return jsonify({'error': 'lat and lon go together'}), 400
         if st is None:
@@ -13702,6 +13760,8 @@ def api_station_set():
             st['name'] = name
         st.setdefault('name', node_id)
         st['lat'], st['lon'] = new_lat, new_lon
+        if pos_sent:
+            st['position_auto'] = to_auto       # saved by hand: the reported position no longer moves it
         if 'heading_deg' in data:
             st['heading_deg'] = (heading or 0.0) % 360.0
             st['heading_auto'] = False          # set by hand: the heartbeat no longer overrides it
