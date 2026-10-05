@@ -765,3 +765,13 @@ docs/img/                           README header art and the script that draws 
 That is the whole branch. The mapper, the home-station firmware, the Raspberry
 Pi installer and the level 2 detectors are on
 [`level2-main`](../../tree/level2-main).
+
+---
+
+## Acknowledgments
+
+- **"Alik"** - UAV operator, 93rd OMBr "Black Ravens", AFU 🇺🇦
+- **"Ivan"** - ex-UAV operator, 427th Unmanned Aerial Brigade "Rarog", AFU 🇺🇦
+- **Meshtastic** - the mesh firmware the stations relay over
+- **OpenStreetMap**, **Esri**, **CARTO**, **OpenTopoMap** - tile providers
+- **MapLibre GL** + **Leaflet** + **Nominatim** - open mapping stack
