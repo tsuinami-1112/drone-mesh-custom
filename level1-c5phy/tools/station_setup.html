@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Level 1 station setup</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+<style>
+  :root { --bg:#f6f7f9; --panel:#fff; --text:#1d2330; --muted:#5d6678; --line:#d9dde5; --accent:#c2410c; --ok:#15803d; --err:#b91c1c; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14171d; --panel:#1d222b; --text:#e7eaf0; --muted:#9aa3b2; --line:#323a47; --accent:#fb923c; --ok:#4ade80; --err:#f87171; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background:var(--bg); color:var(--text); }
+  .wrap { display:grid; grid-template-columns: 360px 1fr; height:100vh; }
+  aside { background:var(--panel); border-right:1px solid var(--line); padding:16px; overflow:auto; }
+  h1 { font-size:18px; margin:0 0 4px; }
+  p.lead { color:var(--muted); margin:0 0 14px; font-size:13.5px; }
+  label { display:block; font-weight:600; font-size:13px; margin:12px 0 4px; }
+  .hint { color:var(--muted); font-size:12.5px; font-weight:400; }
+  input, select { width:100%; padding:7px 9px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--text); font:inherit; }
+  .row { display:flex; gap:8px; }
+  .row > * { flex:1; }
+  .modes { display:flex; gap:6px; margin-top:6px; }
+  button { padding:8px 10px; border:1px solid var(--line); border-radius:6px; background:var(--bg); color:var(--text); font:inherit; cursor:pointer; }
+  button.on { border-color:var(--accent); color:var(--accent); font-weight:600; }
+  button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; width:100%; margin-top:16px; }
+  button:disabled { opacity:.5; cursor:default; }
+  #map { height:100vh; }
+  .pin { background:#c2410c; border:3px solid #fff; border-radius:50%; box-shadow:0 0 0 2px #c2410c, 0 1px 4px rgba(0,0,0,.5); cursor:move; }
+  #offline { display:none; padding:24px; color:var(--muted); }
+  #msg { margin-top:12px; font-size:13.5px; white-space:pre-line; }
+  #msg.ok { color:var(--ok); } #msg.err { color:var(--err); }
+  .steps { margin:14px 0 0; padding-left:18px; color:var(--muted); font-size:13px; }
+  @media (max-width: 760px) { .wrap { grid-template-columns:1fr; height:auto; } #map { height:60vh; } aside { border-right:0; border-bottom:1px solid var(--line); } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <aside>
+    <h1>Level 1 station setup</h1>
+    <p class="lead">Pick where a station stands and which way its face N points. Save writes it to
+      <code>stations.ini</code> as its own PlatformIO environment; flash it from there.</p>
+
+    <label for="existing">Station</label>
+    <select id="existing"><option value="">New station</option></select>
+
+    <label for="nodeId">Node id <span class="hint">(NODE_ID: letters, digits, _ and -; up to 23)</span></label>
+    <input id="nodeId" maxlength="23" placeholder="RX01" autocomplete="off">
+
+    <label>A click on the map sets</label>
+    <div class="modes">
+      <button id="modePos" class="on" type="button">Station position</button>
+      <button id="modeHdg" type="button">Face N direction</button>
+    </div>
+
+    <div class="row">
+      <div><label for="lat">Latitude</label><input id="lat" inputmode="decimal" placeholder="33.494200"></div>
+      <div><label for="lon">Longitude</label><input id="lon" inputmode="decimal" placeholder="-111.926100"></div>
+    </div>
+    <label for="paste">Paste coordinates <span class="hint">(e.g. copied from Google Maps)</span></label>
+    <input id="paste" placeholder="33.4942, -111.9261">
+    <button id="here" type="button" style="margin-top:8px; width:100%;">Use my location (at the station)</button>
+
+    <label for="heading">Heading of face N <span class="hint">(degrees clockwise from true north)</span></label>
+    <input id="heading" inputmode="numeric" placeholder="0">
+
+    <button id="save" class="primary" type="button">Save station</button>
+    <button id="cancel" type="button" style="width:100%; margin-top:8px;">Close without saving</button>
+    <div id="msg"></div>
+    <ol class="steps">
+      <li>Station position: click the map (drag the marker to adjust), paste, or use your location.</li>
+      <li>Face N: switch to <b>Face N direction</b> and click a point the N patch faces, e.g. along a
+        road or roof edge on the satellite layer. Or type the heading; a compass reads magnetic north,
+        so add your local declination.</li>
+      <li>Save, then flash the station from its own entry in PROJECT TASKS.</li>
+    </ol>
+  </aside>
+  <main>
+    <div id="map"></div>
+    <div id="offline">The map could not load (no internet?). Type or paste the coordinates and the
+      heading instead; everything else works the same.</div>
+  </main>
+</div>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const ID_RE = /^[A-Za-z0-9_-]{1,23}$/;
+let mode = 'pos', map = null, stationMarker = null, headingLine = null;
+const others = {};
+
+function setMode(m) {
+  mode = m;
+  $('modePos').classList.toggle('on', m === 'pos');
+  $('modeHdg').classList.toggle('on', m === 'hdg');
+}
+function msg(text, kind) { const el = $('msg'); el.textContent = text; el.className = kind || ''; }
+function num(v) { const s = String(v).trim(); return s === '' ? NaN : Number(s); }
+function bearing(lat1, lon1, lat2, lon2) {
+  const r = Math.PI / 180, p1 = lat1 * r, p2 = lat2 * r, dl = (lon2 - lon1) * r;
+  const y = Math.sin(dl) * Math.cos(p2), x = Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dl);
+  return (Math.atan2(y, x) / r + 360) % 360;
+}
+function destination(lat, lon, brg, m) {
+  const r = Math.PI / 180, d = m / 6371000, b = brg * r, p1 = lat * r, l1 = lon * r;
+  const p2 = Math.asin(Math.sin(p1) * Math.cos(d) + Math.cos(p1) * Math.sin(d) * Math.cos(b));
+  const l2 = l1 + Math.atan2(Math.sin(b) * Math.sin(d) * Math.cos(p1), Math.cos(d) - Math.sin(p1) * Math.sin(p2));
+  return [p2 / r, ((l2 / r + 540) % 360) - 180];
+}
+function position() {
+  const lat = num($('lat').value), lon = num($('lon').value);
+  return (isFinite(lat) && isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180) ? [lat, lon] : null;
+}
+function setPosition(lat, lon, pan) {
+  $('lat').value = Number(lat).toFixed(6);
+  $('lon').value = Number(lon).toFixed(6);
+  redraw(pan);
+}
+function redraw(pan) {
+  if (!map) return;
+  const p = position();
+  if (!p) { if (stationMarker) { map.removeLayer(stationMarker); stationMarker = null; } }
+  else if (!stationMarker) {
+    // A CSS pin, not Leaflet's default image marker: nothing more to fetch from the CDN
+    const pin = L.divIcon({ className: 'pin', iconSize: [18, 18], iconAnchor: [9, 9] });
+    stationMarker = L.marker(p, { draggable: true, title: 'station (drag to adjust)', icon: pin }).addTo(map);
+    stationMarker.on('dragend', () => { const ll = stationMarker.getLatLng(); setPosition(ll.lat, ll.lng, false); });
+  } else stationMarker.setLatLng(p);
+  if (headingLine) { map.removeLayer(headingLine); headingLine = null; }
+  const h = num($('heading').value);
+  if (p && isFinite(h)) {
+    headingLine = L.polyline([p, destination(p[0], p[1], h, 150)], { color: '#c2410c', weight: 3, dashArray: '6 6' })
+      .bindTooltip('face N ' + Math.round(h) + '°', { permanent: true, direction: 'right' }).addTo(map);
+  }
+  if (p && pan) map.setView(p, Math.max(map.getZoom(), 17));
+}
+
+function initMap() {
+  if (typeof L === 'undefined') { $('map').style.display = 'none'; $('offline').style.display = 'block'; return; }
+  map = L.map('map').setView([20, 0], 2);
+  const osm = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' });
+  const sat = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    { maxZoom: 19, attribution: 'Imagery &copy; Esri' });
+  osm.addTo(map);
+  L.control.layers({ 'Map': osm, 'Satellite': sat }).addTo(map);
+  map.on('click', ev => {
+    if (mode === 'pos') {
+      setPosition(ev.latlng.lat, ev.latlng.lng, false);
+      msg('Position set. Now click the direction face N points (or type the heading).');
+      setMode('hdg');
+    } else {
+      const p = position();
+      if (!p) { msg('Set the station position first.', 'err'); setMode('pos'); return; }
+      $('heading').value = Math.round(bearing(p[0], p[1], ev.latlng.lat, ev.latlng.lng)) % 360;
+      redraw(false);
+      msg('Heading set from the map.');
+    }
+  });
+}
+
+async function loadStations() {
+  try {
+    const r = await fetch('/api/stations');
+    const j = await r.json();
+    const sel = $('existing');
+    for (const s of j.stations || []) {
+      const o = document.createElement('option');
+      o.value = s.node_id; o.textContent = s.node_id;
+      sel.appendChild(o);
+      others[s.node_id] = s;
+      const lat = num(s.lat), lon = num(s.lon);
+      if (map && isFinite(lat) && isFinite(lon)) {
+        L.circleMarker([lat, lon], { radius: 6, color: '#5d6678' }).bindTooltip(s.node_id).addTo(map);
+      }
+    }
+    if (j.current && others[j.current]) { sel.value = j.current; pick(j.current); }
+    else if (j.current) $('nodeId').value = j.current;
+  } catch (e) { msg('Could not read stations.ini: ' + e, 'err'); }
+}
+function pick(id) {
+  const s = others[id];
+  if (!s) { $('nodeId').value = ''; return; }
+  $('nodeId').value = s.node_id;
+  $('heading').value = s.heading || 0;
+  if (isFinite(num(s.lat)) && isFinite(num(s.lon))) setPosition(s.lat, s.lon, true);
+}
+
+$('existing').addEventListener('change', e => pick(e.target.value));
+$('modePos').addEventListener('click', () => setMode('pos'));
+$('modeHdg').addEventListener('click', () => setMode('hdg'));
+['lat', 'lon', 'heading'].forEach(k => $(k).addEventListener('input', () => redraw(false)));
+$('paste').addEventListener('input', e => {
+  const m = String(e.target.value).match(/(-?\d{1,3}(?:\.\d+)?)\s*[, ]\s*(-?\d{1,3}(?:\.\d+)?)/);
+  if (!m) return;
+  const lat = Number(m[1]), lon = Number(m[2]);
+  if (Math.abs(lat) <= 90 && Math.abs(lon) <= 180) { setPosition(lat, lon, true); msg('Position taken from the pasted text.'); }
+});
+$('here').addEventListener('click', () => {
+  if (!navigator.geolocation) { msg('This browser has no location.', 'err'); return; }
+  msg('Asking the browser for your location...');
+  navigator.geolocation.getCurrentPosition(
+    p => { setPosition(p.coords.latitude, p.coords.longitude, true);
+           msg('Position from this device, ±' + Math.round(p.coords.accuracy) + ' m.'); },
+    e => msg('No location: ' + e.message, 'err'), { enableHighAccuracy: true, timeout: 20000 });
+});
+$('save').addEventListener('click', async () => {
+  const nodeId = $('nodeId').value.trim(), p = position();
+  let h = num($('heading').value || '0');
+  if (!ID_RE.test(nodeId)) { msg('Node id: 1-23 letters, digits, _ or -.', 'err'); return; }
+  if (!p) { msg('Set the station position (latitude -90..90, longitude -180..180).', 'err'); return; }
+  if (!isFinite(h) || h < 0 || h > 360) { msg('Heading: 0 to 359 degrees.', 'err'); return; }
+  $('save').disabled = true;
+  try {
+    const r = await fetch('/api/save', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ node_id: nodeId, lat: p[0].toFixed(6), lon: p[1].toFixed(6), heading: Math.round(h) % 360 }) });
+    const j = await r.json();
+    if (!r.ok) { msg(j.error || ('error ' + r.status), 'err'); $('save').disabled = false; return; }
+    msg('Saved [env:' + j.env + '] to stations.ini.\n\nBack in VS Code: refresh PROJECT TASKS, then under ' + j.env +
+        ' run Platform > Erase Flash and General > Upload. You can close this tab.', 'ok');
+    $('cancel').disabled = true;
+  } catch (e) { msg('Save failed: ' + e, 'err'); $('save').disabled = false; }
+});
+$('cancel').addEventListener('click', async () => {
+  try { await fetch('/api/cancel', { method: 'POST' }); } catch (e) {}
+  msg('Closed without saving. You can close this tab.');
+  $('save').disabled = true; $('cancel').disabled = true;
+});
+
+initMap();
+loadStations();
+</script>
+</body>
+</html>

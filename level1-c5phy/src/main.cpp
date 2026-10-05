@@ -55,6 +55,19 @@
 #include "sector_switch.h"
 #include "switch_bits.h"
 
+// Surveyed position (optional, from STATION_LAT / STATION_LON: see config.h)
+#if defined(STATION_LAT) != defined(STATION_LON)
+#error "Set both STATION_LAT and STATION_LON, or neither (Station setup writes both)"
+#endif
+#if defined(STATION_LAT)
+static_assert(STATION_LAT >= -90.0 && STATION_LAT <= 90.0, "STATION_LAT must be -90..90 degrees");
+static_assert(STATION_LON >= -180.0 && STATION_LON <= 180.0, "STATION_LON must be -180..180 degrees");
+#define STATION_HAS_POS 1
+#else
+#define STATION_HAS_POS 0
+#endif
+static_assert(STATION_POS_EVERY >= 1, "STATION_POS_EVERY must be 1 or more");
+
 // =============================================================================
 // Identity and state
 // =============================================================================
@@ -75,6 +88,7 @@ static unsigned s_seq = 0;
 static float    s_nf_level_min = 1e9f;  // quietest sector level this sweep
 static float    s_nf_dbm = RSSI_CAL_DBM_AT_NOISE + RSSI_CAL_OFFSET_DB - RF_FRONTEND_GAIN_DB;
 static uint32_t s_last_hb_usb = 0, s_last_hb_mesh = 0;
+static uint32_t s_mesh_hb = 0;          // mesh heartbeats sent: the position rides on some of them
 static uint32_t s_led_off_at = 0;
 static const float s_az[SECTOR_COUNT] = SECTOR_AZIMUTH_DEG;
 
@@ -418,18 +432,34 @@ static void send_heartbeat(bool usb, bool mesh)
     h.uptime_s = millis() / 1000;
     h.seq = s_seq;
     char buf[USB_JSON_MAX];
+#if STATION_HAS_POS
+    h.lat = STATION_LAT;
+    h.lon = STATION_LON;
+#endif
+    h.has_pos = STATION_HAS_POS;                    // USB: every heartbeat
     if (usb && report_heartbeat_json(buf, sizeof(buf), &h, 1) > 0) usb_println(buf);
-    if (mesh && report_heartbeat_json(buf, MESH_JSON_MAX + 1, &h, 0) > 0) mesh_enqueue(buf);
+    if (mesh) {
+        // Mesh: the first 3 after boot, then every STATION_POS_EVERY-th. A mapper keeps
+        // the position once it has it, and the 191-byte line has no room for it in every
+        // heartbeat without pushing out uptime and temperature.
+        h.has_pos = STATION_HAS_POS && (s_mesh_hb < 3 || s_mesh_hb % STATION_POS_EVERY == 0);
+        s_mesh_hb++;
+        if (report_heartbeat_json(buf, MESH_JSON_MAX + 1, &h, 0) > 0) mesh_enqueue(buf);
+    }
 }
 
 static void print_ready_line()
 {
+    char pos[48] = "";
+#if STATION_HAS_POS
+    snprintf(pos, sizeof(pos), ",\"lat\":%.6f,\"lon\":%.6f", (double)STATION_LAT, (double)STATION_LON);
+#endif
     usb_printf("{\"info\":\"c5phy v3 station ready\",\"node_id\":\"%s\",\"receiver\":\"%s\",\"hw\":\"%s\","
-               "\"channels\":%d,\"sectors\":%d,\"heading\":%d,\"fe_gain_db\":%.1f,"
+               "\"channels\":%d,\"sectors\":%d,\"heading\":%d%s,\"fe_gain_db\":%.1f,"
                "\"threshold_dbm\":%.1f,\"threshold_level_db\":%.1f,\"q_min\":%d,\"peak_pick\":%d,"
                "\"video\":%d,\"bw40\":%d,\"gain_max\":%d,\"window_us\":%d,\"iq_lane_bits\":%d,"
                "\"mesh_uart\":\"D4 TX / D5 RX 115200\",\"phy_set_freq\":%s,\"rf\":%s}",
-               s_node_id, FIRMWARE_RECEIVER, FIRMWARE_HW, fpv_channel_count(), SECTOR_COUNT, STATION_HEADING_DEG,
+               s_node_id, FIRMWARE_RECEIVER, FIRMWARE_HW, fpv_channel_count(), SECTOR_COUNT, STATION_HEADING_DEG, pos,
                (double)RF_FRONTEND_GAIN_DB, (double)threshold_dbm(), (double)DETECT_LEVEL_DB, Q_MIN, PEAK_PICK,
                VIDEO_CHECK, rf_bw40() ? 1 : 0, GAIN_MAX, (int)(IQ_WINDOW_BYTES * 1000000ULL / IQ_SAMPLE_RATE_HZ),
                demod_lane_bits(), rf_has_phy_set_freq() ? "true" : "false", s_rf_ok ? "true" : "false");

@@ -21,6 +21,14 @@ pio run -e seeed_xiao_esp32c5 -t upload
 pio run -e seeed_xiao_esp32c5 -t monitor    # 115200
 ```
 
+That is the generic bench build. A deployed station is flashed from its own
+environment in `stations.ini` (`pio run -e RX01 -t erase`, `... -t upload`),
+which sets `NODE_ID`, `STATION_LAT`/`STATION_LON` and `STATION_HEADING_DEG` from
+its `custom_*` options; `tools/station.py` checks them and provides the
+"Station setup (map)" task that writes the file
+(`pio run -e seeed_xiao_esp32c5 -t station_setup`). See the main README,
+"Station location and heading".
+
 Boot mode if the board will not connect: hold BOOT, tap RESET, release BOOT.
 
 ## Pins (XIAO ESP32-C5, GPIO numbers of the Arduino variant)
@@ -89,8 +97,13 @@ Mesh (Serial1 to the Heltec, <= 191 bytes, at most one per emitter per
 Heartbeat every 60 s on USB (120 s on the mesh) with `"heartbeat":true`,
 `node_id`, `receiver`, `heading`, `sweeps`, `tune_fail`, `cap_err`, `bus_stuck`,
 `alias_drop`, `nf_dbm`, `temp_c`, `uptime_s` (the USB copy adds `usb_drop`,
-`mesh_drop` and the thresholds). The mapper registers a station from its first
-heartbeat. `NODE_ID` may use letters, digits and `_ - . :`; anything else is
+`mesh_drop` and the thresholds). A station built with `STATION_LAT`/`STATION_LON`
+adds `"lat"` and `"lon"` (6 decimals) right after `heading`: in every USB
+heartbeat, and in the mesh heartbeat on the first three after boot and then every
+`STATION_POS_EVERY`-th (5, i.e. 10 min). On those mesh heartbeats the position
+outranks the tail, so `uptime_s`, `temp_c` and the counters may drop out of that
+line. The mapper registers a station from its first heartbeat and places it at
+the reported position until one is set by hand. `NODE_ID` may use letters, digits and `_ - . :`; anything else is
 dropped from it, and an empty result falls back to the MAC-derived id. `heading` in the heartbeat and `station_heading` in the detection
 line are the installer's note of the face-N heading; the drone's own course
 is never known to a level 1 station.

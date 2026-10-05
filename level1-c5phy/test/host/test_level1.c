@@ -357,6 +357,30 @@ static void test_report(void)
     printf("JSON_USB %s\n", usb);
     printf("JSON_MESH %s\n", mesh);
     CHECK(n3 > 0 && n4 > 0 && n4 <= 191, "heartbeat json");
+    CHECK(!strstr(usb, "\"lat\"") && !strstr(mesh, "\"lat\""), "no position unless the station has one");
+
+    /* Flashed position (STATION_LAT / STATION_LON): both fields, 6 decimals, right
+     * after the heading, in the USB line and in the mesh line; in the mesh line it
+     * outranks the tail, even for a long NODE_ID and a month of counters. */
+    char usb_nopos[640], mesh_nopos[192];
+    strcpy(usb_nopos, usb); strcpy(mesh_nopos, mesh);
+    h.has_pos = 1; h.lat = 33.4942; h.lon = -111.9261;
+    int n5 = report_heartbeat_json(usb, sizeof(usb), &h, 1);
+    int n6 = report_heartbeat_json(mesh, sizeof(mesh), &h, 0);
+    printf("JSON_USB %s\n", usb);
+    printf("JSON_MESH %s\n", mesh);
+    CHECK(n5 > 0 && strstr(usb, "\"heading\":0,\"lat\":33.494200,\"lon\":-111.926100,"), "usb heartbeat position");
+    CHECK(n6 > 0 && n6 <= 191 && strstr(mesh, "\"heading\":0,\"lat\":33.494200,\"lon\":-111.926100,"), "mesh heartbeat position (%d)", n6);
+    h.node_id = "STATION-NORTH-TOWER-01"; h.lat = -89.999999; h.lon = -179.999999;
+    h.sweeps = 1296000; h.uptime_s = 2592000; h.video_seen = 1234; h.cap_err = 12; h.alias_drop = 3;
+    int n7 = report_heartbeat_json(mesh, sizeof(mesh), &h, 0);
+    printf("JSON_MESH %s\n", mesh);
+    CHECK(n7 > 0 && n7 <= 191 && strstr(mesh, "\"lat\":-89.999999,\"lon\":-179.999999"), "mesh position survives a long node id (%d)", n7);
+    h.has_pos = 0; h.node_id = "RX01"; h.lat = h.lon = 0;
+    h.sweeps = 1830; h.uptime_s = 3600; h.video_seen = 7; h.cap_err = 0; h.alias_drop = 0;
+    report_heartbeat_json(usb, sizeof(usb), &h, 1);
+    report_heartbeat_json(mesh, sizeof(mesh), &h, 0);
+    CHECK(strcmp(usb, usb_nopos) == 0 && strcmp(mesh, mesh_nopos) == 0, "without a position the lines are unchanged");
 }
 
 /* The price of three lanes per component: level above the noise reference and

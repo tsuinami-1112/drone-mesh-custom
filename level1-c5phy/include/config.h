@@ -29,6 +29,17 @@
                                    to bearing_deg. The mapper rotates bearings by the
                                    station heading it holds (pre-filled from this). */
 #endif
+/* STATION_LAT / STATION_LON: the station's surveyed position, WGS84 degrees
+ * (e.g. 33.494200 / -111.926100). Optional: define both or neither. When set,
+ * the heartbeat carries them and every mapper places the station by itself
+ * (shown as "auto"); a position saved by hand in a mapper overrides it there.
+ * Normally set through the "Station setup (map)" PlatformIO task, which writes
+ * custom_station_lat / custom_station_lon into stations.ini; see the README. */
+#ifndef STATION_POS_EVERY
+#define STATION_POS_EVERY 5     /* mesh heartbeats: position on the first 3 after boot, then
+                                   every 5th (10 min). The 191-byte mesh line has no room for
+                                   it in every heartbeat without dropping uptime and temp. */
+#endif
 #ifndef RF_COUNTRY_CC
 #define RF_COUNTRY_CC "US"      /* regulatory table used for the 5 GHz bootstrap centres */
 #endif

@@ -8,6 +8,10 @@
 # ── PlatformIO build artifacts ─────────────────────────────
 .pio/
 
+# ── Station positions (written by "Station setup (map)") ───
+level1-c5phy/stations.ini
+level1-c5phy/stations.ini.tmp
+
 # ── Host unit tests of the station firmware ────────────────
 level1-c5phy/test/host/test_level1
 level1-c5phy/test/host/json_samples.txt

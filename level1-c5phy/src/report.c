@@ -166,6 +166,11 @@ int report_heartbeat_json(char* out, size_t cap, const HeartbeatReport* h, int f
         json_add(&j, "\"channels\":%d", h->channels);
         json_add(&j, "\"sectors\":%d", h->sectors);
         json_add(&j, "\"heading\":%d", h->heading);
+        if (h->has_pos) {
+            char pos[48];
+            int n = snprintf(pos, sizeof(pos), "\"lat\":%.6f,\"lon\":%.6f", h->lat, h->lon);
+            if (n > 0 && n < (int)sizeof(pos)) json_add(&j, "%s", pos);
+        }
         json_add(&j, "\"threshold_dbm\":%.1f", (double)h->threshold_dbm);
         json_add(&j, "\"threshold_level_db\":%.1f", (double)h->threshold_level_db);
         json_add(&j, "\"video_seen\":%d", h->video_seen);
@@ -187,6 +192,13 @@ int report_heartbeat_json(char* out, size_t cap, const HeartbeatReport* h, int f
     }
     json_add(&j, "\"hw\":\"%s\"", h->hw);
     json_add(&j, "\"heading\":%d", h->heading);
+    /* The position outranks the counters: on the heartbeats that carry it the
+     * tail (uptime, temperature, counters) is what gives way. Both or neither. */
+    if (h->has_pos) {
+        char pos[48];
+        int n = snprintf(pos, sizeof(pos), "\"lat\":%.6f,\"lon\":%.6f", h->lat, h->lon);
+        if (n > 0 && n < (int)sizeof(pos)) json_add(&j, "%s", pos);
+    }
     json_add(&j, "\"scanning\":%s", h->scanning ? "true" : "false");
     json_add(&j, "\"sweeps\":%u", h->sweeps);
     json_add(&j, "\"video_seen\":%d", h->video_seen);

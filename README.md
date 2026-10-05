@@ -15,6 +15,7 @@
   <a href="#wiring">Wiring</a> ·
   <a href="#antenna-sectors-how-the-switch-lines-cycle">Antenna sectors</a> ·
   <a href="#software-setup">Software setup</a> ·
+  <a href="#station-location-and-heading">Station location</a> ·
   <a href="#flashing">Flashing</a> ·
   <a href="#mesh-home-station-and-mapper">Mesh and mapper</a> ·
   <a href="#bring-up-checklist">Bring-up</a> ·
@@ -402,30 +403,165 @@ In VS Code, **File → Open Folder…** and open `level1-c5phy` itself (Platform
 only activates in a folder with a `platformio.ini`). The first open downloads the
 pioarduino ESP32 platform and toolchain, several hundred MB; let it finish.
 
-### 3. Per-station settings
+### 3. Settings
 
-Every tunable is in [`include/config.h`](level1-c5phy/include/config.h) and can be
-overridden in `platformio.ini`'s `build_flags`. The ones to set per station:
+**Per station:** the node id, position and heading. Each station gets its own
+environment in `stations.ini`, written by the Station setup task; see
+[Station location and heading](#station-location-and-heading). There's nothing
+to edit for them here.
+
+**Shared by every station:** everything else is in
+[`include/config.h`](level1-c5phy/include/config.h) and can be overridden in
+`platformio.ini`'s `build_flags`. The station environments inherit those flags.
 
 ```ini
 build_flags =
     -std=gnu++17
     -DCORE_DEBUG_LEVEL=0
-    -DNODE_ID='"RX01"'              ; unique per station; letters, digits and _ - . :
-    -DSTATION_HEADING_DEG=0         ; true-north heading of face N, as installed
     -DRF_COUNTRY_CC='"US"'          ; regulatory table used for tuning: the deployment country
     ; -DSECTOR_SWITCH_TABLE='{0x0,0x1,0x2,0x3}'   ; only if your switch or cabling needs it (see above)
 ```
 
 | Setting | Default | What it does |
 |---|---|---|
-| `NODE_ID` | `""`, which becomes 4 hex digits of the MAC (`A1B2`) | The station's key in the mapper and in every report. Keep the quotes exactly as shown |
-| `STATION_HEADING_DEG` | `0` | Reported in the boot line and heartbeat; **not** applied to `bearing_deg`. The mapper uses it as the station's heading until you set one by hand |
+| `custom_node_id` (stations.ini) | MAC-derived (`A1B2`) | Becomes `NODE_ID`: the station's key in the mapper and in every report |
+| `custom_station_lat`, `custom_station_lon` (stations.ini) | none | Become `STATION_LAT`/`STATION_LON`: sent in the heartbeat, so every mapper places the station |
+| `custom_station_heading` (stations.ini) | `0` | Becomes `STATION_HEADING_DEG`: true-north heading of face N. Sent in the heartbeat, **not** applied to `bearing_deg`; the mapper rotates the bearings by it |
 | `RF_COUNTRY_CC` | `"US"` | If the heartbeat shows `tune_fail` > 0, check this first |
 | `SECTOR_SWITCH_TABLE` | `{0x0,0x1,0x2,0x3}` | See [Antenna sectors](#antenna-sectors-how-the-switch-lines-cycle) |
 | `RF_FRONTEND_GAIN_DB` | `0` | Leave at 0 and calibrate with the LNA in place. Set 20 only to carry a calibration taken without the LNA over to a station that has one |
 | `RSSI_CAL_*`, `BEARING_K_DEG_PER_DB`, `DETECT_LEVEL_DB`, `RF_NOISE_POWER` | uncalibrated | From bench stages 1, 5 and 6 |
 | `C5PHY_MAX_MHZ` | `5945` | `5885` drops R8/E6/E7/E8 if stage 2 shows the synthesizer can't reach them |
+
+---
+
+## Station location and heading
+
+A station only measures a bearing relative to its own face N. To draw that
+bearing on the map and cross it with other stations' bearings, the mapper needs
+two things for every station:
+
+| What | Why | Example |
+|---|---|---|
+| **Position** | Where the station's bearing ray starts | `33.494200, -111.926100` |
+| **Heading of face N** | Turns "32° from face N" into a compass bearing. True north, degrees clockwise | `15` |
+
+The heading matters more than the position. A position 20 m off moves a ray by
+at most 20 m, but a heading 5° off swings it by about 87 m at 1 km and 175 m at
+2 km.
+
+### Give every station a NODE_ID
+
+The `NODE_ID` is the station's name in every report, and the key every mapper
+stores its position against. Pick a short one (`RX01`, `NORTH2`: letters, digits,
+`_` and `-`, up to 23 characters) and write it on the box. Short matters,
+because it rides in every 191-byte mesh line.
+
+Without one, the firmware uses 4 hex digits of the XIAO's MAC address. Avoid that
+for a fleet, for two reasons:
+
+- swapping the XIAO gives the station a new id, so it shows up as a new,
+  unplaced station;
+- two boards can end up with the same id (about 2 % odds across 50 stations).
+
+### Recommended: flash it with Station setup
+
+Flash the position and heading into the station, and every mapper that hears it
+places it by itself. Nothing has to be entered on any mapper.
+
+1. **Open Station setup.** In VS Code: PlatformIO sidebar → **PROJECT TASKS →
+   seeed_xiao_esp32c5 → Custom → Station setup (map)**. From a terminal:
+   `pio run -e seeed_xiao_esp32c5 -t station_setup`. A page with a map opens in
+   your browser; if it doesn't, the terminal prints its address.
+2. **Enter the node id,** or pick an existing station from the list to change it.
+3. **Set the position.** Use one of:
+   - click where the station stands on the map (drag the pin to adjust);
+   - paste coordinates, e.g. copied from Google Maps;
+   - **Use my location** while standing at the station.
+4. **Set the heading.** Switch to **Face N direction** and click a point that the
+   N patch faces. The **Satellite** layer (top right) helps line it up with a road
+   or roof edge. Or type the heading.
+5. **Save.** The station is written to `level1-c5phy/stations.ini` as its own
+   build environment, e.g. `[env:RX01]`, and the task ends.
+6. **Flash that station.** Refresh PROJECT TASKS (the ↻ button at the top of the
+   PlatformIO sidebar, or reload the window); `RX01` is now its own entry. Run
+   **RX01 → Platform → Erase Flash**, then **RX01 → General → Upload**. From a
+   terminal: `pio run -e RX01 -t erase && pio run -e RX01 -t upload`.
+7. **Check the boot line** in the serial monitor:
+   `{"info":"c5phy v3 station ready","node_id":"RX01",…,"heading":15,"lat":33.494200,"lon":-111.926100,…}`.
+
+The station now sends its position in its heartbeat: on every USB heartbeat, and
+over the mesh on the first three after boot, then every 10 minutes (the 191-byte
+mesh line has no room for it every time). A mapper that starts later picks it up
+within 10 minutes. In the LEVEL 1 STATIONS panel the station appears placed, with
+**auto** next to its position and heading. This needs the current mapper from
+`level2-main`.
+
+About `stations.ini`:
+
+- It holds one environment per station. Station setup writes it; you can also
+  edit it by hand. [`stations.example.ini`](level1-c5phy/stations.example.ini)
+  shows the format.
+- The values are checked at build time. A wrong one stops the build with a
+  plain message: a lone latitude, 95° north, a space in the node id.
+- It records where your stations are, so it is **not committed** (it's in
+  `.gitignore`). Keep your own backup, or share it privately with whoever
+  flashes stations.
+
+### Getting good numbers
+
+- **Position:** a click on the satellite layer, the location of a phone or laptop
+  at the station (the page shows its accuracy), or a GPS reading. A few metres is
+  plenty.
+- **Heading from the map:** click a point straight out from face N, lining it up
+  with something visible on the satellite layer.
+- **Heading from a compass:**
+  - stand behind the box, sight along the axis of the N patch, and read the
+    bearing, away from metal and the solar panel;
+  - a compass reads *magnetic* north, so add your local magnetic declination
+    (east is positive). For example, compass 5° + declination 10° E = heading
+    15°. NOAA's [declination calculator](https://www.ngdc.noaa.gov/geomag/calculators/magcalc.shtml)
+    gives it for any place.
+- **Check it:** put a VTX at a known spot and see that the station's ray passes
+  through it. If it misses by a constant angle, correct the heading by that
+  angle.
+
+### Without flashing: the mapper panel
+
+For a station flashed without a location, or for a quick test, set it in the
+mapper's **LEVEL 1 STATIONS** panel:
+
+- type the latitude and longitude, or press **PLACE** and click the map, or
+  **HERE** (this browser's location), then **SAVE**;
+- type the heading in the same row.
+
+This is stored only in that mapper's `stations.json`. With several mappers,
+repeat it on each one, or copy `stations.json` between them (a mapper reads it
+when it starts).
+
+### Which value a mapper uses
+
+| Situation | Position the mapper uses |
+|---|---|
+| Station flashed with a position, nothing saved in this mapper | The flashed one, marked **auto** |
+| A position saved by hand in this mapper | The hand-set one, even after the station is reflashed |
+| Both position fields cleared in the panel, then **SAVE** | Back to the flashed one |
+| Not flashed and not set | None: the station's bearings are not drawn or used |
+
+The heading works the same way, except that clearing it doesn't bring the
+flashed one back. To return a station fully to its flashed values, press **DEL**
+in the panel; it registers again from its next heartbeat.
+
+### Moving or replacing a station
+
+- **Moved:**
+  1. Run Station setup, pick the station, move the pin (and the heading),
+     Save, then reflash it.
+  2. Mappers follow by themselves, unless someone set its position by hand on a
+     mapper. Clear it there.
+- **Replacing the XIAO:** flash the new board from the same environment. It
+  comes up with the same `NODE_ID`, position and heading, and the mappers
+  notice nothing.
 
 ---
 
@@ -447,6 +583,11 @@ pio run -e seeed_xiao_esp32c5 -t monitor    # 3. serial console, 115200
 In VS Code: PlatformIO sidebar → **PROJECT TASKS → seeed_xiao_esp32c5** →
 **Platform → Erase Flash**, then **General → Upload**, then **General → Monitor**.
 
+`seeed_xiao_esp32c5` is the generic build, with no node id or location: use it on
+the bench. For a station you deploy, run the same steps under its own
+environment (e.g. **RX01**, or `pio run -e RX01 -t erase` …), created by
+[Station setup](#station-location-and-heading).
+
 - Use a USB-C **data** cable. A charge-only cable never shows a port.
 - If the board won't connect: hold **BOOT**, tap **RESET**, release **BOOT**, and
   run the task again. Press RESET when the upload finishes.
@@ -458,8 +599,10 @@ In VS Code: PlatformIO sidebar → **PROJECT TASKS → seeed_xiao_esp32c5** →
 On a good boot the first line is:
 
 ```json
-{"info":"c5phy v3 station ready","node_id":"RX01","receiver":"c5phy","hw":"v3","channels":40,"sectors":4,"heading":0,...,"phy_set_freq":true,"rf":true}
+{"info":"c5phy v3 station ready","node_id":"RX01","receiver":"c5phy","hw":"v3","channels":40,"sectors":4,"heading":15,"lat":33.494200,"lon":-111.926100,...,"phy_set_freq":true,"rf":true}
 ```
+
+(`lat`/`lon` appear only on a station flashed with its position.)
 
 `"rf":true` means the PHY is held receive-only and the I/Q reader is running.
 `"rf":false` comes after an `{"info":"error","stage":...,"call":...,"err":...}`
@@ -507,10 +650,10 @@ Open the mapper (`http://localhost:5000`) and pick the serial port: the home
 station's XIAO, or on the bench a level 1 station's XIAO directly. Then:
 
 1. Each station registers itself from its first heartbeat and appears in the
-   **LEVEL 1 STATIONS** panel.
-2. Set each station's **position** there (type it in or click the map) and its
-   **heading of face N** (true north, degrees clockwise). The heading starts out
-   as the station's `STATION_HEADING_DEG` until you set it by hand.
+   **LEVEL 1 STATIONS** panel, under its `NODE_ID`.
+2. A station flashed with its location appears placed, marked **auto**. For any
+   other station, set its position and heading in the panel. Both are covered in
+   [Station location and heading](#station-location-and-heading).
 3. Bearings show as rays from the station with a ±σ wedge. When two or more
    placed stations report the same emitter within 30 s and their rays cross at
    more than 8°, the mapper puts a position fix with an error circle where they
@@ -591,6 +734,11 @@ The full contract (every field, the mesh line, the heartbeat) is in
 | No reports over the mesh | Heltec serial settings (pins, TEXTMSG, 115200), power saving on, D4/D5 crossed the wrong way, or no common ground |
 | Station never appears in the mapper | Home station or mapper older than the current `level2-main`, or no heartbeat reaching the mapper |
 | Reports arrive but no position fix | Station positions not set, only one station hears it, or the rays are within 8° of parallel |
+| A flashed station shows "position not set" | The mapper is older than the current `level2-main`; the station was flashed from `seeed_xiao_esp32c5` rather than its own environment (check the boot line for `lat`); or, over the mesh only, wait up to 10 min for a heartbeat that carries the position |
+| A mapper ignores a station's new position after reflashing | Its position was saved by hand on that mapper. Clear both position fields and SAVE (see [which value wins](#which-value-a-mapper-uses)) |
+| Station setup shows no map | No internet for the map tiles: type or paste the coordinates and the heading; everything else works |
+| A new station's environment isn't in PROJECT TASKS | Refresh PROJECT TASKS (↻ at the top of the PlatformIO sidebar) or reload the window |
+| Build stops with `station settings: …` | A value in `stations.ini` is wrong; the message names it |
 
 ---
 
@@ -598,7 +746,10 @@ The full contract (every field, the mesh line, the heartbeat) is in
 
 ```
 level1-c5phy/                       Level 1 station firmware (PlatformIO, env seeed_xiao_esp32c5)
-  platformio.ini                    build flags: NODE_ID, heading, country, calibration
+  platformio.ini                    the generic build, shared flags (country, calibration)
+  stations.example.ini              format of stations.ini: one environment per station (stations.ini itself is not committed)
+  tools/station.py                  custom_* station options -> defines; the "Station setup (map)" task
+  tools/station_setup.html          the map page Station setup opens
   include/config.h                  every tunable: pins, switch table, thresholds, calibration
   src/main.cpp                      sweep, sector measurement, video check, reports, bench console
   src/sector_switch.cpp             drives the SP4T control lines from SECTOR_SWITCH_TABLE

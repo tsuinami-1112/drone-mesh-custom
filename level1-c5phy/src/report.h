@@ -29,6 +29,8 @@ typedef struct {
     const char* receiver;
     const char* hw;
     int scanning, channels, sectors, heading;
+    int has_pos;              /* 1: add "lat"/"lon" after "heading" (STATION_LAT/LON) */
+    double lat, lon;
     float threshold_dbm, threshold_level_db;
     int video_seen, gain_max, bw40;
     float fe_gain_db;
