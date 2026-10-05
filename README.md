@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/img/trailer.svg" width="768" alt="Pixel-art trailer. Over a night city, solar-powered detector stations on the rooftops are joined by a glowing mesh, under the words countersurveillance, 24/7. A drone arrives and the rings of its broadcast reach the stations that can hear it. One station is opened up: its XIAO ESP32-S3 decodes the broadcast into one line of JSON and its Heltec V4 puts it on the LoRa mesh. The packets hop to the home station, which keeps the first copy and drops the rest, and the mapper shows the drone, its pilot and its path on an offline map. Then a day goes by in a few seconds while the stations keep watching.">
+</p>
+
 # <div align="center">**Drone Mesh Mapper**</div>
 
 <div align="center">
@@ -14,8 +18,6 @@
 [Flashing](#build-and-flash-the-firmware) ·
 [Quick Start](#quick-start) ·
 [Reference](docs/REFERENCE.md)
-
-<img src="eye.png" alt="Drone Detection Eye" style="width:50%; height:25%;">
 
 </div>
 
