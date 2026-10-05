@@ -22,7 +22,8 @@
  *   ?            status           h R3 | h 5732   hold a channel
  *   s 0..3       sector           g 30 | g a      fixed / automatic gain
  *   v            video check on the held channel   x   resume scanning
- *   t <bits>     drive the switch control lines directly (stage 6 truth table)
+ *   t 100 | t 1  drive the switch control lines directly while holding (stage 6 truth
+ *                table); a V1V2V3 pattern or a number 0..7, kept until s or x
  *   STATUS / WATCHDOG_RESET   answered with a heartbeat (mesh-mapper.py sends it)
  *
  * All signal processing is in demod.c / bearing.c / report.c, which are plain
@@ -52,6 +53,7 @@
 #include "c5phy_rf.h"
 #include "iq_capture.h"
 #include "sector_switch.h"
+#include "switch_bits.h"
 
 // =============================================================================
 // Identity and state
@@ -64,6 +66,7 @@ static bool     s_rf_ok = false;
 static int      s_hold_ch = -1;         // channel index held by the bench console
 static int      s_hold_sector = 0;
 static int      s_hold_gain = -1;       // -1 = automatic
+static bool     s_switch_raw = false;   // bench 't': the control lines hold a raw pattern, not s_hold_sector
 static int      s_gain = GAIN_MAX;      // PHY gain index currently applied
 
 static uint32_t s_sweeps = 0, s_tune_fail = 0, s_video_seen = 0, s_bus_stuck = 0, s_alias_drop = 0;
@@ -507,13 +510,16 @@ static void run_sweep()
 static void print_status()
 {
     const FpvChannel* c = s_hold_ch >= 0 ? fpv_channel(s_hold_ch) : nullptr;
+    char pattern[SWITCH_PIN_COUNT + 1];
+    switch_format_bits(pattern, sizeof(pattern), switch_bits(), SWITCH_PIN_COUNT);
     usb_printf("{\"info\":\"status\",\"node_id\":\"%s\",\"mode\":\"%s\",\"rf\":%s,\"rf_error\":\"%s\","
-               "\"ch\":\"%c%d\",\"freq_mhz\":%u,\"wifi_ch\":%u,\"sector\":%d,\"gain\":%d,\"gain_mode\":\"%s\",\"bw40\":%d,"
+               "\"ch\":\"%c%d\",\"freq_mhz\":%u,\"wifi_ch\":%u,\"sector\":%d,\"switch\":\"%s\",\"switch_raw\":%d,\"gain\":%d,\"gain_mode\":\"%s\",\"bw40\":%d,"
                "\"captures\":%u,\"cap_err\":%u,\"cap_err_last\":\"%s\",\"bus_stuck\":%u,\"alias_drop\":%u,\"tune_fail\":%u,\"sweeps\":%u,\"video_seen\":%u,"
                "\"nf_dbm\":%.0f,\"usb_drop\":%u,\"mesh_drop\":%u,\"mesh_queued\":%d,\"heap\":%u,\"uptime_s\":%u}",
                s_node_id, s_mode == MODE_SCAN ? "scan" : "hold", s_rf_ok ? "true" : "false", s_rf_ok ? "" : rf_last_call(),
                c ? c->band : '-', c ? c->number : 0, rf_freq_mhz(), rf_wifi_channel(),
-               s_mode == MODE_HOLD ? s_hold_sector : switch_current(), s_gain, s_hold_gain >= 0 ? "fixed" : "auto",
+               s_switch_raw ? -1 : (s_mode == MODE_HOLD ? s_hold_sector : switch_current()), pattern, s_switch_raw ? 1 : 0,
+               s_gain, s_hold_gain >= 0 ? "fixed" : "auto",
                rf_bw40() ? 1 : 0, iq_capture_count(), iq_capture_errors(), iq_capture_last_error(), s_bus_stuck, s_alias_drop, s_tune_fail, s_sweeps,
                s_video_seen, (double)s_nf_dbm, s_usb_drop, s_mesh_drop, s_mesh_count,
                (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), millis() / 1000);
@@ -536,7 +542,7 @@ static void hold_channel(const char* arg)
     s_hold_ch = idx;
     delay(TUNE_SETTLE_MS);
     usb_printf("{\"info\":\"hold\",\"ch\":\"%c%d\",\"freq_mhz\":%u,\"wifi_ch\":%u,\"sector\":%d}",
-               c->band, c->number, c->freq_mhz, rf_wifi_channel(), s_hold_sector);
+               c->band, c->number, c->freq_mhz, rf_wifi_channel(), s_switch_raw ? -1 : s_hold_sector);
 }
 
 static void bench_video()
@@ -546,7 +552,7 @@ static void bench_video()
     VideoResult w[VIDEO_WINDOWS];
     int cfo = 0;
     int gain = s_hold_gain >= 0 ? s_hold_gain : s_gain;
-    video_check(s_hold_ch, s_hold_sector, gain, &v, &cfo, w);
+    video_check(s_hold_ch, s_switch_raw ? -1 : s_hold_sector, gain, &v, &cfo, w);   // -1: leave a 't' pattern on the lines
     // Eight window records are ~95 bytes each: the verdict goes on one line, the
     // windows on a second one, each bounded (snprintf returns the length it
     // wanted, never past the buffer; n is clamped so the tail stays in range).
@@ -580,13 +586,21 @@ static void handle_command(char* line)
     case '?': print_status(); break;
     case 'h': case 'H': hold_channel(arg); break;
     case 's': case 'S': {
-        if (!*arg) { usb_printf("{\"info\":\"sector\",\"sector\":%d,\"name\":\"%s\"}", s_hold_sector, switch_sector_name(s_hold_sector)); break; }
+        char pattern[SWITCH_PIN_COUNT + 1];
+        if (!*arg) {
+            switch_format_bits(pattern, sizeof(pattern), switch_sector_bits(s_hold_sector), SWITCH_PIN_COUNT);
+            usb_printf("{\"info\":\"sector\",\"sector\":%d,\"name\":\"%s\",\"pattern\":\"%s\",\"switch_raw\":%d}",
+                       s_hold_sector, switch_sector_name(s_hold_sector), pattern, s_switch_raw ? 1 : 0);
+            break;
+        }
         char* end = nullptr;
         int s = (int)strtol(arg, &end, 10);
         if (end == arg || s < 0 || s >= SECTOR_COUNT) { usb_println("{\"info\":\"error\",\"cmd\":\"s\",\"err\":\"sector 0..3\"}"); break; }
         s_hold_sector = s;
+        s_switch_raw = false;           // back from a 't' pattern to the sector table
         switch_select(s);
-        usb_printf("{\"info\":\"sector\",\"sector\":%d,\"name\":\"%s\"}", s, switch_sector_name(s));
+        switch_format_bits(pattern, sizeof(pattern), switch_bits(), SWITCH_PIN_COUNT);
+        usb_printf("{\"info\":\"sector\",\"sector\":%d,\"name\":\"%s\",\"pattern\":\"%s\"}", s, switch_sector_name(s), pattern);
         break;
     }
     case 'g': case 'G':
@@ -604,14 +618,29 @@ static void handle_command(char* line)
         s_mode = MODE_SCAN;
         s_hold_ch = -1;
         s_hold_gain = -1;
+        s_switch_raw = false;           // the sweep selects every sector itself
         usb_println("{\"info\":\"scan\",\"scanning\":true}");
         break;
     case 't': case 'T': {
-        char* end = nullptr;
-        uint32_t bits = (uint32_t)strtoul(arg, &end, 0);
-        if (!*arg || end == arg) { usb_println("{\"info\":\"error\",\"cmd\":\"t\",\"err\":\"t <bits>, e.g. t 5\"}"); break; }
+        /* Drive the control lines with a raw pattern and keep it there: the bench
+         * line, 'v' and '?' use and report it until 's' or 'x'. While scanning
+         * every sector is re-selected at once, so a pattern needs a held channel
+         * (or a radio that never started, where nothing else drives the lines). */
+        uint32_t bits = 0;
+        if (switch_parse_bits(arg, SWITCH_PIN_COUNT, &bits) != 0) {
+            usb_printf("{\"info\":\"error\",\"cmd\":\"t\",\"err\":\"t <pattern|number>: %d characters of 0/1 in pin order "
+                       "(t 100 = first line high), or 0..%u (t 1, t 0x3)\"}", SWITCH_PIN_COUNT, (1u << SWITCH_PIN_COUNT) - 1u);
+            break;
+        }
+        if (s_rf_ok && s_mode == MODE_SCAN) {
+            usb_println("{\"info\":\"error\",\"cmd\":\"t\",\"err\":\"hold a channel first (h R3): the sweep re-selects every sector\"}");
+            break;
+        }
+        s_switch_raw = true;
         switch_set_raw(bits);
-        usb_printf("{\"info\":\"switch\",\"bits\":%u}", bits);
+        char pattern[SWITCH_PIN_COUNT + 1];
+        switch_format_bits(pattern, sizeof(pattern), switch_bits(), SWITCH_PIN_COUNT);
+        usb_printf("{\"info\":\"switch\",\"bits\":%u,\"pattern\":\"%s\",\"held\":true}", switch_bits(), pattern);
         break;
     }
     case 'b': case 'B':
@@ -620,7 +649,7 @@ static void handle_command(char* line)
         usb_printf("{\"info\":\"bw40\",\"bw40\":%d}", rf_bw40() ? 1 : 0);
         break;
     default:
-        usb_println("{\"info\":\"help\",\"cmds\":\"? status | h R3|5732 hold | s 0-3 sector | g 30|a gain | v video | x scan | t <bits> switch | b 0|1 bw40\"}");
+        usb_println("{\"info\":\"help\",\"cmds\":\"? status | h R3|5732 hold | s 0-3 sector | g 30|a gain | v video | x scan | t 100|t 1 switch lines | b 0|1 bw40\"}");
     }
 }
 
@@ -659,7 +688,7 @@ static void hold_service()
         if (rf_tune(held->freq_mhz) != ESP_OK) { s_tune_fail++; return; }
         delay(TUNE_SETTLE_MS);
     }
-    switch_select(s_hold_sector);
+    if (!s_switch_raw) switch_select(s_hold_sector);     // a 't' pattern stays until 's' or 'x'
     IqMetrics m;
     int g = s_gain;
     if (!measure_window(s_hold_gain >= 0 ? s_hold_gain : GAIN_MAX, s_hold_gain < 0, &m, &g)) {
@@ -668,10 +697,12 @@ static void hold_service()
     }
     float level = level_from(m, g);
     const FpvChannel* c = fpv_channel(s_hold_ch);
-    usb_printf("{\"info\":\"bench\",\"ch\":\"%c%d\",\"freq_mhz\":%u,\"wifi_ch\":%u,\"sector\":%d,\"gain\":%d,"
+    char pattern[SWITCH_PIN_COUNT + 1];
+    switch_format_bits(pattern, sizeof(pattern), switch_bits(), SWITCH_PIN_COUNT);
+    usb_printf("{\"info\":\"bench\",\"ch\":\"%c%d\",\"freq_mhz\":%u,\"wifi_ch\":%u,\"sector\":%d,\"switch\":\"%s\",\"gain\":%d,"
                "\"level_db\":%.1f,\"rssi_dbm\":%.1f,\"p_mean\":%.2f,\"q_phase\":%.0f,\"clip\":%.1f,\"cfo_khz\":%.0f,"
                "\"mod\":%d,\"noise\":%d,\"stuck\":%d,\"step_std\":%.1f,\"nf_dbm\":%.0f,\"captures\":%u,\"cap_err\":%u}",
-               c->band, c->number, c->freq_mhz, rf_wifi_channel(), s_hold_sector, g,
+               c->band, c->number, c->freq_mhz, rf_wifi_channel(), s_switch_raw ? -1 : s_hold_sector, pattern, g,
                (double)level, (double)dbm_from_level(level), (double)m.p_mean, (double)m.q_phase_pct, (double)m.clip_pct,
                (double)m.cfo_khz, m.mod, m.noise, m.stuck, (double)m.step_std_deg, (double)s_nf_dbm, iq_capture_count(), iq_capture_errors());
 }

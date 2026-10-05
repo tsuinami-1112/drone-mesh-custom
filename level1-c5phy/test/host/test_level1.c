@@ -12,6 +12,7 @@
 #include "bearing.h"
 #include "report.h"
 #include "fpv_channels.h"
+#include "switch_bits.h"
 
 #define FS 40.0e6
 #define N  16384
@@ -257,6 +258,48 @@ static void test_channels(void)
     CHECK(fpv_wifi_top_centre_mhz() == 5885, "top centre 5885");
 }
 
+/* The bench `t` argument: V1V2V3 patterns (first character = bit 0 = D8) or a
+ * number 0..7. The old strtoul(base 0) read "100" as decimal 100 (only D7 high
+ * after masking) and "010" as octal 8 (nothing high). */
+static void test_switch_bits(void)
+{
+    uint32_t b = 99;
+    CHECK(switch_parse_bits("100", 3, &b) == 0 && b == 0x1, "100 = V1 only (got %u)", b);
+    CHECK(switch_parse_bits("010", 3, &b) == 0 && b == 0x2, "010 = V2 only (got %u)", b);
+    CHECK(switch_parse_bits("001", 3, &b) == 0 && b == 0x4, "001 = V3 only (got %u)", b);
+    CHECK(switch_parse_bits("110", 3, &b) == 0 && b == 0x3, "110 = V1 V2 (got %u)", b);
+    CHECK(switch_parse_bits("000", 3, &b) == 0 && b == 0x0, "000");
+    CHECK(switch_parse_bits("111", 3, &b) == 0 && b == 0x7, "111");
+    CHECK(switch_parse_bits("0", 3, &b) == 0 && b == 0, "number 0");
+    CHECK(switch_parse_bits("1", 3, &b) == 0 && b == 1, "number 1");
+    CHECK(switch_parse_bits("5", 3, &b) == 0 && b == 5, "number 5");
+    CHECK(switch_parse_bits("7", 3, &b) == 0 && b == 7, "number 7");
+    CHECK(switch_parse_bits("0x3", 3, &b) == 0 && b == 3, "hex 0x3");
+    CHECK(switch_parse_bits("0X7", 3, &b) == 0 && b == 7, "hex 0X7");
+    CHECK(switch_parse_bits("8", 3, &b) != 0, "8 out of range");
+    CHECK(switch_parse_bits("10", 3, &b) != 0, "10 out of range, not truncated");
+    CHECK(switch_parse_bits("1000", 3, &b) != 0, "four digits refused");
+    CHECK(switch_parse_bits("0x8", 3, &b) != 0, "hex out of range");
+    CHECK(switch_parse_bits("0xf", 3, &b) != 0, "hex digit past the range");
+    CHECK(switch_parse_bits("07", 3, &b) != 0, "octal refused");
+    CHECK(switch_parse_bits("-1", 3, &b) != 0, "sign refused");
+    CHECK(switch_parse_bits("1a", 3, &b) != 0, "trailing characters refused");
+    CHECK(switch_parse_bits("0x", 3, &b) != 0 && switch_parse_bits("", 3, &b) != 0, "empty");
+    CHECK(switch_parse_bits("10", 2, &b) == 0 && b == 0x1, "two-line pattern");
+    CHECK(switch_parse_bits("4294967296", 31, &b) != 0, "no overflow");
+    char s[8];
+    switch_format_bits(s, sizeof s, 0x1, 3); CHECK(strcmp(s, "100") == 0, "format 0x1 -> 100 (%s)", s);
+    switch_format_bits(s, sizeof s, 0x3, 3); CHECK(strcmp(s, "110") == 0, "format 0x3 -> 110 (%s)", s);
+    switch_format_bits(s, sizeof s, 0x4, 3); CHECK(strcmp(s, "001") == 0, "format 0x4 -> 001 (%s)", s);
+    switch_format_bits(s, 3, 0x7, 3);        CHECK(strcmp(s, "11") == 0, "format truncates to the buffer (%s)", s);
+    for (uint32_t v = 0; v < 8; v++) {
+        uint32_t back = 99;
+        switch_format_bits(s, sizeof s, v, 3);
+        CHECK(switch_parse_bits(s, 3, &back) == 0 && back == v, "round trip %u -> %s -> %u", v, s, back);
+    }
+    printf("switch bits: 100->0x1 010->0x2 001->0x4 110->0x3, 0..7 and 0x0..0x7 accepted, out-of-range/octal refused\n");
+}
+
 static void test_report(void)
 {
     char mac[18], basic[32], fp[32];
@@ -378,6 +421,7 @@ int main(void)
     run_suite(3);
     test_bearing();
     test_channels();
+    test_switch_bits();
     test_report();
     sensitivity_table();
     printf(g_fail ? "\n%d FAILURE(S)\n" : "\nALL TESTS PASSED\n", g_fail);

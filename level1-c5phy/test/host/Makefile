@@ -2,13 +2,13 @@
 CC      ?= gcc
 CFLAGS  ?= -std=gnu11 -O2 -Wall -Wextra -Wno-unused-parameter
 SRC     = ../../src
-OBJS    = $(SRC)/demod.c $(SRC)/bearing.c $(SRC)/report.c $(SRC)/fpv_channels.c
+OBJS    = $(SRC)/demod.c $(SRC)/bearing.c $(SRC)/report.c $(SRC)/fpv_channels.c $(SRC)/switch_bits.c
 
 all: test_level1
 	./test_level1 > json_samples.txt; st=$$?; cat json_samples.txt; test $$st -eq 0
 	python3 check_json.py json_samples.txt
 
-test_level1: test_level1.c $(OBJS) $(SRC)/demod.h $(SRC)/bearing.h $(SRC)/report.h $(SRC)/fpv_channels.h
+test_level1: test_level1.c $(OBJS) $(SRC)/demod.h $(SRC)/bearing.h $(SRC)/report.h $(SRC)/fpv_channels.h $(SRC)/switch_bits.h
 	$(CC) $(CFLAGS) -I$(SRC) -I../../include -o $@ test_level1.c $(OBJS) -lm
 
 clean:
