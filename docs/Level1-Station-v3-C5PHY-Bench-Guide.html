@@ -116,13 +116,13 @@
 
     <table class="meta">
       <tr><td class="k">Document</td><td class="v"><code>docs/Level1-Station-v3-C5PHY-Bench-Guide.html</code></td><td class="k">Firmware</td><td class="v"><code>level1-c5phy/</code></td></tr>
-      <tr><td class="k">Branch</td><td class="v"><code>level1</code></td><td class="k">Date</td><td class="v">2026-10-03</td></tr>
+      <tr><td class="k">Branch</td><td class="v"><code>level1</code></td><td class="k">Date</td><td class="v">2026-10-05</td></tr>
       <tr><td class="k">Status</td><td class="v"><b>Firmware builds and links (Arduino core 3.3.12 / ESP-IDF 5.5.5) — nothing bench validated</b></td><td class="k">Station</td><td class="v"><span class="bl w"></span></td></tr>
     </table>
 
     <h3>Signal chain at a glance</h3>
     <div class="diagram">
-    <svg viewBox="0 0 688 152" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Signal chain: four patches, SP4T switch, optional LNA and band-pass filter, XIAO ESP32-C5 receiver, Heltec V3 to the mesh; solar power feeding the 5 V rail">
+    <svg viewBox="0 0 688 152" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Signal chain: four patches, SP4T switch, optional LNA and band-pass filter, XIAO ESP32-C5 receiver, Heltec V4 to the mesh; solar power feeding the 5 V rail">
       <defs>
         <marker id="s_rf" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0.5 L8,4 L0,7.5 Z" fill="#1f8a7a"/></marker>
         <marker id="s_lg" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0.5 L8,4 L0,7.5 Z" fill="#24272b"/></marker>
@@ -160,7 +160,7 @@
       <line class="lg" x1="580" y1="56" x2="598" y2="56" marker-end="url(#s_lg)"/>
       <!-- Heltec -->
       <rect class="box" x="599" y="30" width="66" height="52"/>
-      <text class="b" x="632" y="48" font-size="8" text-anchor="middle">Heltec V3</text>
+      <text class="b" x="632" y="48" font-size="8" text-anchor="middle">Heltec V4</text>
       <text x="632" y="60" font-size="7" text-anchor="middle">Meshtastic</text>
       <text x="632" y="71" font-size="6.5" text-anchor="middle">JSON ≤ 191 B</text>
       <line class="lg" x1="665" y1="56" x2="686" y2="56" marker-end="url(#s_lg)"/>
@@ -188,9 +188,9 @@
       <tr><td class="n">4</td><td>SMA bulkhead feedthroughs</td><td>one per enclosure face</td><td class="c"><span class="cb"></span></td><td class="n">$8</td></tr>
           <tr><td class="n">1</td><td>u.FL–u.FL pigtail</td><td>switch common → XIAO, ≤ 5 cm</td><td class="c"><span class="cb"></span></td><td class="n">$2</td></tr>
       <tr><td class="n">1</td><td>LNA + band-pass filter (optional)</td><td><span class="opt">Optional</span>5.8 GHz, ~20 dB, 3.3/5 V</td><td class="c"><span class="cb"></span></td><td class="n">$12</td></tr>
-      <tr><td class="n">1</td><td>Heltec LoRa 32 V3</td><td>Meshtastic, TEXTMSG 115200</td><td class="c"><span class="cb"></span></td><td class="n">$20</td></tr>
+      <tr><td class="n">1</td><td>Heltec WiFi LoRa 32 V4</td><td>Meshtastic, TEXTMSG 115200, RX 47 / TX 48</td><td class="c"><span class="cb"></span></td><td class="n">$20</td></tr>
       <tr><td class="n">1</td><td>Solar panel</td><td>20 W, 18 V nominal</td><td class="c"><span class="cb"></span></td><td class="n">$25</td></tr>
-      <tr><td class="n">1</td><td>Charger / power manager</td><td>MPPT, 5 V / 1 A out</td><td class="c"><span class="cb"></span></td><td class="n">$15</td></tr>
+      <tr><td class="n">1</td><td>Charger / power manager</td><td>MPPT, 5 V out, ≥ 1.5 A</td><td class="c"><span class="cb"></span></td><td class="n">$15</td></tr>
       <tr><td class="n">4</td><td>18650 Li-ion</td><td>3500 mAh, 1S4P ≈ 50 Wh</td><td class="c"><span class="cb"></span></td><td class="n">$24</td></tr>
       <tr><td class="n">1</td><td>IP65 enclosure + brackets</td><td>≈200×150×100 mm, 10–15° wedge</td><td class="c"><span class="cb"></span></td><td class="n">$28</td></tr>
       <tr><td class="n">—</td><td>Passives</td><td>2 kΩ ×3, 100 nF ×2, 1000 µF</td><td class="c"><span class="cb"></span></td><td class="n">$2</td></tr>
@@ -200,7 +200,7 @@
 
     <div class="callout"><p><b>Before you start:</b> nothing in this station has run on hardware yet. The receiver is the C5's Wi-Fi PHY driven through undocumented calls that the C5VRX project proved on ESP-IDF 6.0; this firmware re-implements them on the fleet's Arduino/ESP-IDF 5.5 toolchain. The procedure on sheets 6–8 is ordered so that each stage proves the next one is worth doing: receiver alive, channel coverage, selectivity, video (NTSC then PAL), sensitivity against an RX5808 station, then the switch and the pattern. Two rules that are easy to break: the six I/Q lane pads (D0, D1, D2, D3, D6, D10) must stay unconnected, and every flash starts with a full erase. Full BOM on sheet 5.</p></div>
   </div>
-  <div class="foot"><span>drone-mesh-5plus · level1 · 2026-10-03 · firmware builds and links, nothing bench validated</span><span>Page 1 of 8</span></div>
+  <div class="foot"><span>drone-mesh-5plus · level1 · 2026-10-05 · firmware builds and links, nothing bench validated</span><span>Page 1 of 8</span></div>
 </section>
 
 <!-- ===================================================== SHEET 2 — FULL BLOCK DIAGRAM -->
@@ -246,7 +246,7 @@
       <text class="b" x="190" y="58" font-size="7.3" text-anchor="middle">SP4T RF switch</text>
       <text x="190" y="69" font-size="6.2" text-anchor="middle">SKY13322-375LF /</text>
       <text x="190" y="78" font-size="6.2" text-anchor="middle">PE42442 · 0.1–6 GHz</text>
-      <text x="190" y="88" font-size="6.2" text-anchor="middle">IL ≈ 0.5 dB · 3.3 V logic</text>
+      <text x="190" y="88" font-size="6.2" text-anchor="middle">IL ≈ 2 dB at 5.8 GHz · 3.3 V logic</text>
       <text x="190" y="98" font-size="6.2" text-anchor="middle">switch settle &lt; 1 µs</text>
       <text class="rf" x="190" y="122" font-size="6" text-anchor="middle">RF common</text>
       <line class="rf" x1="240" y1="88" x2="261" y2="88" marker-end="url(#b_rf)"/>
@@ -311,10 +311,10 @@
 
       <!-- Heltec -->
       <rect class="box" x="622" y="136" width="66" height="62"/>
-      <text class="b" x="655" y="148" font-size="6.4" text-anchor="middle">Heltec LoRa 32 V3</text>
+      <text class="b" x="655" y="148" font-size="6.4" text-anchor="middle">Heltec LoRa 32 V4</text>
       <text x="655" y="159" font-size="5.8" text-anchor="middle">Meshtastic, TEXTMSG</text>
       <text class="m" x="655" y="170" font-size="5.6" text-anchor="middle">name = NODE_ID</text>
-      <text class="pw" x="655" y="182" font-size="5.8" text-anchor="middle">5 V · ~80 mA</text>
+      <text class="pw" x="655" y="182" font-size="5.8" text-anchor="middle">5 V · 0.75 A TX peak</text>
       <text x="655" y="193" font-size="5.8" text-anchor="middle">JSON ≤ 191 B</text>
       <line class="lg" x1="595" y1="172" x2="621" y2="172" marker-start="url(#b_lgs)" marker-end="url(#b_lg)"/>
       <text x="608" y="160" font-size="5.4" text-anchor="middle">UART</text>
@@ -330,8 +330,8 @@
       <text x="110" y="268" font-size="5.8" text-anchor="middle">south-facing, 30–45° tilt</text>
       <rect class="box" x="196" y="236" width="126" height="40"/>
       <text class="b" x="259" y="248" font-size="6.8" text-anchor="middle">Charger / power manager</text>
-      <text x="259" y="258" font-size="5.8" text-anchor="middle">MPPT Li-ion, 5 V / 1 A out</text>
-      <text x="259" y="268" font-size="5.8" text-anchor="middle">(e.g. DFRobot DFR0559)</text>
+      <text x="259" y="258" font-size="5.8" text-anchor="middle">MPPT Li-ion, 5 V out ≥ 1.5 A</text>
+      <text x="259" y="268" font-size="5.8" text-anchor="middle">(V4 TX bursts 750 mA)</text>
       <rect class="box" x="358" y="236" width="100" height="40"/>
       <text class="b" x="408" y="248" font-size="6.8" text-anchor="middle">Battery</text>
       <text x="408" y="258" font-size="5.8" text-anchor="middle">4 × 18650 3500 mAh</text>
@@ -369,8 +369,8 @@
       <tr><td>Switch V1</td><td>XIAO</td><td><code>D8</code></td><td class="n">8</td><td>2 kΩ series</td><td class="c"><span class="cb"></span></td></tr>
       <tr><td>Switch V2</td><td>XIAO</td><td><code>D9</code></td><td class="n">9</td><td>2 kΩ series</td><td class="c"><span class="cb"></span></td></tr>
       <tr><td>Switch V3</td><td>XIAO</td><td><code>D7</code></td><td class="n">12</td><td>2 kΩ series; spare if the switch decodes 2 lines</td><td class="c"><span class="cb"></span></td></tr>
-      <tr><td>XIAO TX</td><td>Heltec RX</td><td><code>D4</code></td><td class="n">23</td><td>UART 115200 — the same pins as every station tier</td><td class="c"><span class="cb"></span></td></tr>
-      <tr><td>XIAO RX</td><td>Heltec TX</td><td><code>D5</code></td><td class="n">24</td><td>UART 115200</td><td class="c"><span class="cb"></span></td></tr>
+      <tr><td>XIAO TX</td><td>Heltec V4 GPIO47 (Meshtastic RX)</td><td><code>D4</code></td><td class="n">23</td><td>UART 115200 — the same pins as every station tier</td><td class="c"><span class="cb"></span></td></tr>
+      <tr><td>XIAO RX</td><td>Heltec V4 GPIO48 (Meshtastic TX)</td><td><code>D5</code></td><td class="n">24</td><td>UART 115200</td><td class="c"><span class="cb"></span></td></tr>
       <tr><td>Patches N/E/S/W</td><td>Switch RF1–4</td><td>—</td><td class="n">—</td><td><b>equal-length coax</b> ≤ 15 cm</td><td class="c"><span class="cb"></span></td></tr>
       <tr><td>Switch common</td><td>XIAO U.FL</td><td>—</td><td class="n">—</td><td>u.FL–u.FL ≤ 5 cm; the stock antenna comes off</td><td class="c"><span class="cb"></span></td></tr>
       <tr><td>Switch common</td><td>LNA IN</td><td>—</td><td class="n">—</td><td><span class="opt">Optional</span>u.FL–u.FL or SMA pigtail ≤ 5 cm</td><td class="c"><span class="cb"></span></td></tr>
@@ -387,7 +387,7 @@
 
     <div class="callout"><p><b>GPIO numbers are from the Arduino core's <code>XIAO_ESP32C5</code> variant</b> (<code>config.h</code>); wire by the D-labels. D4 = GPIO23 / D5 = GPIO24 is corroborated by C5VRX's DAC on D4–D9 = GPIO 23, 24, 11, 12, 8, 9. The I/Q lanes are GPIO 1, 0, 25 (Q7–Q9) and 7, 10, 11 (I7–I9): six of C5VRX's eight, the bit-6 lanes and the underside GPIO2–5 pads left out so the eleven top-side pins hold lanes, UART and switch; the firmware reads the missing bit as the midpoint (<code>IQ_LANE_BITS</code>; measure <code>RF_NOISE_POWER</code> in this mode, stage 1). Each MODEM_DIAG bit is driven out through its pad and read back from it, so a load on a lane pad corrupts the samples.</p></div>
   </div>
-  <div class="foot"><span>drone-mesh-5plus · level1 · 2026-10-03 · firmware builds and links, nothing bench validated</span><span>Page 2 of 8</span></div>
+  <div class="foot"><span>drone-mesh-5plus · level1 · 2026-10-05 · firmware builds and links, nothing bench validated</span><span>Page 2 of 8</span></div>
 </section>
 
 <!-- ===================================================== SHEET 3 — SECTOR LAYOUT AND RECEIVER -->
@@ -475,7 +475,7 @@ hit = level[best] &gt;= 8 dB and q[best] &gt;= 40 %</pre>
     </table>
     <p class="cap"><code>demod.c</code>, <code>bearing.c</code> and <code>report.c</code> are plain C, unit-tested on a desktop with synthetic 4-bit I/Q (<code>test/host</code>, <code>make</code>).</p>
   </div>
-  <div class="foot"><span>drone-mesh-5plus · level1 · 2026-10-03 · firmware builds and links, nothing bench validated</span><span>Page 3 of 8</span></div>
+  <div class="foot"><span>drone-mesh-5plus · level1 · 2026-10-05 · firmware builds and links, nothing bench validated</span><span>Page 3 of 8</span></div>
 </section>
 
 <!-- ===================================================== SHEET 4 — VIDEO CHECK AND SERIAL OUTPUT -->
@@ -496,7 +496,7 @@ hit = level[best] &gt;= 8 dB and q[best] &gt;= 40 %</pre>
     <p class="small">A window counts with ≥ 2 consecutive periods and a sync score ≥ 70 (width closeness 0–40 + period closeness 0–60); the carrier is video when ≥ 3 of 8 windows count. <code>sync_q</code> is the share of windows that counted. The <b>field rate is not measured</b> (a 410 µs window never sees a vertical interval): <code>field_hz</code> is the nominal 50/60 of the detected standard. The fingerprint <code>fp</code> is <code>&lt;video&gt;/&lt;sync_hz&gt;/&lt;freq_peak&gt;</code>, e.g. <code>NTSC/15736/5734</code>, where <code>freq_peak</code> is the tuned frequency plus the measured carrier offset — no synthesizer sweep needed.</p>
 
     <h3>Expected serial output</h3>
-    <p>Boot line on USB at 115200. <code>"rf":true</code> is the PHY receive-only and the PARLIO reader running; <code>false</code> is followed by an <code>{"info":"error",…}</code> line naming the failed call. The bench console (<code>?</code> status, <code>h R3</code> / <code>h 5732</code> hold, <code>s 0–3</code> sector, <code>g 30</code> / <code>g a</code> gain, <code>v</code> video check, <code>t &lt;bits&gt;</code> drive the switch lines, <code>b 0|1</code> analog filter BW20/BW40, <code>x</code> resume) prints <code>{"info":"bench",…}</code> lines with <code>level_db</code>, <code>rssi_dbm</code>, <code>gain</code>, <code>p_mean</code>, <code>q_phase</code>, <code>clip</code>, <code>cfo_khz</code>, <code>mod</code>, <code>noise</code>, <code>step_std</code>, <code>nf_dbm</code>.</p>
+    <p>Boot line on USB at 115200. <code>"rf":true</code> is the PHY receive-only and the PARLIO reader running; <code>false</code> is followed by an <code>{"info":"error",…}</code> line naming the failed call. The bench console (<code>?</code> status, <code>h R3</code> / <code>h 5732</code> hold, <code>s 0–3</code> sector, <code>g 30</code> / <code>g a</code> gain, <code>v</code> video check, <code>t 100</code> drive the switch lines while holding, <code>b 0|1</code> analog filter BW20/BW40, <code>x</code> resume) prints <code>{"info":"bench",…}</code> lines with <code>level_db</code>, <code>rssi_dbm</code>, <code>gain</code>, <code>p_mean</code>, <code>q_phase</code>, <code>clip</code>, <code>cfo_khz</code>, <code>mod</code>, <code>noise</code>, <code>step_std</code>, <code>nf_dbm</code>.</p>
 <pre class="code">{"info":"c5phy v3 station ready","node_id":"A1B2","receiver":"c5phy","hw":"v3","channels":40,"sectors":4,"heading":0,"fe_gain_db":0.0,"threshold_dbm":-87.0,"threshold_level_db":8.0,"q_min":40,"peak_pick":1,"video":1,"bw40":1,"gain_max":62,"window_us":409,"iq_lane_bits":3,"mesh_uart":"D4 TX / D5 RX 115200","phy_set_freq":true,"rf":true}</pre>
     <p>Detection line on USB, one per hit per sweep — the v2 contract with <code>receiver</code>/<code>hw</code> changed and diagnostics added:</p>
 <pre class="code">{"type":"analog_fm","receiver":"c5phy","hw":"v3","mac":"AF:00:52:03:16:64","freq_mhz":5732,"band":"R","ch":3,"rssi":-68,"rssi_dbm":-68.1,"rssi_raw":536,"rssi_min":-70,"rssi_max":-66,"rssi_n":3,"level_db":26.9,"gain":50,"q_phase":71,"cfo_khz":1840,"carrier":"fm","sectors":[-68.1,-74.4,-91.0,-85.2],"sector":0,"bearing_deg":32,"bearing_sigma_deg":15,"station_heading":0,"freq_peak":5734,"video":"NTSC","sync_hz":15736,"field_hz":60,"sync_q":88,"sync_score":91,"video_windows":8,"fp":"NTSC/15736/5734","basic_id":"5.8G-R3-5732MHz","node_id":"RX01","seq":42}</pre>
@@ -507,7 +507,7 @@ hit = level[best] &gt;= 8 dB and q[best] &gt;= 40 %</pre>
 
     <div class="callout"><p><code>rssi</code> is dBm like every other station tier; <code>rssi_raw</code> is the 10-bit RX5808-style value of the v2 contract. <code>bearing_deg</code> is relative to the box's face N — the mapper rotates it by the station heading set in its LEVEL 1 STATIONS panel, where each station's position is also set; two stations' crossing bearings give a position fix with an error radius. A station registers itself in the mapper from its first heartbeat. <code>tune_fail</code> counts channels the regulatory table refused, <code>cap_err</code> failed I/Q captures, <code>nf_dbm</code> the station's own noise-floor estimate from the quietest sector of the last sweep.</p></div>
   </div>
-  <div class="foot"><span>drone-mesh-5plus · level1 · 2026-10-03 · firmware builds and links, nothing bench validated</span><span>Page 4 of 8</span></div>
+  <div class="foot"><span>drone-mesh-5plus · level1 · 2026-10-05 · firmware builds and links, nothing bench validated</span><span>Page 4 of 8</span></div>
 </section>
 
 <!-- ===================================================== SHEET 5 — FULL BILL OF MATERIALS -->
@@ -522,7 +522,7 @@ hit = level[best] &gt;= 8 dB and q[best] &gt;= 40 %</pre>
       <tr><th class="n">#</th><th style="width:27%">Part</th><th class="n">Qty</th><th>Notes</th><th class="c">✓</th><th class="n">≈ $</th></tr>
       <tr><td class="n">1</td><td>Seeed XIAO ESP32-C5</td><td class="n">1</td><td>Receiver and MCU; only its U.FL port carries RF, the stock antenna is not used.</td><td class="c"><span class="cb"></span></td><td class="n">10</td></tr>
       <tr><td class="n">2</td><td>5.8 GHz patch, 8 dBi, ~70°, SMA</td><td class="n">4</td><td>Linear is polarisation-agnostic (−3 dB vs RHCP); RHCP +3 dB common case, −20 dB on LHCP. One batch, never mixed.</td><td class="c"><span class="cb"></span></td><td class="n">32</td></tr>
-      <tr><td class="n">3</td><td>SP4T RF switch, 0.1–6 GHz, 3.3 V control</td><td class="n">1</td><td>SKY13322-375LF or PE42442: ~0.5 dB loss, sub-µs. Check control lines and truth table; eval board first (~$40).</td><td class="c"><span class="cb"></span></td><td class="n">3</td></tr>
+      <tr><td class="n">3</td><td>SP4T RF switch, 0.1–6 GHz, 3.3 V control</td><td class="n">1</td><td>PE42442 (2/3-line decoded, drives directly) or SKY13322-375LF (4-line one-hot: needs a 3-input NOR for V4, see the README): ~2 dB loss at 5.8 GHz, sub-µs. Check control lines and truth table; eval board first (~$40).</td><td class="c"><span class="cb"></span></td><td class="n">3</td></tr>
       <tr><td class="n">4</td><td>u.FL–SMA pigtails, equal length ≤ 15 cm</td><td class="n">4</td><td>Matched length keeps sector losses matched — the bearing depends on it.</td><td class="c"><span class="cb"></span></td><td class="n">8</td></tr>
       <tr><td class="n">5</td><td>u.FL–u.FL pigtail ≤ 5 cm</td><td class="n">1</td><td>Switch common port to the XIAO's U.FL. Shortest run. Two with the LNA (switch → LNA IN, LNA OUT → XIAO).</td><td class="c"><span class="cb"></span></td><td class="n">2</td></tr>
       <tr><td class="n">6</td><td>SMA bulkhead feedthroughs</td><td class="n">4</td><td>One per enclosure face.</td><td class="c"><span class="cb"></span></td><td class="n">8</td></tr>
@@ -532,9 +532,9 @@ hit = level[best] &gt;= 8 dB and q[best] &gt;= 40 %</pre>
     <h3>MCU, mesh, power, mechanical</h3>
     <table class="tight">
       <tr><th class="n">#</th><th style="width:27%">Part</th><th class="n">Qty</th><th>Notes</th><th class="c">✓</th><th class="n">≈ $</th></tr>
-      <tr><td class="n">8</td><td>Heltec WiFi LoRa 32 V3 + antenna</td><td class="n">1</td><td>Meshtastic, TEXTMSG 115200, node name = <code>NODE_ID</code>; D4/D5 as on every tier.</td><td class="c"><span class="cb"></span></td><td class="n">20</td></tr>
+      <tr><td class="n">8</td><td>Heltec WiFi LoRa 32 V4 + antenna</td><td class="n">1</td><td>Meshtastic, TEXTMSG 115200, serial RX 47 / TX 48, node name = <code>NODE_ID</code>; D4/D5 as on every tier. Standard OLED model (the TFT model uses GPIO47/48). Fit the antenna before powering: it transmits at up to 28 dBm.</td><td class="c"><span class="cb"></span></td><td class="n">20</td></tr>
       <tr><td class="n">9</td><td>Solar panel 20 W, 18 V</td><td class="n">1</td><td>South-facing, 30–45° tilt. 10 W covers summer only.</td><td class="c"><span class="cb"></span></td><td class="n">25</td></tr>
-      <tr><td class="n">10</td><td>MPPT charger, 5 V / 1 A out</td><td class="n">1</td><td>DFRobot DFR0559 or Waveshare Solar Power Manager.</td><td class="c"><span class="cb"></span></td><td class="n">15</td></tr>
+      <tr><td class="n">10</td><td>MPPT charger, 5 V out, ≥ 1.5 A</td><td class="n">1</td><td>Must carry the Heltec V4's 750 mA transmit bursts on top of the ~0.2 A the rest of the station draws; a 1 A output is marginal.</td><td class="c"><span class="cb"></span></td><td class="n">15</td></tr>
       <tr><td class="n">11</td><td>18650 Li-ion 3500 mAh, 1S4P holder</td><td class="n">4</td><td>≈ 50 Wh. Protected cells or a BMS board.</td><td class="c"><span class="cb"></span></td><td class="n">24</td></tr>
       <tr><td class="n">12</td><td>1000 µF low-ESR cap at the Heltec</td><td class="n">1</td><td>LoRa TX bursts.</td><td class="c"><span class="cb"></span></td><td class="n">1</td></tr>
       <tr><td class="n">13</td><td>IP65 enclosure ≈ 200×150×100 mm</td><td class="n">1</td><td>Patches on the four vertical faces at 0/90/180/270°, tilted 10–15° up.</td><td class="c"><span class="cb"></span></td><td class="n">15</td></tr>
@@ -553,7 +553,7 @@ hit = level[best] &gt;= 8 dB and q[best] &gt;= 40 %</pre>
 
     <div class="callout"><p><b>Carrier PCB rules.</b> XIAO C5 footprint with D0, D1, D2, D3, D6, D10 <b>unrouted</b> (no test points; the underside GPIO2–5 pads are not used); SP4T with four u.FL launches and a u.FL to the XIAO (or a u.FL pair bridging the optional LNA); control lines on D7/D8/D9 via 2 kΩ; UART header on D4/D5; decoupling. Nothing else. Make it after stage 6.</p></div>
   </div>
-  <div class="foot"><span>drone-mesh-5plus · level1 · 2026-10-03 · firmware builds and links, nothing bench validated</span><span>Page 5 of 8</span></div>
+  <div class="foot"><span>drone-mesh-5plus · level1 · 2026-10-05 · firmware builds and links, nothing bench validated</span><span>Page 5 of 8</span></div>
 </section>
 
 <!-- ===================================================== SHEET 6 — BENCH 0–3 -->
@@ -561,7 +561,7 @@ hit = level[best] &gt;= 8 dB and q[best] &gt;= 40 %</pre>
   <div class="runhead">Level 1 Station v3 — Bench Guide</div>
   <div class="body">
     <h2>5 · Bench procedure — is the receiver alive?</h2>
-    <p>Work top to bottom on a bare XIAO with the stock antenna on the U.FL; the switch and patches come in stage 6. Do not move to the next stage until the current one gives the stated result. Console commands are typed into the serial monitor and Enter-terminated: <code>?</code> status, <code>h R3</code> / <code>h 5732</code> hold, <code>s 0–3</code> sector, <code>g 30</code> / <code>g a</code> gain, <code>v</code> video check, <code>t &lt;bits&gt;</code> drive the switch lines, <code>b 0|1</code> analog filter BW20/BW40, <code>x</code> resume.</p>
+    <p>Work top to bottom on a bare XIAO with the stock antenna on the U.FL; the switch and patches come in stage 6. Do not move to the next stage until the current one gives the stated result. Console commands are typed into the serial monitor and Enter-terminated: <code>?</code> status, <code>h R3</code> / <code>h 5732</code> hold, <code>s 0–3</code> sector, <code>g 30</code> / <code>g a</code> gain, <code>v</code> video check, <code>t 100</code> drive the switch lines while holding, <code>b 0|1</code> analog filter BW20/BW40, <code>x</code> resume.</p>
 
     <h4>Stage 0 — flash and boot</h4>
     <ul class="chk">
@@ -593,7 +593,7 @@ hit = level[best] &gt;= 8 dB and q[best] &gt;= 40 %</pre>
       <li><span class="cb"></span><div class="t">Hold the FPV channel nearest a live 5 GHz access point (A-band channels 5745–5825 overlap Wi-Fi 149–165). <b>Expected:</b> raised <code>level_db</code> but <code>q_phase</code> under 40 and no hit while scanning. Measured: level_db <span class="bl"></span> q_phase <span class="bl"></span></div></li>
     </ul>
   </div>
-  <div class="foot"><span>drone-mesh-5plus · level1 · 2026-10-03 · firmware builds and links, nothing bench validated</span><span>Page 6 of 8</span></div>
+  <div class="foot"><span>drone-mesh-5plus · level1 · 2026-10-05 · firmware builds and links, nothing bench validated</span><span>Page 6 of 8</span></div>
 </section>
 
 <!-- ===================================================== SHEET 7 — BENCH 4–5 -->
@@ -636,7 +636,7 @@ hit = level[best] &gt;= 8 dB and q[best] &gt;= 40 %</pre>
       <p><b><span class="opt">Optional</span>With the LNA fitted</b>, run this calibration with the LNA in the chain and leave <code>RF_FRONTEND_GAIN_DB</code> at 0; <code>RF_FRONTEND_GAIN_DB = 20</code> only carries a calibration taken without the LNA over to a station that has one. Re-measure <code>RF_NOISE_POWER</code> (<code>p_mean</code> with no signal at gain 62): the LNA's output noise can exceed the C5's own floor. Expect the gain stepping (gain index 62 → lower) to engage ~20 dB earlier.</p>
     </div>
   </div>
-  <div class="foot"><span>drone-mesh-5plus · level1 · 2026-10-03 · firmware builds and links, nothing bench validated</span><span>Page 7 of 8</span></div>
+  <div class="foot"><span>drone-mesh-5plus · level1 · 2026-10-05 · firmware builds and links, nothing bench validated</span><span>Page 7 of 8</span></div>
 </section>
 
 <!-- ===================================================== SHEET 8 — BENCH 6–7, POWER, RECORD -->
@@ -647,8 +647,8 @@ hit = level[best] &gt;= 8 dB and q[best] &gt;= 40 %</pre>
 
     <h4 style="margin-top:0">Stage 6 — RF switch and pattern</h4>
     <ul class="chk">
-      <li><span class="cb"></span><div class="t">Eval board powered from 3V3, one patch on RF1, common port → XIAO U.FL, control lines from D7/D8/D9 through 2 kΩ. Drive each combination (<code>t &lt;bits&gt;</code>) and record which RF port goes through. <b>Write the truth table here</b> (the firmware's V1 is D8, V2 D9, V3 D7): <code>V1V2V3 = 000 → RF__ &nbsp;&nbsp; 100 → RF__ &nbsp;&nbsp; 010 → RF__ &nbsp;&nbsp; 110 → RF__ &nbsp;→ SECTOR_SWITCH_TABLE</code></div></li>
-      <li><span class="cb"></span><div class="t">VTX on, hold its channel, <code>s 0</code> … <code>s 3</code>. <b>Expected:</b> <code>level_db</code> follows the sector the patch is on and settles within one line. Insertion loss against the patch wired direct to the U.FL: <span class="bl"></span> dB (expect ≈ 0.5); measured with the LNA in the path if fitted: <span class="bl"></span> dB (expect ≈ −19, a net gain)</div></li>
+      <li><span class="cb"></span><div class="t">Eval board powered from 3V3, one patch on RF1, common port → XIAO U.FL, control lines from D7/D8/D9 through 2 kΩ. Hold a channel with a VTX on, drive each combination (<code>t 000</code>, <code>t 100</code>, <code>t 010</code>, <code>t 110</code>; the pattern stays until <code>s</code> or <code>x</code>) and record which RF port goes through. <b>Write the truth table here</b> (the firmware's V1 is D8, V2 D9, V3 D7): <code>V1V2V3 = 000 → RF__ &nbsp;&nbsp; 100 → RF__ &nbsp;&nbsp; 010 → RF__ &nbsp;&nbsp; 110 → RF__ &nbsp;→ SECTOR_SWITCH_TABLE</code></div></li>
+      <li><span class="cb"></span><div class="t">VTX on, hold its channel, <code>s 0</code> … <code>s 3</code>. <b>Expected:</b> <code>level_db</code> follows the sector the patch is on and settles within one line. Insertion loss against the patch wired direct to the U.FL: <span class="bl"></span> dB (expect ≈ 2); measured with the LNA in the path if fitted: <span class="bl"></span> dB (expect ≈ −18, a net gain)</div></li>
       <li><span class="cb"></span><div class="t">Mount all four patches on the box, VTX at 30 m on a known bearing, clear line of sight. Rotate the box in 15° steps through a full turn, logging all four <code>sectors</code> values at each step.</div></li>
       <li><span class="cb"></span><div class="t">Derive K in degrees per dB from the neighbour difference. Value: <span class="bl"></span> °/dB (default 3.0). Save the sweep to <code>docs/</code> as the station's bearing calibration.</div></li>
     </ul>
@@ -658,7 +658,7 @@ hit = level[best] &gt;= 8 dB and q[best] &gt;= 40 %</pre>
       <li><span class="cb"></span><div class="t">Two v3 stations 300–500 m apart, both positions and face-N headings set in the mapper's LEVEL 1 STATIONS panel, both named to match their Meshtastic nodes, D4/D5 wired to the Heltecs.</div></li>
       <li><span class="cb"></span><div class="t">Walk a VTX between them on ten marked points. <b>Pass:</b> the 90 % circle contains the true position on at least 9 of 10. Score: <span class="bl"></span> / 10</div></li>
       <li><span class="cb"></span><div class="t"><b>Pass:</b> <code>video</code> reads NTSC or PAL on every report for a live camera, never <code>none</code>; the mesh copy arrives with <code>fp</code>.</div></li>
-      <li><span class="cb"></span><div class="t">Leave both stations on solar for 72 h. <b>Pass:</b> no brownout, heartbeat gap never exceeds 5 min. Measured station current at 5 V: <span class="bl"></span> mA (expect ≈ 200; ≈ 270 with the LNA)</div></li>
+      <li><span class="cb"></span><div class="t">Leave both stations on solar for 72 h. <b>Pass:</b> no brownout, heartbeat gap never exceeds 5 min. Measured station current at 5 V: <span class="bl"></span> mA (expect ≈ 200–240; ≈ 270–320 with the LNA, and peaks near 0.9 A while the Heltec transmits)</div></li>
     </ul>
 
     <h3>Power budget</h3>
@@ -667,8 +667,8 @@ hit = level[best] &gt;= 8 dB and q[best] &gt;= 40 %</pre>
       <tr><td>XIAO ESP32-C5, Wi-Fi PHY receiving continuously, 240 MHz</td><td class="n">~120 mA @ 3.3 V</td><td class="n">~0.45 W</td><td>via the 5 V rail and on-board LDO. The radio never sleeps and never transmits; PARLIO/DMA add little. Datasheet estimate — the stage 7 current measurement replaces it</td></tr>
       <tr><td>SP4T switch</td><td class="n">&lt; 5 mA</td><td class="n">0.02 W</td><td>the entire DF add-on</td></tr>
       <tr><td><span class="opt">Optional</span>LNA + filter (optional)</td><td class="n">60–90 mA @ 3.3/5 V</td><td class="n">≈ 0.3 W</td><td>fit only if stage 5 shows it pays</td></tr>
-      <tr><td>Heltec V3, Meshtastic, mostly RX</td><td class="n">~80 mA @ 5 V</td><td class="n">0.40 W</td><td>+ ~120 mA during LoRa TX bursts</td></tr>
-      <tr><td><b>Station total</b></td><td></td><td class="n" style="white-space:normal"><b>≈ 0.9–1.0 W,<br>≈ 1.2–1.3 W with the LNA</b></td><td><b>≈ 23–31 Wh/day.</b> The v2 solar sizing (20 W panel, 50 Wh battery, ~38 h of darkness at 1.3 W) still carries it, with less margin; a 10 W panel is then summer-only. The RX5808's 0.6 W is gone and the radio's ~0.4 W takes its place</td></tr>
+      <tr><td>Heltec V4, Meshtastic, mostly RX</td><td class="n">75 mA RX, ~110 mA avg @ 5 V</td><td class="n">≈ 0.55 W</td><td>750 mA (3.75 W) while transmitting at 27 dBm (Heltec V4 datasheet); the average assumes 5 % airtime</td></tr>
+      <tr><td><b>Station total</b></td><td></td><td class="n" style="white-space:normal"><b>≈ 0.9–1.1 W,<br>≈ 1.2–1.4 W with the LNA</b></td><td><b>≈ 22–34 Wh/day; peak ≈ 0.9 A at 5 V (≈ 1.0 A with the LNA) while the V4 transmits, so the 5 V output needs ≥ 1.5 A.</b> The v2 solar sizing (20 W panel, 50 Wh battery, ~36 h of darkness at 1.4 W) still carries it, with less margin; a 10 W panel is then summer-only. The RX5808's 0.6 W is gone and the radio's ~0.4 W takes its place</td></tr>
     </table>
 
     <h3>Record</h3>
@@ -680,7 +680,7 @@ hit = level[best] &gt;= 8 dB and q[best] &gt;= 40 %</pre>
     </table>
     <p class="cap">Copy the numbers from every stage into the station record; the v2 station's guide stays the reference for the switch truth table, pattern sweep and field acceptance details.</p>
   </div>
-  <div class="foot"><span>drone-mesh-5plus · level1 · 2026-10-03 · firmware builds and links, nothing bench validated</span><span>Page 8 of 8</span></div>
+  <div class="foot"><span>drone-mesh-5plus · level1 · 2026-10-05 · firmware builds and links, nothing bench validated</span><span>Page 8 of 8</span></div>
 </section>
 
 </body>

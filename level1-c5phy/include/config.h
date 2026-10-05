@@ -7,7 +7,7 @@
  * I/Q off the modem's diagnostic bus through PARLIO, measures power and FM
  * coherence per sector, checks for a video line structure and reports a compass
  * bearing (relative to the box's face N) to mesh-mapper.py over USB and to a
- * Heltec V3 running Meshtastic over UART on D4/D5 - the same two pins every
+ * Heltec V4 running Meshtastic over UART on D4/D5 - the same two pins every
  * station tier uses.
  *
  * Every value here can be overridden with -D in platformio.ini build_flags.

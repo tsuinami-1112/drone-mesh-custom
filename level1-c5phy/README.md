@@ -123,6 +123,6 @@ test/host/            gcc tests of the plain-C files with synthetic 4-bit I/Q: m
 | `s 0..3` | sector while holding |
 | `g 30` / `g a` | fixed gain index / automatic (step down on clipping) |
 | `v` | video check on the held channel and sector, all eight windows listed |
-| `t 5` | drive the switch control lines directly (bit 0 D8, bit 1 D9, bit 2 D7; a number, not a V1V2V3 string). The next sector select overwrites it, at once while scanning and within 0.5 s while holding, so map ports with `s 0..3` |
+| `t 100` / `t 1` | while holding: drive the switch control lines with a raw pattern (stage 6 truth table) and keep it until `s` or `x`. Three 0/1 characters in V1V2V3 = D8 D9 D7 order, or a number 0..7 (`0x` hex allowed); anything else is refused. Bench and status lines show it as `"switch":"100"`, `"sector":-1`; `v` runs on it. Refused while scanning |
 | `b 0` / `b 1` | analog filter BW20 / BW40 |
 | `x` | resume scanning |

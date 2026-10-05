@@ -47,7 +47,7 @@
                 PAL/NTSC check, bearing
         │  UART on D4/D5, 115200
         ▼
- Heltec LoRa 32 (Meshtastic) ~~ LoRa mesh ~~► home station ──USB──► mesh-mapper.py
+ Heltec V4 (Meshtastic) ~~ LoRa mesh ~~► home station ──USB──► mesh-mapper.py
 ```
 
 1. For each of 40 FPV channels the station tunes the C5's 5 GHz radio to the
@@ -71,7 +71,9 @@ stations that hear the same transmitter.
 |---|---|
 | [`level1-c5phy/`](level1-c5phy/) | Station firmware for the Seeed XIAO ESP32-C5 (PlatformIO) and its desktop tests. [Its README](level1-c5phy/README.md) has the full serial contract |
 | [`docs/Level1-Station-v3-C5PHY-Bench-Guide.pdf`](docs/Level1-Station-v3-C5PHY-Bench-Guide.pdf) | Full BOM, block diagram, power budget and the stage 0–7 bench procedure with record sheets ([HTML](docs/Level1-Station-v3-C5PHY-Bench-Guide.html)) |
-| [`level2-main`](../../tree/level2-main) branch | The mapper and home-station firmware with level 1 support, plus the level 2 detectors (Remote ID, DJI DroneID, MAVLink, fingerprints). The other firmware folders and `mesh-mapper.py` on this branch are older copies of that code: build and run them from `level2-main` |
+| [`mesh-mapper.py`](mesh-mapper.py) | The web mapper, with level 1 support: station registry, bearing rays and multi-station position fixes. The same file as on `level2-main` |
+| [`mapper_test/level1_bearing_sim.py`](mapper_test/level1_bearing_sim.py) | Simulated level 1 stations for trying the mapper without hardware |
+| [`level2-main`](../../tree/level2-main) branch | The home-station firmware with level 1 support, plus the level 2 detectors (Remote ID, DJI DroneID, MAVLink, fingerprints). The other firmware folders on this branch are older copies of that code: build them from `level2-main` |
 
 ---
 
@@ -88,10 +90,10 @@ Per station. Prices and the full list (enclosure, solar, passives) are in the
 | 4 | u.FL–SMA pigtail, equal length, ≤ 15 cm | Patches to the switch. Equal length keeps the sector losses equal |
 | 1–2 | u.FL–u.FL pigtail, ≤ 5 cm | Switch common to the XIAO (two with the LNA) |
 | 1 | 5.8 GHz LNA + band-pass filter, ~20 dB (optional) | Between the switch and the XIAO. Fit it if stage 5 shows the station is deafer than an RX5808 station, or if it sits near a 5 GHz access point |
-| 1 | **Heltec WiFi LoRa 32 V3 or V4** + LoRa antenna | Meshtastic radio. The station only talks UART to it, so either works; the Heltec-side pins differ ([below](#heltec-meshtastic-setup)) |
+| 1 | **Heltec WiFi LoRa 32 V4** + LoRa antenna | Meshtastic radio. Buy your region's band (863–928 MHz for EU868 / US915 / ...) and the standard OLED model: the TFT model uses GPIO47/48, the two pins the station talks to, for its touchscreen |
 | 3 | 2 kΩ resistor | Series resistors on the three switch control lines |
 | — | 100 nF ×2, 10 µF, 1000 µF low-ESR | Switch and LNA decoupling, Heltec TX bursts |
-| — | Power | 5 V rail, ≈ 1.0 W per station (≈ 1.3 W with the LNA). The bench guide sizes a 20 W panel and a 50 Wh battery |
+| — | Power | 5 V rail, ≈ 1.0 W average per station (≈ 1.3 W with the LNA), but **≈ 0.9 A peaks** while the V4 transmits (750 mA at 27 dBm): the 5 V supply needs **≥ 1.5 A**. The bench guide sizes a 20 W panel and a 50 Wh battery |
 
 For the bench you also want a 5.8 GHz VTX with an NTSC and a PAL camera, and a
 step attenuator.
@@ -109,8 +111,8 @@ The firmware drives three control lines. Datasheet figures near 6 GHz:
 | Insertion loss | 1.9 dB typ at 6 GHz | 2.0 dB typ at 4–6 GHz |
 | Isolation, common to an off port | 27 min / 32 typ dB at 6 GHz | 18 dB typ at 4–6 GHz |
 
-Expect about 2 dB of switch loss at 5.8 GHz with either part, not the ≈ 0.5 dB
-the bench guide quotes for stage 6. The PE42442's higher isolation also means
+Expect about 2 dB of switch loss at 5.8 GHz with either part. The PE42442's
+higher isolation also means
 less of the strongest patch leaks into the other sectors.
 
 ---
@@ -127,8 +129,8 @@ the **D-labels** printed on the board.
 | Switch **V1** | **D8** | 8 | switch V1 | via 2 kΩ |
 | Switch **V2** | **D9** | 9 | switch V2 | via 2 kΩ |
 | Switch **V3** | **D7** | 12 | switch V3 | via 2 kΩ. Stays low with the default table (see below) |
-| UART TX | **D4** | 23 | Heltec Meshtastic **RX** pin | 115200 8N1 |
-| UART RX | **D5** | 24 | Heltec Meshtastic **TX** pin | |
+| UART TX | **D4** | 23 | Heltec V4 **GPIO47** (Meshtastic RX) | 115200 8N1 |
+| UART RX | **D5** | 24 | Heltec V4 **GPIO48** (Meshtastic TX) | |
 | I/Q lanes Q7 Q8 Q9 | D0 D1 D2 | 1 0 25 | **nothing** | must float, see below |
 | I/Q lanes I7 I8 I9 | D3 D10 D6 | 7 10 11 | **nothing** | must float, see below |
 | 5V | 5V | — | 5 V rail | |
@@ -142,8 +144,8 @@ the **D-labels** printed on the board.
    (leave open) Q8 ── D1 │●               ●│ GND ── star ground
    (leave open) Q9 ── D2 │●     XIAO      ●│ 3V3 ── switch VDD (+100 nF)
    (leave open) I7 ── D3 │●   ESP32-C5    ●│ D10 ── I8 (leave open)
-   Heltec RX  ◄────── D4 │●               ●│ D9  ── 2 kΩ ── switch V2
-   Heltec TX  ──────► D5 │●               ●│ D8  ── 2 kΩ ── switch V1
+   Heltec 47  ◄────── D4 │●               ●│ D9  ── 2 kΩ ── switch V2
+   Heltec 48  ──────► D5 │●               ●│ D8  ── 2 kΩ ── switch V1
    (leave open) I9 ── D6 │●               ●│ D7  ── 2 kΩ ── switch V3
                          └─────────────────┘
 ```
@@ -188,12 +190,18 @@ firmware, N goes on RF4. See the [next section](#antenna-sectors-how-the-switch-
 
 | From | To | Notes |
 |---|---|---|
-| XIAO D4 (TX) | Heltec Meshtastic RX pin | V3: GPIO**19**. V4: GPIO**47** |
-| XIAO D5 (RX) | Heltec Meshtastic TX pin | V3: GPIO**20**. V4: GPIO**48** |
+| XIAO D4 (TX) | Heltec V4 GPIO**47** | Meshtastic `serial.rxd 47` |
+| XIAO D5 (RX) | Heltec V4 GPIO**48** | Meshtastic `serial.txd 48` |
 | XIAO GND | Heltec GND | Always connected |
-| 5 V rail | XIAO 5V and Heltec 5V | 1000 µF low-ESR at the Heltec for LoRa TX bursts |
+| 5 V rail | XIAO 5V and Heltec 5V | Heltec through its 5V pin **or** USB-C, never both. 1000 µF low-ESR at the Heltec |
 | XIAO 3V3 | Switch VDD | 100 nF at the switch |
 | 3V3 or 5 V | LNA VCC (optional) | Whichever the module needs; 100 nF + 10 µF at the module |
+
+GPIO47 and GPIO48 sit side by side on the V4 header that carries 5V and Ve.
+Fit the LoRa antenna before the Heltec is powered: the V4 transmits at up to
+28 dBm. It draws about 75 mA receiving and 750 mA while transmitting, so the
+5 V rail has to deliver ≈ 0.9 A peaks for the whole station (≈ 1.0 A with the
+LNA). A charger with a 1 A output is marginal; use one rated 1.5 A or more.
 
 Before plugging USB into an installed station's XIAO, take its 5V pin off the
 rail (or switch the rail off) so the USB port and the rail don't feed each other.
@@ -237,7 +245,9 @@ tune channel ─ 8 ms ─► sector 0 N ─► sector 1 E ─► sector 2 S ─�
   and takes 8 windows 5 ms apart.
 - At boot all three lines go low, then sector 0 (N) is selected.
 - While a channel is held on the bench console (`h`), `s 0`–`s 3` parks the
-  switch on one sector and re-asserts it with every bench line (twice a second).
+  switch on one sector and re-asserts it with every bench line (twice a second),
+  and `t 100` etc. puts a raw pattern on the lines that stays until `s` or `x`.
+  Every bench and status line shows what is on the lines as `"switch":"100"`.
 
 ### Line states for each sector (default table)
 
@@ -330,26 +340,33 @@ The `sectors` array in every detection line is always in index order:
 
 ### Checking the mapping on the bench
 
-This is bench stage 6. Use **`s`**, not `t`, for it (see the note below).
+This is bench stage 6. `t` maps the switch itself, whatever the firmware's
+table says, and `s` then confirms the table.
 
 1. Switch (eval board) common → XIAO U.FL, one patch on **one** RF port, the
    others terminated or open. Control lines from D8/D9/D7 through 2 kΩ.
 2. Key a VTX a few metres away, say on A1 (5865 MHz). On the console:
    `h A1`.
-3. Type `s 0`, `s 1`, `s 2`, `s 3`, waiting for a couple of bench lines each.
-   The sector whose `level_db` jumps by tens of dB is the one that selects the
-   port the patch is on. Write it down, move the patch to the next port, repeat.
-4. With all four patches on the box: `x` to resume scanning, and walk the VTX
+3. **Truth table:** type `t 000`, `t 100`, `t 010`, `t 110` (V1V2V3 order, D8
+   first), waiting for a couple of bench lines each. Each pattern stays on the
+   lines until you send another, `s` or `x`, and the bench lines show it as
+   `"switch":"100"` with `"sector":-1`. The pattern whose `level_db` jumps by
+   tens of dB selects the port the patch is on. Write it down, move the patch
+   to the next port, repeat. On a PE42442 expect `000` → RF4, `100` → RF1,
+   `010` → RF2, `110` → RF3.
+4. **Sector table:** with the patches cabled as planned, `s 0` … `s 3` should
+   light up the N, E, S, W patch in turn. The reply echoes the pattern each
+   sector drives (`"pattern":"100"`).
+5. With all four patches on the box: `x` to resume scanning, and walk the VTX
    round the box clockwise. The detection lines' `"sector"` should go
    0 → 1 → 2 → 3 and `bearing_deg` should climb with it.
 
 > [!NOTE]
-> `t <bits>` drives the three lines directly, but only until the next sector
-> select: at once while scanning, and within half a second while holding a
-> channel, because each bench line re-selects the held sector. So the bench lines
-> always show the held sector, not the `t` pattern. The argument is a number, not
-> a V1V2V3 string: `t 1` = D8 high, `t 2` = D9 high, `t 4` = D7 high. `t 100` is
-> decimal 100 and only raises D7; `t 010` is octal and raises nothing.
+> `t` takes the pattern as three 0/1 characters in pin order (`t 100` = D8 high,
+> `t 001` = D7 high), or a number 0–7 (`t 1` = D8, `t 2` = D9, `t 4` = D7;
+> `t 0x3` works too). Anything else, such as `t 8` or `t 07`, is refused rather
+> than cut down to three bits. It needs a held channel: while the station is
+> scanning it answers with an error, because the sweep re-selects every sector.
 
 ---
 
@@ -461,7 +478,7 @@ cd level1-c5phy/test/host && make           # ends with "ALL TESTS PASSED" and "
 
 ```
  level 1 station ─UART─► Heltec ~~ LoRa mesh ~~► Heltec ─UART─► home station XIAO ─USB─► mesh-mapper.py
-                                                                (level2-main, home_node)   (level2-main)
+                         (V4)                    (V4)          (level2-main, home_node)   (this branch)
 
  on the bench:   level 1 station XIAO ─USB─────────────────────────────────────────────► mesh-mapper.py
 ```
@@ -469,24 +486,25 @@ cd level1-c5phy/test/host && make           # ends with "ALL TESTS PASSED" and "
 ### Heltec Meshtastic setup
 
 Flash stock Meshtastic with the [Meshtastic Web Flasher](https://flasher.meshtastic.org/)
-(pick Heltec V3 or V4), then set the region and the serial module with the
-Python CLI while the Heltec is on USB:
+(Chrome or Edge, device **Heltec V4**). If the browser doesn't see the board,
+hold **PRG** while plugging it in. Then set the region and the serial module
+with the Python CLI while the Heltec is on USB (or in the app: **Settings →
+Module Configuration → Serial**: enabled, RX 47, TX 48, 115200, TEXTMSG):
 
 ```bash
 pip3 install meshtastic
 meshtastic --set lora.region US                 # your region: US, EU_868, ANZ, ...
-# Heltec V3:
 meshtastic --set serial.enabled true --set serial.mode TEXTMSG \
-           --set serial.baud BAUD_115200 --set serial.rxd 19 --set serial.txd 20
-# Heltec V4: the same, with --set serial.rxd 47 --set serial.txd 48
+           --set serial.baud BAUD_115200 --set serial.rxd 47 --set serial.txd 48
 meshtastic --set power.is_power_saving false   # power saving switches the serial port off
 meshtastic --set-owner RX01                    # name the node after the station's NODE_ID
 ```
 
-`serial.rxd` is the Heltec pin wired to the XIAO's D4, and `serial.txd` the one
-wired to D5. Put every Heltec, field and home, on the same primary channel with
-your own name and key: TEXTMSG sends every line on the primary channel, and the
-default channel is public.
+`serial.rxd 47` is the pin wired to the XIAO's D4, and `serial.txd 48` the one
+wired to D5. (Guides for the older Heltec V3 use 19/20. On the V4 those are the
+USB-C data lines, so they don't work here.) Put every Heltec, field and home, on
+the same primary channel with your own name and key: TEXTMSG sends every line on
+the primary channel, and the default channel is public.
 
 Over the mesh the station sends each emitter at most once per 8 s (the first
 report of a new emitter goes at once) and a heartbeat every 120 s.
@@ -503,25 +521,28 @@ flashing steps.
 
 ### Mapper
 
-Run the mapper from **`level2-main`** too; the `mesh-mapper.py` on this branch has
-no level 1 support.
+`mesh-mapper.py` on this branch has the level 1 support (it is the same file as
+on `level2-main`). From the repository root of your clone:
 
 ```bash
-git clone -b level2-main https://github.com/tsuinami-1112/drone-mesh-custom mapper
-cd mapper
 python3 -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 python3 mesh-mapper.py                             # options: --web-port, --headless, --debug
 ```
 
 On a Raspberry Pi, [`RPI/install_rpi.py`](RPI/install_rpi.py) does the same and
-starts the mapper on boot. It installs from the default branch, which is
-`level2-main`:
+starts the mapper on boot. It installs from the default branch, `level2-main`,
+whose mapper is identical; `--branch level1` installs this branch instead:
 
 ```bash
 wget https://raw.githubusercontent.com/tsuinami-1112/drone-mesh-custom/HEAD/RPI/install_rpi.py
-python3 install_rpi.py
+python3 install_rpi.py                             # or: python3 install_rpi.py --branch level1
 ```
+
+To try it without hardware, start the mapper and run
+`python3 mapper_test/level1_bearing_sim.py` (two or three simulated stations,
+one drone; it prints each fix against the simulated truth and removes its
+stations when it ends).
 
 Open `http://localhost:5000` and pick the serial port: the home station's XIAO,
 or on the bench a level 1 station's XIAO directly. Then:
@@ -569,7 +590,7 @@ Type into the serial monitor, Enter-terminated.
 | `s 0` … `s 3` | Park the switch on sector N / E / S / W (while holding) |
 | `g 30` / `g a` | Fixed gain index (2–62) / automatic |
 | `v` | Video check on the held channel and sector, all eight windows listed |
-| `t <n>` | Drive the switch lines directly (bit 0 D8, bit 1 D9, bit 2 D7); overwritten by the next sector select, see the [note](#checking-the-mapping-on-the-bench) |
+| `t 100` / `t 1` | Put a raw pattern on the switch lines while holding (V1V2V3 = D8 D9 D7, or a number 0–7); stays until `s` or `x`, see [the bench check](#checking-the-mapping-on-the-bench) |
 | `b 0` / `b 1` | Analog filter BW20 (+3 dB SNR) / BW40 (full video) |
 | `x` | Resume scanning |
 
@@ -609,7 +630,7 @@ The full contract (every field, the mesh line, the heartbeat) is in
 | Bearings off by a constant 90°/180°/270° | Sector table and cabling don't match (see [Antenna sectors](#antenna-sectors-how-the-switch-lines-cycle)), or the heading in the mapper is wrong |
 | A VTX moving clockwise reads counter-clockwise | E and W cables swapped |
 | No reports over the mesh | Heltec serial settings (pins, TEXTMSG, 115200), power saving on, D4/D5 crossed the wrong way, or no common ground |
-| Station never appears in the mapper | Mapper or home station not from `level2-main`, or no heartbeat reaching it |
+| Station never appears in the mapper | Home station not built from `level2-main`, or no heartbeat reaching the mapper |
 | Reports arrive but no position fix | Station positions not set, only one station hears it, or the rays are within 8° of parallel |
 
 ---
@@ -628,9 +649,11 @@ level1-c5phy/                       Level 1 station firmware (PlatformIO, env se
   src/report.c, fpv_channels.c      USB and mesh JSON; the 40-channel table
   test/host/                        desktop tests: make
 docs/Level1-Station-v3-C5PHY-Bench-Guide.{pdf,html}   hardware, BOM, power, bench stages 0-7
-RPI/install_rpi.py                  Raspberry Pi mapper installer (installs from level2-main)
+mesh-mapper.py, static/             the web mapper with level 1 support (same as level2-main)
+mapper_test/level1_bearing_sim.py   simulated level 1 stations for the mapper
+RPI/install_rpi.py                  Raspberry Pi mapper installer (installs from level2-main by default)
 ```
 
 Everything else on this branch (`node-mode-dualcore/`, `remoteid-*`,
-`firmware-common/`, `mesh-mapper.py`, `flasher/`, `firmware/`) is an older copy of
-the level 2 code. Use it from [`level2-main`](../../tree/level2-main).
+`firmware-common/`, `flasher/`, `firmware/`) is an older copy of the level 2
+code. Use it from [`level2-main`](../../tree/level2-main).

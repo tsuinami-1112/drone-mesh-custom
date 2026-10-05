@@ -16,7 +16,7 @@
  *   USB Serial          full JSON records for mesh-mapper.py, a boot line, a
  *                       heartbeat every 60 s, and the bench console
  *   Serial1 D4 TX / D5 RX   one Meshtastic text message per report (<= 191 B)
- *                       to a Heltec V3, the same pins as every station tier
+ *                       to a Heltec V4, the same pins as every station tier
  *
  * Bench console (Enter-terminated, on USB):
  *   ?            status           h R3 | h 5732   hold a channel
