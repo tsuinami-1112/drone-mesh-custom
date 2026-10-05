@@ -69,7 +69,7 @@ makes it start on every boot. It:
 
 1. downloads a branch of this repository from GitHub and unpacks it into
    `~/mesh-mapper`. For the standalone mapper, pass
-   `--branch claude/standalone-mapper-meshtastic`; without `--branch` it
+   `--branch standalone-mapper-meshtastic`; without `--branch` it
    installs the default branch, `level2-main`
 2. creates a Python virtual environment in `~/mesh-mapper/.venv` and installs
    `requirements.txt` into it
@@ -77,8 +77,8 @@ makes it start on every boot. It:
    environment
 
 ```bash
-wget https://raw.githubusercontent.com/tsuinami-1112/drone-mesh-custom/claude/standalone-mapper-meshtastic/RPI/install_rpi.py
-python3 install_rpi.py --branch claude/standalone-mapper-meshtastic
+wget https://raw.githubusercontent.com/tsuinami-1112/drone-mesh-custom/standalone-mapper-meshtastic/RPI/install_rpi.py
+python3 install_rpi.py --branch standalone-mapper-meshtastic
 ```
 
 Run it as your normal user, not with `sudo`: the files and the cron job belong
@@ -502,7 +502,7 @@ tail -f mapper.log             # what's it saying?
 ## Project layout
 
 ```
-drone-mesh-custom/  (claude/standalone-mapper-meshtastic)
+drone-mesh-custom/  (standalone-mapper-meshtastic)
 |-- mesh-mapper.py              # Flask + SocketIO server, all UI inline, Meshtastic radio input
 |-- requirements.txt            # includes meshtastic, for --mesh
 |-- docs/

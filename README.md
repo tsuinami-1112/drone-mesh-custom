@@ -51,7 +51,7 @@ On the ESP32, WiFi replaces Bluetooth. The radio's screen shows its IP address.
 **2. Install the mapper** (Python 3.9+):
 
 ```bash
-git clone -b claude/standalone-mapper-meshtastic https://github.com/tsuinami-1112/drone-mesh-custom
+git clone -b standalone-mapper-meshtastic https://github.com/tsuinami-1112/drone-mesh-custom
 cd drone-mesh-custom
 python3 -m venv .venv && . .venv/bin/activate     # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
@@ -70,16 +70,19 @@ start, so later starts need no `--mesh`. On Linux your user must be in the
 `dialout` group to open a USB radio. While the mapper holds a radio's USB
 port, the Meshtastic CLI and app can't use that port.
 
-**4. Level 1 stations, if you have any:** set each one's position and heading
-once in the map's LEVEL 1 STATIONS panel. Their bearings then cross into
-positions.
+**4. Level 1 stations, if you have any:** a station flashed with its position
+and heading (the level 1 firmware's "Station setup (map)" task, see the
+[`level1` README](https://github.com/tsuinami-1112/drone-mesh-custom/tree/level1#station-location-and-heading))
+places itself on the map, marked **auto**. For any other, set its position and
+heading once in the map's LEVEL 1 STATIONS panel. Their bearings then cross
+into positions.
 
 **On a Raspberry Pi**, the installer does steps 2-3 and starts the mapper on
 every boot:
 
 ```bash
-wget https://raw.githubusercontent.com/tsuinami-1112/drone-mesh-custom/claude/standalone-mapper-meshtastic/RPI/install_rpi.py
-python3 install_rpi.py --branch claude/standalone-mapper-meshtastic
+wget https://raw.githubusercontent.com/tsuinami-1112/drone-mesh-custom/standalone-mapper-meshtastic/RPI/install_rpi.py
+python3 install_rpi.py --branch standalone-mapper-meshtastic
 ```
 
 Then save your radio once, as described in the
