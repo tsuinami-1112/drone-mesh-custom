@@ -45,18 +45,23 @@ def recolor_sky():
 
 
 def fade(layers, keys):
-    """Give the named layers an opacity keyframe list (time, opacity)."""
+    """Give the named layers an opacity keyframe list (time, opacity); returns its class."""
     cls = tl([(t, dict(o=o)) for (t, o) in keys])
     for L in LAYERS:
         if L.name in layers:
             L.anim = (L.anim + ' ' if L.anim else '') + cls
+    return cls
 
 
 def fades():
     fade({'stars-dim', 'stars-mid', 'stars-bright'},
          [(0, 1), (T_A + .4, 1), (TL.SUNRISE, 0), (TL.SUNSET - .6, 0), (TL.SUNSET + .3, 1), (T_LOOP, 1)])
-    fade({'win-far', 'win-mid', 'win-near'} | {L.name for L in LAYERS if L.name.startswith('wbloom-')},
-         [(0, 1), (T_A + .5, 1), (TL.SUNRISE + .5, .08), (TL.SUNSET - 1.0, .08), (TL.SUNSET, 1), (T_LOOP, 1)])
+    cls = fade({'win-far', 'win-mid', 'win-near'} | {L.name for L in LAYERS if L.name.startswith('wbloom-')},
+               [(0, 1), (T_A + .5, 1), (TL.SUNRISE + .5, .08), (TL.SUNSET - 1.0, .08), (TL.SUNSET, 1), (T_LOOP, 1)])
+    # a window that blinks dark has to dim with the lit ones, or it leaves a black spot by day
+    for L in LAYERS:
+        if L.name == 'twinkle':
+            L.groups += ((cls, None, 'twinkle'),)
 
 
 def tint():
