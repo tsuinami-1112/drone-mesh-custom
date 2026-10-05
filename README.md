@@ -773,5 +773,3 @@ Pi installer and the level 2 detectors are on
 - **"Alik"** - UAV operator, 93rd OMBr "Black Ravens", AFU 🇺🇦
 - **"Ivan"** - ex-UAV operator, 427th Unmanned Aerial Brigade "Rarog", AFU 🇺🇦
 - **Meshtastic** - the mesh firmware the stations relay over
-- **OpenStreetMap**, **Esri**, **CARTO**, **OpenTopoMap** - tile providers
-- **MapLibre GL** + **Leaflet** + **Nominatim** - open mapping stack
