@@ -40,6 +40,9 @@ in the panel overrides the flashed one on that mapper.
 
 ## Overview
 
+<details>
+<summary>Expand</summary>
+
 A solar-powered, 24-7 drone detection network communicating over a private mesh. Intended for around-the-clock area protection and privacy.
 
 Developed in partnership with our friends in the Armed Forces of Ukraine. Special thanks to:
@@ -56,18 +59,26 @@ what they hear over a Meshtastic LoRa mesh to a home station, where
 the internet, a cellular link or a national registry: the stations decode what
 the drone broadcasts, the mesh carries it, and the mapper runs offline.
 
-```
- FIELD STATIONS (solar, unattended)                    HOME STATION (base)
- XIAO ESP32-S3 --UART--> Heltec V4 ~~ LoRa mesh ~~> Heltec V4 --UART--> XIAO ESP32-S3 --USB--> mesh-mapper.py
- WiFi + BLE detection    (Meshtastic)   (multi-hop)   (Meshtastic)        dedup bridge          live web map
- panel + MPPT + LiFePO4                                mains, or its own solar system
-```
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/img/architecture-dark.png">
+    <img src="docs/img/architecture-light.png" width="100%" alt="Architecture: solar-powered field stations (XIAO ESP32-S3 detector, UART to a Heltec V4 Meshtastic radio) relay detections over a multi-hop LoRa mesh to the home station (Heltec V4, UART to a XIAO ESP32-S3 dedup bridge, USB to mesh-mapper.py and its live web map).">
+  </picture>
+</p>
+
+</details>
 
 ---
 
 ## Hardware Options
 
+<details>
+<summary>Expand</summary>
+
 ### What you need per station
+
+<details>
+<summary>Expand</summary>
 
 | Part | Notes |
 |---|---|
@@ -80,7 +91,12 @@ the drone broadcasts, the mesh carries it, and the mapper runs offline.
 | Power | Field stations: a solar system, see [Solar integration](#solar-integration). Home station: USB from the mapper computer and a USB supply |
 | Enclosure | IP65 or better, pale colour, cable glands and a membrane vent; antennas outside the box |
 
+</details>
+
 ### Optional amplifiers
+
+<details>
+<summary>Expand</summary>
 
 | Amplifier | Status | Goes between | What it does |
 |---|---|---|---|
@@ -110,7 +126,12 @@ adds only about 2 dB of transmit power and the V4 already has its own receive
 amplifier, so it earns its place by making up for a long feeder, or on the 21
 dBm V4 variants.
 
+</details>
+
 ### Station types
+
+<details>
+<summary>Expand</summary>
 
 | Station | Firmware | Where it goes |
 |---|---|---|
@@ -122,7 +143,12 @@ A typical deployment is several field stations and one home station. A bare
 Heltec V4 on a hilltop, with no XIAO and the `ROUTER` role, extends the mesh
 where field stations can't hear each other.
 
+</details>
+
 ### Build a station
+
+<details>
+<summary>Expand</summary>
 
 <details open>
 <summary><b>Wiring: XIAO ESP32-S3 ↔ Heltec V4</b></summary>
@@ -187,7 +213,12 @@ header as the 19/20 pins the V3 wiring used.
 6. If you reflash the XIAO of a field station later, unplug wire 4 before you
    connect its USB cable.
 
+</details>
+
 ### Set up the Heltec V4 (Meshtastic)
+
+<details>
+<summary>Expand</summary>
 
 Flash stock Meshtastic with the official [Meshtastic Web Flasher](https://flasher.meshtastic.org/)
 (Chrome or Edge, device **Heltec V4**). If the browser doesn't see the board,
@@ -234,15 +265,25 @@ so you can still change settings over the mesh.
 > amplifier. Move the two signal wires to 47/48 and set `serial.rxd 47`,
 > `serial.txd 48`. The XIAO side and its firmware don't change.
 
+</details>
+
+</details>
+
 ---
 
 ## Solar Integration
+
+<details>
+<summary>Expand</summary>
 
 Field stations are meant to run for months without a visit. That means sizing
 the solar system for the worst month of the year, not the average, and
 choosing parts that bring the station back by themselves after a flat battery.
 
 ### Power budget
+
+<details>
+<summary>Expand</summary>
 
 What each part draws from the 5 V rail:
 
@@ -269,7 +310,12 @@ station down to 1.0 W, and a busy one (10 %) up to 1.3 W; with both amplifiers
 the range is 1.55-1.95 W. The amplifier figures are planning numbers: put a USB
 power meter on your own modules and adjust.
 
+</details>
+
 ### Sizing the panel and battery
+
+<details>
+<summary>Expand</summary>
 
 **Battery:** 3 days of autonomy with no sun at all.
 
@@ -308,7 +354,12 @@ autonomy target.
 
 </details>
 
+</details>
+
 ### Recommended power system
+
+<details>
+<summary>Expand</summary>
 
 A 12 V system built from standard solar parts:
 
@@ -338,7 +389,12 @@ station.
   around 500 mA, enough for a low-power Meshtastic node but not for a
   1.1-1.8 W detection station running all day and night.
 
+</details>
+
 ### Running unattended
+
+<details>
+<summary>Expand</summary>
 
 - **Recovery after an outage.** Every part boots straight back into work
   without a button press: the XIAO firmware starts scanning, Meshtastic
@@ -358,9 +414,16 @@ station.
 - **Weather.** Cable glands, drip loops on every cable, self-amalgamating tape
   over outdoor RF connectors, and a grounded mast.
 
+</details>
+
+</details>
+
 ---
 
 ## Build and Flash the Firmware
+
+<details>
+<summary>Expand</summary>
 
 The firmware is built and flashed with PlatformIO in VS Code. The steps below
 flash a XIAO ESP32-S3. Other boards and variants are in the
@@ -461,9 +524,14 @@ Detection knobs (stay on channel 6, drop fingerprints, dwell times) go in the
 environment's `build_flags`. See the
 [reference](docs/REFERENCE.md#detection-knobs).
 
+</details>
+
 ---
 
 ## Quick Start
+
+<details>
+<summary>Expand</summary>
 
 On the computer the home station (or a standalone detector) is plugged into:
 
@@ -524,9 +592,14 @@ sudo systemctl enable --now mesh-mapper
 | `--port-interval SEC` | 10 | USB port re-scan cadence |
 | `--no-auto-start` | off | Don't auto-connect to saved ports |
 
+</details>
+
 ---
 
 ## Features
+
+<details>
+<summary>Expand</summary>
 
 - **Detection** on the stock XIAO radios, no extra hardware: Remote ID over
   BLE 4, BLE 5 Long Range, WiFi NAN and Beacon (both Basic IDs, Operator ID,
@@ -548,11 +621,20 @@ sudo systemctl enable --now mesh-mapper
   Beast TCP). [ADS-B](docs/REFERENCE.md#ads-b-air-traffic)
 - **REST + WebSocket API**. [API reference](docs/REFERENCE.md#api-reference)
 
+</details>
+
 ---
 
 ## Troubleshooting
 
+<details>
+<summary>Expand</summary>
+
 ### XIAO not detected / won't flash
+
+<details>
+<summary>Expand</summary>
+
 ```bash
 ls -la /dev/tty* | grep -E 'USB|ACM'
 dmesg | grep tty
@@ -561,7 +643,13 @@ Try another cable (charge-only cables are common), then bootloader mode: hold
 B, tap R, release B. On Linux, check the udev rules and `dialout` group from
 the flashing steps.
 
+</details>
+
 ### No drone detections
+
+<details>
+<summary>Expand</summary>
+
 - Confirm the firmware is running (Monitor). The boot banner lists the enabled layers
 - Check the Heltec's serial module: enabled, TEXTMSG, 115200, **RX 47 / TX 48** on a V4
 - Check the wiring crosses over: XIAO D4 to Heltec 47, XIAO D5 to Heltec 48, plus GND
@@ -571,17 +659,30 @@ the flashing steps.
 - Many drones broadcast no Remote ID at all. Those show up, if at all, as dashed amber "possible drone" fingerprint entries without a position
 - DJI aircraft only broadcast Remote ID with the motors running and only in regions where DJI has enabled it; the proprietary DJI DroneID beacon exists only on WiFi-link models
 
+</details>
+
 ### A station drops off the mesh at night or in winter
+
+<details>
+<summary>Expand</summary>
+
 - That's the controller's low-voltage disconnect doing its job: the battery ran flat. It reconnects by itself once the panel recharges it
 - Re-check the panel size against your worst month and the battery against 3 days of autonomy ([Solar integration](#solar-integration))
 - Fit a current sensor and power telemetry so you see the battery voltage trend before it happens
 
+</details>
+
 More (web UI, tile caching, vector layers) in the
 [reference](docs/REFERENCE.md#more-troubleshooting).
+
+</details>
 
 ---
 
 ## Documentation
+
+<details>
+<summary>Expand</summary>
 
 | Document | What's in it |
 |---|---|
@@ -589,13 +690,23 @@ More (web UI, tile caching, vector layers) in the
 | [`firmware-common/README.md`](firmware-common/README.md) | The shared detection library: protocols, JSON schema, limits |
 | [`node-mode-dualcore/README.md`](node-mode-dualcore/README.md) | Field/home node firmware internals and the dedup engine |
 
+</details>
+
 ---
 
 ## License
 
+<details>
+<summary>Expand</summary>
+
 MIT.
 
+</details>
+
 ## Acknowledgments
+
+<details>
+<summary>Expand</summary>
 
 - **"Alik"** - UAV operator, 93rd OMBr "Black Ravens", AFU 🇺🇦
 - **"Ivan"** - ex-UAV operator, 427th Unmanned Aerial Brigade "Rarog", AFU 🇺🇦
@@ -610,6 +721,8 @@ MIT.
 - **OpenStreetMap**, **Esri**, **CARTO**, **OpenTopoMap** - tile providers
 - **MapLibre GL** + **Leaflet** + **Nominatim** - open mapping stack
 - **ADS-B receivers** - built on the shoulders of [dump1090](https://github.com/MalcolmRobb/dump1090) (Malcolm Robb / mutability), [readsb](https://github.com/wiedehopf/readsb) + [tar1090](https://github.com/wiedehopf/tar1090) (wiedehopf), and [pyModeS](https://github.com/junzis/pyModeS) (junzis) for Mode-S/CPR decode. The Beast TCP path uses pyModeS directly; the JSON path is compatible with all of the above. Network sources: [adsb.lol](https://adsb.lol), [adsb.fi](https://adsb.fi), [airplanes.live](https://airplanes.live), [OpenSky](https://opensky-network.org), [ADSBexchange](https://adsbexchange.com).
+
+</details>
 
 ---
 
