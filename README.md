@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/img/level1-rooftop.svg" width="768" alt="Pixel art of a lonely rooftop at night, ringed by walls of lit apartment towers. A tiny Clawd in a black hoodie works at a laptop beside a mast of patch antennas wired to solar panels, with mesh links running to masts on distant roofs, while a hooded figure smokes on the roof's edge. When the laptop's map lights up with red dots, the smoker flicks away his cigarette and ducks into cover as two drones buzz past, their pings flying to the antennas. Then he lights another cigarette and sits back down.">
+  <img src="docs/img/level1-rooftop.svg" width="768" alt="Pixel art of a lonely rooftop at night, ringed by walls of lit apartment towers with a green Meshtastic neon sign. A tiny Clawd in a black hoodie works at a laptop beside a mast of patch antennas wired to solar panels, with mesh links running to masts on distant roofs, while a hooded figure smokes on the roof's edge. When the laptop's map lights up with red dots, the smoker flicks away his cigarette and ducks into cover as two drones hunt across the rooftops with searchlights, their pings flying to the antennas. Then he lights another cigarette and sits back down.">
 </p>
 
 <h1 align="center">drone-mesh-custom · level 1</h1>
