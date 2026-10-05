@@ -6,51 +6,17 @@
 .idea/
 
 # ── PlatformIO build artifacts ─────────────────────────────
-*.pio/
 .pio/
-*.pio/build/
-node-mode-dualcore/.pio/build/
-remoteid-mesh-dualcore/.pio/build/
-remoteid-mesh/.pio/build/
-remoteid-c5-5g/.pio/build/
-level1-c5phy/.pio/build/
+
+# ── Host unit tests of the station firmware ────────────────
 level1-c5phy/test/host/test_level1
 level1-c5phy/test/host/json_samples.txt
 
-# ── Host unit tests of the shared detection library ────────
-firmware-common/test/test_detect
-firmware-common/test/json_samples.txt
-
-# ── Python ─────────────────────────────────────────────────
+# ── Python (docs/img/make_claude_level1.py) ────────────────
 __pycache__/
 *.py[cod]
-*.egg-info/
 .venv/
 venv/
-env/
-
-# ── Runtime state (user-specific, regenerated on each run) ─
-selected_ports.json
-aliases.json
-drone_tags.json
-geofences.json
-webhook_url.json
-adsb_config.json
-cache_jobs.json
-
-# ── Session detections / exports (per-run, contain positions) ─
-detections_*.csv
-detections_*.kml
-cumulative_detections.csv
-cumulative.kml
-mapper.log
-*.log
-
-# ── Offline map tile cache (large, regenerable) ────────────
-tiles/*.mbtiles
-tiles/*.mbtiles-*
-tiles/*-wal
-tiles/*-shm
 
 # ── Local secrets (just in case) ───────────────────────────
 .env
