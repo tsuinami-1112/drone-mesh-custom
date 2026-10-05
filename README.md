@@ -71,9 +71,11 @@ stations that hear the same transmitter.
 |---|---|
 | [`level1-c5phy/`](level1-c5phy/) | Station firmware for the Seeed XIAO ESP32-C5 (PlatformIO) and its desktop tests. [Its README](level1-c5phy/README.md) has the full serial contract |
 | [`docs/Level1-Station-v3-C5PHY-Bench-Guide.pdf`](docs/Level1-Station-v3-C5PHY-Bench-Guide.pdf) | Full BOM, block diagram, power budget and the stage 0–7 bench procedure with record sheets ([HTML](docs/Level1-Station-v3-C5PHY-Bench-Guide.html)) |
-| [`mesh-mapper.py`](mesh-mapper.py) | The web mapper, with level 1 support: station registry, bearing rays and multi-station position fixes. The same file as on `level2-main` |
-| [`mapper_test/level1_bearing_sim.py`](mapper_test/level1_bearing_sim.py) | Simulated level 1 stations for trying the mapper without hardware |
-| [`level2-main`](../../tree/level2-main) branch | The home-station firmware with level 1 support, plus the level 2 detectors (Remote ID, DJI DroneID, MAVLink, fingerprints). The other firmware folders on this branch are older copies of that code: build them from `level2-main` |
+| [`level2-main`](../../tree/level2-main) branch | Everything a level 1 station shares with the rest of the network: the mapper (`mesh-mapper.py`, with level 1 bearing support), the home-station firmware (`node-mode-dualcore`, `home_node`), the Heltec V4 Meshtastic setup, the Raspberry Pi installer and a level 1 station simulator. Also the level 2 detectors (Remote ID, DJI DroneID, MAVLink, fingerprints) |
+
+This branch holds only the level 1 station. See
+[Mesh, home station and mapper](#mesh-home-station-and-mapper) for what to take
+from `level2-main`.
 
 ---
 
@@ -198,6 +200,9 @@ firmware, N goes on RF4. See the [next section](#antenna-sectors-how-the-switch-
 | 3V3 or 5 V | LNA VCC (optional) | Whichever the module needs; 100 nF + 10 µF at the module |
 
 GPIO47 and GPIO48 sit side by side on the V4 header that carries 5V and Ve.
+The Heltec runs stock Meshtastic with the serial module on those pins: TEXTMSG,
+115200, `serial.rxd 47`, `serial.txd 48` (full setup on
+[`level2-main`](../../tree/level2-main#set-up-the-heltec-v4-meshtastic)).
 Fit the LoRa antenna before the Heltec is powered: the V4 transmits at up to
 28 dBm. It draws about 75 mA receiving and 750 mA while transmitting, so the
 5 V rail has to deliver ≈ 0.9 A peaks for the whole station (≈ 1.0 A with the
@@ -426,8 +431,7 @@ build_flags =
 
 ## Flashing
 
-There is no prebuilt binary or web flasher for level 1 (`flasher/` and
-`firmware/*.bin` are level 2 images). Build from source.
+There is no prebuilt binary or web flasher for level 1. Build from source.
 
 **Every flash starts with a full erase.** Stale PHY calibration data in flash left
 C5VRX's receiver deaf after reflashing; the erase clears it.
@@ -476,76 +480,31 @@ cd level1-c5phy/test/host && make           # ends with "ALL TESTS PASSED" and "
 
 ## Mesh, home station and mapper
 
+The mesh radios, the home station and the mapper are shared with the level 2
+stations, so they live on [`level2-main`](../../tree/level2-main) and are built and set up from
+there.
+
 ```
- level 1 station ─UART─► Heltec ~~ LoRa mesh ~~► Heltec ─UART─► home station XIAO ─USB─► mesh-mapper.py
-                         (V4)                    (V4)          (level2-main, home_node)   (this branch)
+ level 1 station ─UART─► Heltec V4 ~~ LoRa mesh ~~► Heltec V4 ─UART─► home station XIAO ─USB─► mesh-mapper.py
+ (this branch)                                                        (level2-main, home_node)   (level2-main)
 
- on the bench:   level 1 station XIAO ─USB─────────────────────────────────────────────► mesh-mapper.py
-```
-
-### Heltec Meshtastic setup
-
-Flash stock Meshtastic with the [Meshtastic Web Flasher](https://flasher.meshtastic.org/)
-(Chrome or Edge, device **Heltec V4**). If the browser doesn't see the board,
-hold **PRG** while plugging it in. Then set the region and the serial module
-with the Python CLI while the Heltec is on USB (or in the app: **Settings →
-Module Configuration → Serial**: enabled, RX 47, TX 48, 115200, TEXTMSG):
-
-```bash
-pip3 install meshtastic
-meshtastic --set lora.region US                 # your region: US, EU_868, ANZ, ...
-meshtastic --set serial.enabled true --set serial.mode TEXTMSG \
-           --set serial.baud BAUD_115200 --set serial.rxd 47 --set serial.txd 48
-meshtastic --set power.is_power_saving false   # power saving switches the serial port off
-meshtastic --set-owner RX01                    # name the node after the station's NODE_ID
+ on the bench:   level 1 station XIAO ─USB──────────────────────────────────────────────────► mesh-mapper.py
 ```
 
-`serial.rxd 47` is the pin wired to the XIAO's D4, and `serial.txd 48` the one
-wired to D5. (Guides for the older Heltec V3 use 19/20. On the V4 those are the
-USB-C data lines, so they don't work here.) Put every Heltec, field and home, on
-the same primary channel with your own name and key: TEXTMSG sends every line on
-the primary channel, and the default channel is public.
+| Part | On `level2-main` | Level 1 notes |
+|---|---|---|
+| Meshtastic on every Heltec V4, field and home | [Set up the Heltec V4 (Meshtastic)](../../tree/level2-main#set-up-the-heltec-v4-meshtastic) | The same settings as a level 2 station: TEXTMSG, 115200, RX 47 / TX 48, power saving off, your own primary channel. Name each station's node after its `NODE_ID` (`meshtastic --set-owner RX01`) |
+| Home station | [Build a station](../../tree/level2-main#build-a-station) and [Build and flash the firmware](../../tree/level2-main#build-and-flash-the-firmware): `node-mode-dualcore`, environment `home_node` | Use the current `level2-main` build. It passes `"type":"analog_fm"` lines straight through; older home-node builds' duplicate filter drops a second station's report of the same emitter, which is exactly the report a position fix needs |
+| Mapper | [Quick Start](../../tree/level2-main#quick-start): `mesh-mapper.py`, also the Raspberry Pi installer | Has the level 1 support: the LEVEL 1 STATIONS panel, bearing rays, multi-station position fixes |
+| Simulator | [`mapper_test/level1_bearing_sim.py`](../../blob/level2-main/mapper_test/level1_bearing_sim.py) | Two or three simulated level 1 stations and one drone, for trying the mapper without hardware |
 
 Over the mesh the station sends each emitter at most once per 8 s (the first
 report of a new emitter goes at once) and a heartbeat every 120 s.
 
-### Home station
+### Commissioning a station in the mapper
 
-Build the home station from the **`level2-main`** branch: `node-mode-dualcore`,
-environment `home_node`, on a XIAO ESP32-S3 wired to its Heltec the same way.
-That version passes level 1 lines straight through. The copy on this branch
-doesn't know them, and its duplicate filter drops a second station's report of
-the same emitter, which is exactly the report a position fix needs. The
-[`level2-main` README](../../tree/level2-main#build-a-station) has the wiring and
-flashing steps.
-
-### Mapper
-
-`mesh-mapper.py` on this branch has the level 1 support (it is the same file as
-on `level2-main`). From the repository root of your clone:
-
-```bash
-python3 -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-python3 mesh-mapper.py                             # options: --web-port, --headless, --debug
-```
-
-On a Raspberry Pi, [`RPI/install_rpi.py`](RPI/install_rpi.py) does the same and
-starts the mapper on boot. It installs from the default branch, `level2-main`,
-whose mapper is identical; `--branch level1` installs this branch instead:
-
-```bash
-wget https://raw.githubusercontent.com/tsuinami-1112/drone-mesh-custom/HEAD/RPI/install_rpi.py
-python3 install_rpi.py                             # or: python3 install_rpi.py --branch level1
-```
-
-To try it without hardware, start the mapper and run
-`python3 mapper_test/level1_bearing_sim.py` (two or three simulated stations,
-one drone; it prints each fix against the simulated truth and removes its
-stations when it ends).
-
-Open `http://localhost:5000` and pick the serial port: the home station's XIAO,
-or on the bench a level 1 station's XIAO directly. Then:
+Open the mapper (`http://localhost:5000`) and pick the serial port: the home
+station's XIAO, or on the bench a level 1 station's XIAO directly. Then:
 
 1. Each station registers itself from its first heartbeat and appears in the
    **LEVEL 1 STATIONS** panel.
@@ -630,7 +589,7 @@ The full contract (every field, the mesh line, the heartbeat) is in
 | Bearings off by a constant 90°/180°/270° | Sector table and cabling don't match (see [Antenna sectors](#antenna-sectors-how-the-switch-lines-cycle)), or the heading in the mapper is wrong |
 | A VTX moving clockwise reads counter-clockwise | E and W cables swapped |
 | No reports over the mesh | Heltec serial settings (pins, TEXTMSG, 115200), power saving on, D4/D5 crossed the wrong way, or no common ground |
-| Station never appears in the mapper | Home station not built from `level2-main`, or no heartbeat reaching the mapper |
+| Station never appears in the mapper | Home station or mapper older than the current `level2-main`, or no heartbeat reaching the mapper |
 | Reports arrive but no position fix | Station positions not set, only one station hears it, or the rays are within 8° of parallel |
 
 ---
@@ -649,11 +608,9 @@ level1-c5phy/                       Level 1 station firmware (PlatformIO, env se
   src/report.c, fpv_channels.c      USB and mesh JSON; the 40-channel table
   test/host/                        desktop tests: make
 docs/Level1-Station-v3-C5PHY-Bench-Guide.{pdf,html}   hardware, BOM, power, bench stages 0-7
-mesh-mapper.py, static/             the web mapper with level 1 support (same as level2-main)
-mapper_test/level1_bearing_sim.py   simulated level 1 stations for the mapper
-RPI/install_rpi.py                  Raspberry Pi mapper installer (installs from level2-main by default)
+docs/img/                           README art and the script that draws it
 ```
 
-Everything else on this branch (`node-mode-dualcore/`, `remoteid-*`,
-`firmware-common/`, `flasher/`, `firmware/`) is an older copy of the level 2
-code. Use it from [`level2-main`](../../tree/level2-main).
+That is the whole branch. The mapper, the home-station firmware, the Raspberry
+Pi installer and the level 2 detectors are on
+[`level2-main`](../../tree/level2-main).
