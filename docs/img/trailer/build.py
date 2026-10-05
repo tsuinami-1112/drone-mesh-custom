@@ -57,7 +57,7 @@ def build():
     hud.bars()
     B = new_layer('bar-text')
     hud.mark(B, 5, 1)
-    text3(B, 14, 2, 'DRONE MESH MAPPER', C('#c9c7e6'))
+    text3(B, 14, 2, 'DRONE-MESH-CUSTOM', C('#c9c7e6'))
     text3(B, W - 5 - text3_width('LEVEL 2'), 2, 'LEVEL 2', C('#5ff3ff'))
     live_c, live_s = pulse(.62, 1.6, 0.0)
     live = new_layer('live', anim=live_c, style=live_s)
