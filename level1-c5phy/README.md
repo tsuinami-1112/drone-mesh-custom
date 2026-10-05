@@ -31,7 +31,7 @@ Everything is on the top-side castellations; no underside pad is used.
 |---|---|---|---|
 | UART TX to Heltec RX | D4 | 23 | 115200, the same pins as every station tier |
 | UART RX from Heltec TX | D5 | 24 | |
-| Switch V1 / V2 / V3 | D8 / D9 / D7 | 8 / 9 / 12 | 2 kOhm series; `SECTOR_SWITCH_TABLE` from the stage 6 truth table |
+| Switch V1 / V2 / V3 | D8 / D9 / D7 | 8 / 9 / 12 | 2 kOhm series; `SECTOR_SWITCH_TABLE` from the stage 6 truth table. Which line states mean N/E/S/W, and which port that is on a PE42442 (N = RF4): [antenna sectors](../README.md#antenna-sectors-how-the-switch-lines-cycle) |
 | I/Q lane pads Q7 Q8 Q9 | D0 D1 D2 | 1 0 25 | **must stay unconnected**: each MODEM_DIAG bit is driven out through the pad and read back from it |
 | I/Q lane pads I7 I8 I9 | D3 D10 D6 | 7 10 11 | same rule |
 | user LED | on board | 27 | blinks on every report |
@@ -123,6 +123,6 @@ test/host/            gcc tests of the plain-C files with synthetic 4-bit I/Q: m
 | `s 0..3` | sector while holding |
 | `g 30` / `g a` | fixed gain index / automatic (step down on clipping) |
 | `v` | video check on the held channel and sector, all eight windows listed |
-| `t 5` | drive the switch control lines directly (stage 6 truth table) |
+| `t 5` | drive the switch control lines directly (bit 0 D8, bit 1 D9, bit 2 D7; a number, not a V1V2V3 string). The next sector select overwrites it, at once while scanning and within 0.5 s while holding, so map ports with `s 0..3` |
 | `b 0` / `b 1` | analog filter BW20 / BW40 |
 | `x` | resume scanning |
