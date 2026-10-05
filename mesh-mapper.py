@@ -14089,7 +14089,8 @@ def handle_station_json(detection, source):
     # would otherwise log a WARNING for every one of them.
     if 'heartbeat' in detection:
         if detection.get('node_id') and detection.get('receiver'):
-            # A level 1 station announcing itself (position unknown until set)
+            # A level 1 station announcing itself, placed from the position
+            # flashed into it if its heartbeat carries one
             register_station_heartbeat(detection, source=source)
         else:
             logger.debug(f"Skipping heartbeat from {source}")

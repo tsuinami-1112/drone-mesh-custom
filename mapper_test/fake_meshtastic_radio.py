@@ -16,8 +16,11 @@ the mesh, so the direct-radio path can be exercised without hardware.
 
 --demo loops a scenario: a Remote ID drone circling (node mode JSON from two
 field stations), a 5.8 GHz emitter heard by two level 1 stations, and the
-plain-text alerts of a standalone detector. --mapper URL also places the
-level 1 stations in the mapper so their bearings cross into a fix.
+plain-text alerts of a standalone detector. The level 1 stations behave as if
+flashed with their position and heading (level1 branch, Station setup): their
+heartbeats carry lat/lon, so the mapper places them by itself and their
+bearings cross into a fix. --mapper URL places them by hand through the
+mapper's API instead, as a station without a flashed position needs.
 
 The radio records everything a client sends it (`received`), which
 test_mesh_direct.py uses to prove the mapper never transmits.
@@ -257,6 +260,46 @@ class FakeRadio:
             return len(self.clients)
 
 
+# ---- level 1 heartbeat -------------------------------------------------------
+L1_MESH_JSON_MAX = 191
+
+
+def l1_mesh_heartbeat(node_id, heading=0, pos=None, scanning=True, sweeps=0, video_seen=0, nf_dbm=-98.0,
+                      temp_c=38.5, uptime_s=0, tune_fail=0, cap_err=0, bus_stuck=0, alias_drop=0):
+    """The mesh heartbeat line of the level 1 firmware (level1 branch,
+    level1-c5phy/src/report.c report_heartbeat_json(..., full=0)): fields in
+    priority order, each added only while the line stays within 191 bytes, with
+    lat/lon right after the heading when the station was flashed with its
+    position. Byte-identical to lines built from report.c (test_mesh_direct.py
+    checks it against them)."""
+    out = ['{']
+
+    def add(item):
+        cur = ''.join(out)
+        need = len(item) + (1 if cur != '{' else 0)
+        if len(cur) + need + 2 > L1_MESH_JSON_MAX + 1:
+            return False
+        out.append((',' if cur != '{' else '') + item)
+        return True
+
+    for item in ('"heartbeat":true', f'"node_id":"{node_id}"', '"receiver":"c5phy"'):
+        if not add(item):
+            return None
+    add('"hw":"v3"')
+    add(f'"heading":{int(heading)}')
+    if pos is not None:
+        add(f'"lat":{pos[0]:.6f},"lon":{pos[1]:.6f}')
+    add('"scanning":' + ('true' if scanning else 'false'))
+    add(f'"sweeps":{int(sweeps)}')
+    add(f'"video_seen":{int(video_seen)}')
+    add(f'"nf_dbm":{nf_dbm:.0f}')
+    add(f'"temp_c":{temp_c:.1f}')
+    add(f'"uptime_s":{int(uptime_s)}')
+    for k, v in (('tune_fail', tune_fail), ('cap_err', cap_err), ('bus_stuck', bus_stuck), ('alias_drop', alias_drop)):
+        add(f'"{k}":{int(v)}')
+    return ''.join(out) + '}'
+
+
 # ---- demo scenario ----------------------------------------------------------
 def _dest(lat, lon, brg, dist):
     R = 6371000.0
@@ -281,14 +324,15 @@ def run_demo(radio, center, mapper=None, period=4.0):
     radio.add_node(RX2, 'Level 1 RX02', 'RX02')
     radio.add_node(SA, 'Standalone detector', 'SA1')
     clat, clon = center
-    st = {'RX01': (RX1, _dest(clat, clon, 225, 700)), 'RX02': (RX2, _dest(clat, clon, 135, 700))}
+    # node_id -> (radio node, flashed position, flashed heading of face N)
+    st = {'RX01': (RX1, _dest(clat, clon, 225, 700), 30), 'RX02': (RX2, _dest(clat, clon, 135, 700), 300)}
     unplaced = set(st) if mapper else set()
 
     def place_stations():
         # Retried every cycle: the mapper may start after the radio
         for nid in list(unplaced):
-            lat, lon = st[nid][1]
-            body = json.dumps({'node_id': nid, 'lat': lat, 'lon': lon, 'heading_deg': 0}).encode()
+            (lat, lon), heading = st[nid][1], st[nid][2]
+            body = json.dumps({'node_id': nid, 'lat': lat, 'lon': lon, 'heading_deg': heading}).encode()
             req = urllib.request.Request(mapper.rstrip('/') + '/api/stations', data=body,
                                          headers={'Content-Type': 'application/json'}, method='POST')
             try:
@@ -313,12 +357,15 @@ def run_demo(radio, center, mapper=None, period=4.0):
                "eu_cat": 1, "eu_class": 2}
         radio.serial_line(FS1 if n % 2 == 0 else FS2, json.dumps(rid, separators=(',', ':')))
         flat, flon = _dest(clat, clon, (90 + t * 2) % 360, 300)
-        for nid, (num, (slat, slon)) in st.items():
-            if n % 8 == 0:
-                radio.serial_line(num, json.dumps({"heartbeat": True, "node_id": nid, "receiver": "c5phy", "hw": "v3",
-                                                   "heading": 0, "scanning": True, "sweeps": n, "nf_dbm": -98},
-                                                  separators=(',', ':')))
-            b = round(_bearing(slat, slon, flat, flon) + random.gauss(0, 4)) % 360
+        for nid, (num, (slat, slon), heading) in st.items():
+            if n % 4 == 0:
+                # The firmware puts the position on its first 3 mesh heartbeats after
+                # boot and then on every 5th (every 10 minutes). The demo sends it on
+                # every heartbeat, so a mapper started later places the stations at once.
+                radio.serial_line(num, l1_mesh_heartbeat(nid, heading, (slat, slon), sweeps=n * 2, video_seen=n,
+                                                         nf_dbm=-97, temp_c=38.0 + (n % 10) / 10, uptime_s=int(t)))
+            # bearing_deg is relative to the station's face N, as the firmware reports it
+            b = round(_bearing(slat, slon, flat, flon) - heading + random.gauss(0, 4)) % 360
             radio.serial_line(num, json.dumps({"type": "analog_fm", "mac": "AF:00:52:03:16:64", "node_id": nid,
                                                "freq_mhz": 5732, "band": "R", "ch": 3, "rssi": -70, "bearing_deg": b,
                                                "bearing_sigma_deg": 10, "video": "NTSC", "fp": "NTSC/15736/5734"},
@@ -340,7 +387,8 @@ def main():
     ap.add_argument('--pty', action='store_true', help='present a pseudo-terminal (a USB radio)')
     ap.add_argument('--demo', action='store_true', help='loop the demo scenario')
     ap.add_argument('--center', default='33.4942,-111.9261', help='lat,lon of the demo area')
-    ap.add_argument('--mapper', help='mapper URL, to place the demo level 1 stations (e.g. http://127.0.0.1:5000)')
+    ap.add_argument('--mapper', help='mapper URL: place the demo level 1 stations by hand through its API instead of '
+                                     'relying on the position in their heartbeats (e.g. http://127.0.0.1:5000)')
     args = ap.parse_args()
     if not args.tcp and not args.pty:
         ap.error('give --tcp PORT and/or --pty')

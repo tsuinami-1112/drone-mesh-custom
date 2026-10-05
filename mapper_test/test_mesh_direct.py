@@ -14,9 +14,14 @@ mesh, and checks what the mapper made of each:
     merged into one packet
   - the same drone from a second field station inside 500 ms (dropped, as the
     ESP32 home node would)
-  - level 1 heartbeats and analog_fm bearing reports from two stations for
-    the same emitter inside 500 ms (both kept, crossed into a fix), and a
-    station flashed with its position placing itself from its heartbeat
+  - level 1 stations: one flashed with its position and heading, placed from
+    the position in its heartbeat (real lines built by the level 1 firmware's
+    report.c), one older station placed by hand; their analog_fm bearing
+    reports for the same emitter inside 500 ms (both kept, crossed into a
+    fix); a position saved by hand overriding the flashed one, and clearing
+    it going back; a station placed by hand before it reported a position
+    staying there when it later reports one; heartbeat status merged across
+    heartbeats that carry different fields
   - the standalone firmwares' text alerts: "Drone: ...", the C5's
     "Drone[5G]: ...", "Pilot: ..." and "Possible drone (...) ..."
   - chat text and a message on another channel (ignored)
@@ -41,12 +46,30 @@ import urllib.request
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
-from fake_meshtastic_radio import FakeRadio  # noqa: E402
+from fake_meshtastic_radio import FakeRadio, l1_mesh_heartbeat  # noqa: E402
 from meshtastic.protobuf import portnums_pb2  # noqa: E402
 
-FS1, FS2, RX1, RX2, SA, PHONE = 0xA1B2C3D4, 0xB2C3D4E5, 0xC3D4E5F6, 0xD4E5F6A7, 0xE5F6A7B8, 0x0F0F0F0F
+FS1, FS2, RX1, RX3, SA, PHONE = 0xA1B2C3D4, 0xB2C3D4E5, 0xC3D4E5F6, 0xD4E5F6A7, 0xE5F6A7B8, 0x0F0F0F0F
+RXL, RXB = 0x17171717, 0x18181818
 DRONE = (-33.8600, 151.2100)
-STATIONS = {'RX01': (RX1, (-33.8700, 151.2000)), 'RX02': (RX2, (-33.8700, 151.2200))}
+RX01_POS = (-33.8700, 151.2000)                     # older firmware: no position, placed by hand
+RX03_POS, RX03_HEADING = (-33.864512, 151.208834), 135   # flashed into RX03 (Station setup)
+
+# Mesh heartbeats exactly as the level 1 firmware builds them (level1 branch,
+# level1-c5phy/src/report.c report_heartbeat_json(..., full=0), commit 54314fa)
+# for a station flashed with NODE_ID RX03, STATION_LAT -33.864512,
+# STATION_LON 151.208834 and STATION_HEADING_DEG 135. The ones carrying the
+# position (the first 3 after boot, then every 5th) drop uptime_s and the
+# counters to stay within 191 bytes.
+L1_HB_RX03_POS = ('{"heartbeat":true,"node_id":"RX03","receiver":"c5phy","hw":"v3","heading":135,'
+                  '"lat":-33.864512,"lon":151.208834,"scanning":true,"sweeps":10,"video_seen":0,'
+                  '"nf_dbm":-96,"temp_c":38.6}')
+L1_HB_RX03_NOPOS = ('{"heartbeat":true,"node_id":"RX03","receiver":"c5phy","hw":"v3","heading":135,'
+                    '"scanning":true,"sweeps":431,"video_seen":23,"nf_dbm":-96,"temp_c":41.3,"uptime_s":860,'
+                    '"tune_fail":0,"cap_err":0}')
+L1_HB_LONG_POS = ('{"heartbeat":true,"node_id":"STATION-NORTH-TOWER-01","receiver":"c5phy","hw":"v3",'
+                  '"heading":135,"lat":-33.864512,"lon":151.208834,"scanning":true,"sweeps":1296000,'
+                  '"video_seen":1234}')
 
 failures = []
 
@@ -106,7 +129,8 @@ def j(obj):
 def main():
     radio = FakeRadio()
     for num, ln, sn in [(FS1, 'Field station 1', 'FS1'), (FS2, 'Field station 2', 'FS2'),
-                        (RX1, 'Level 1 RX01', 'RX01'), (RX2, 'Level 1 RX02', 'RX02'),
+                        (RX1, 'Level 1 RX01', 'RX01'), (RX3, 'Level 1 RX03', 'RX03'),
+                        (RXL, 'Level 1 north tower', 'NT01'), (RXB, 'Level 1 RX09', 'RX09'),
                         (SA, 'Standalone detector', 'SA1'), (PHONE, 'Someone', 'ME')]:
         radio.add_node(num, ln, sn)
     tcp_port = radio.serve_tcp(free_port())
@@ -179,46 +203,94 @@ def main():
         check('cc:cc:cc:00:00:03' in dets and dets.get('dd:dd:dd:00:00:04', {}).get('src') == 'wifi',
               'two lines in one packet are both read (Remote ID + fingerprint)')
 
-        print('\nlevel 1 stations (analog_fm bearings + heartbeats)')
-        for nid, (num, _) in STATIONS.items():
-            radio.serial_line(num, j({"heartbeat": True, "node_id": nid, "receiver": "c5phy", "hw": "v3",
-                                      "heading": 0, "scanning": True, "sweeps": 12, "nf_dbm": -98}))
-        reg = wait_for(lambda: (lambda s: s if {'RX01', 'RX02'} <= set(s['stations']) else None)(
-            api(base, '/api/stations')))
+        print('\nlevel 1 stations (flashed position, heartbeats, analog_fm bearings)')
+        twin = [l1_mesh_heartbeat('RX03', 135, RX03_POS, sweeps=10, video_seen=0, nf_dbm=-95.7, temp_c=38.6,
+                                  uptime_s=20),
+                l1_mesh_heartbeat('RX03', 135, None, sweeps=431, video_seen=23, nf_dbm=-96.2, temp_c=41.3,
+                                  uptime_s=860, alias_drop=1),
+                l1_mesh_heartbeat('STATION-NORTH-TOWER-01', 135, RX03_POS, sweeps=1296000, video_seen=1234,
+                                  nf_dbm=-96, temp_c=40.0, uptime_s=2592000, cap_err=12, alias_drop=3)]
+        check(twin == [L1_HB_RX03_POS, L1_HB_RX03_NOPOS, L1_HB_LONG_POS],
+              "the fake radio's level 1 heartbeat matches the firmware's lines byte for byte")
+
+        def stations():
+            return api(base, '/api/stations')
+
+        # RX01 runs firmware without a position; RX03 was flashed with one, and the first
+        # heartbeat this mapper hears from it is one between the position heartbeats
+        radio.serial_line(RX1, l1_mesh_heartbeat('RX01', 0, None, sweeps=12, nf_dbm=-98, uptime_s=40))
+        radio.serial_line(RX3, L1_HB_RX03_NOPOS)
+        reg = wait_for(lambda: (lambda s: s if {'RX01', 'RX03'} <= set(s['stations']) else None)(stations()))
         check(reg is not None, 'both level 1 stations register from their heartbeats')
-        for nid, (_, (lat, lon)) in STATIONS.items():
-            api(base, '/api/stations', {'node_id': nid, 'lat': lat, 'lon': lon, 'heading_deg': 0})
-        for nid, (num, (lat, lon)) in STATIONS.items():      # both inside 500 ms, same MAC
+        if reg:
+            r1, r3 = reg['stations']['RX01'], reg['stations']['RX03']
+            check(r1.get('lat') is None and r3.get('lat') is None and r3.get('position_auto') is True,
+                  'a heartbeat without a position leaves the station unplaced, waiting for one')
+        radio.serial_line(RX3, L1_HB_RX03_POS)
+        placed = wait_for(lambda: (lambda s: s if s['stations']['RX03'].get('lat') is not None else None)(stations()))
+        r3 = (placed or {}).get('stations', {}).get('RX03', {})
+        check((r3.get('lat'), r3.get('lon')) == RX03_POS and r3.get('position_auto') is True,
+              'the flashed station is placed from the position in its mesh heartbeat, no API needed')
+        check(r3.get('heading_deg') == RX03_HEADING and r3.get('heading_auto') is True,
+              'its flashed heading is taken from the same heartbeat')
+        stt = stations()['status'].get('RX03', {})
+        check(stt.get('uptime_s') == 860 and stt.get('temp_c') == 38.6 and stt.get('sweeps') == 10,
+              'status is merged: uptime_s from the earlier heartbeat survives one that carries the position')
+        check(str(stt.get('source', '')).startswith('mesh radio '), 'the station status says it came over the mesh')
+
+        api(base, '/api/stations', {'node_id': 'RX01', 'lat': RX01_POS[0], 'lon': RX01_POS[1], 'heading_deg': 0})
+        check(stations()['stations']['RX01'].get('position_auto') is False,
+              'the older station is placed by hand through the API')
+        rx03_rel = (bearing(*RX03_POS, *DRONE) - RX03_HEADING) % 360     # relative to face N, as reported
+        for num, nid, rel in ((RX1, 'RX01', bearing(*RX01_POS, *DRONE)), (RX3, 'RX03', rx03_rel)):
             radio.serial_line(num, j({"type": "analog_fm", "mac": "AF:00:52:03:16:64", "node_id": nid,
-                                      "freq_mhz": 5732, "band": "R", "ch": 3, "rssi": -68,
-                                      "bearing_deg": bearing(lat, lon, *DRONE), "bearing_sigma_deg": 8,
-                                      "video": "NTSC", "fp": "NTSC/15736/5734"}))
+                                      "freq_mhz": 5732, "band": "R", "ch": 3, "rssi": -68, "bearing_deg": rel,
+                                      "bearing_sigma_deg": 8, "video": "NTSC", "fp": "NTSC/15736/5734"}))
         fix = wait_for(lambda: (lambda d: d if d.get('pos_src') == 'bearing_fix' else None)(
             detections(base).get('af:00:52:03:16:64', {})))
-        check(fix is not None, 'both bearings pass the dedup and cross into a position fix')
+        check(fix is not None and {'RX01', 'RX03'} <= set(fix.get('fix_stations') or []),
+              'both bearings (hand-placed and flashed station) pass the dedup and cross into a position fix')
         if fix:
             err = math.hypot((fix['drone_lat'] - DRONE[0]) * 111320,
                              (fix['drone_long'] - DRONE[1]) * 111320 * math.cos(math.radians(DRONE[0])))
             check(err < 150, f'fix lands {err:.0f} m from the true position')
 
-        print('\nlevel 1 flashed positions (lat/lon in the heartbeat)')
-        num1, (lat1, lon1) = STATIONS['RX01']
-        num2 = STATIONS['RX02'][0]
-        flashed = (round(DRONE[0] + 0.004, 6), round(DRONE[1] - 0.004, 6))
-        radio.serial_line(num2, j({"heartbeat": True, "node_id": "RX03", "receiver": "c5phy", "hw": "v3",
-                                   "heading": 42, "lat": flashed[0], "lon": flashed[1], "scanning": True}))
-        st3 = wait_for(lambda: (lambda s: s if (s.get('RX03') or {}).get('lat') is not None else None)(
-            api(base, '/api/stations')['stations']))
-        st3 = (st3 or {}).get('RX03') or {}
-        check((st3.get('lat'), st3.get('lon')) == flashed and st3.get('position_auto') is True
-              and st3.get('heading_deg') == 42,
-              'a station flashed with its position places itself from its heartbeat (auto)')
-        radio.serial_line(num1, j({"heartbeat": True, "node_id": "RX01", "receiver": "c5phy", "hw": "v3",
-                                   "heading": 0, "lat": flashed[0], "lon": flashed[1]}))
-        time.sleep(1.5)
-        s1 = api(base, '/api/stations')['stations'].get('RX01') or {}
-        check((s1.get('lat'), s1.get('lon')) == (lat1, lon1) and s1.get('position_auto') is False,
-              'a position set by hand in the panel is not moved by a reported one')
+        moved = (-33.864600, 151.208900)
+        api(base, '/api/stations', {'node_id': 'RX03', 'lat': moved[0], 'lon': moved[1]})
+        radio.serial_line(RX3, L1_HB_RX03_POS)
+        time.sleep(2.0)
+        r3 = stations()['stations']['RX03']
+        check((r3.get('lat'), r3.get('lon')) == moved and r3.get('position_auto') is False
+              and (r3.get('rep_lat'), r3.get('rep_lon')) == RX03_POS,
+              'a position saved by hand overrides the flashed one, and later heartbeats leave it alone')
+        api(base, '/api/stations', {'node_id': 'RX03', 'lat': '', 'lon': ''})
+        r3 = stations()['stations']['RX03']
+        check((r3.get('lat'), r3.get('lon')) == RX03_POS and r3.get('position_auto') is True,
+              'clearing both fields goes back to the flashed position')
+        api(base, '/api/stations', {'node_id': 'RX03', 'name': 'North ridge'})
+        r3 = stations()['stations']['RX03']
+        check(r3.get('name') == 'North ridge' and r3.get('position_auto') is True and
+              (r3.get('lat'), r3.get('lon')) == RX03_POS, 'renaming a flashed station keeps it following its position')
+        # RX01 was placed by hand before it reported any position; reflashed with one, it stays put
+        later = (round(DRONE[0] + 0.004, 6), round(DRONE[1] - 0.004, 6))
+        radio.serial_line(RX1, l1_mesh_heartbeat('RX01', 0, later, sweeps=900, nf_dbm=-98, uptime_s=1800))
+        time.sleep(2.0)
+        r1 = stations()['stations']['RX01']
+        check((r1.get('lat'), r1.get('lon')) == RX01_POS and r1.get('position_auto') is False
+              and (r1.get('rep_lat'), r1.get('rep_lon')) == later,
+              'a station placed by hand before it reported a position stays there when it later reports one')
+
+        radio.serial_line(RXL, L1_HB_LONG_POS)
+        radio.serial_line(RXB, j({"heartbeat": True, "node_id": "RX09", "receiver": "c5phy", "hw": "v3",
+                                  "heading": 0, "lat": True, "lon": 151.2}))
+        got = wait_for(lambda: (lambda s: s if {'STATION-NORTH-TOWER-01', 'RX09'} <= set(s['stations']) else None)(
+            stations()))
+        st_all = (got or {}).get('stations', {})
+        check((st_all.get('STATION-NORTH-TOWER-01', {}).get('lat'),
+               st_all.get('STATION-NORTH-TOWER-01', {}).get('lon')) == RX03_POS,
+              'the longest firmware heartbeat (22-character NODE_ID) still carries the position')
+        check('RX09' in st_all and st_all['RX09'].get('lat') is None,
+              'a heartbeat with an invalid position (JSON true) registers the station unplaced')
 
         print('\nstandalone detector text alerts')
         radio.serial_line(SA, "Drone: ee:ee:ee:00:00:05 RSSI:-71 ID:1581F5FHB229F00999XX OP:GBR-OP-ABC123DEF456 "

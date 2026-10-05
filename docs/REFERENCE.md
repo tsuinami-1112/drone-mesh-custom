@@ -177,6 +177,19 @@ always pass, because each station's bearing is its own observation. The same
 packet heard through two radios (same sender and packet id) is processed once.
 Only `--mesh-channel` (default 0, the channel serial modules send on) is read.
 
+**Level 1 stations.** A heartbeat registers its station in the LEVEL 1
+STATIONS panel. A station flashed with its position and heading
+([Station setup](https://github.com/tsuinami-1112/drone-mesh-custom/tree/level1#station-location-and-heading))
+sends them in its heartbeat, and the mapper places it there, marked **auto**.
+Over the mesh only some heartbeats carry the position (the first three after
+boot, then one every 10 minutes), so a mapper started later places the station
+within 10 minutes; heartbeat fields a shorter mesh heartbeat leaves out keep
+their last value. A position saved in the panel, including one saved before
+this mapper knew flashed positions, overrides the flashed one on this mapper;
+clear both position fields and press SAVE to go back to it. A heading saved in
+the panel stays until the station is deleted (DEL), after which it registers
+again from its next heartbeat.
+
 **Added fields** on each detection: `mesh_from` (the sending radio's node id,
 e.g. `!a1b2c3d4`), `mesh_snr`, `mesh_rssi`, `mesh_hops`. `source_port` reads
 `mesh radio <port or host> <node id>`.
@@ -195,11 +208,13 @@ show in the USB status list as `mesh radio ...`.
 **Testing without a radio.** `mapper_test/fake_meshtastic_radio.py` speaks
 enough of the radio side of the protocol for the library to connect over a
 pseudo-terminal (`--pty`) or TCP (`--tcp PORT`). `--demo` loops a mesh with a
-Remote ID drone, two level 1 stations and a standalone detector (`--mapper
-URL` places the level 1 stations). `mapper_test/test_mesh_direct.py` runs the
-real mapper against it over both transports and checks every message format,
-the dedup, telemetry, a TCP drop and reconnect, and that the mapper never
-transmits.
+Remote ID drone, a standalone detector and two level 1 stations flashed with
+their positions, which the mapper places from their heartbeats (`--mapper URL`
+places them by hand through the API instead). `mapper_test/test_mesh_direct.py`
+runs the real mapper against it over both transports and checks every message
+format (level 1 heartbeats as the firmware builds them, flashed position
+included), the dedup, telemetry, a TCP drop and reconnect, and that the mapper
+never transmits.
 
 ---
 
@@ -405,6 +420,14 @@ dump1090-fa --net --net-bo-port 30005 --device-type hackrf
 | `GET` | `/api/serial_status` | ESP32 connection status |
 | `GET` | `/api/selected_ports` | Currently configured ports |
 
+### Level 1 stations
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/stations` | Stations (position, heading, `position_auto` / `heading_auto` while they follow what the station reports, its last reported `rep_lat` / `rep_lon`) and their last heartbeat |
+| `POST` | `/api/stations` | Add or update a station: `{node_id, name, lat, lon, heading_deg}`. `lat`/`lon` set its position by hand; both empty (`""` or `null`) go back to the position the station reports (unplaced if it has reported none); left out, the position stays as it is. `heading_deg` sets the heading by hand |
+| `DELETE` | `/api/stations/<node_id>` | Remove a station; a running one registers again from its next heartbeat |
+| `GET` | `/api/bearings` | Recent bearing reports, per emitter MAC and station |
+
 ### Webhooks
 | Method | Endpoint | Description |
 |---|---|---|
@@ -458,7 +481,7 @@ WebSocket event: `adsb` - pushed every poll cycle when enabled.
 
 ### WebSocket events
 Pushed to connected clients in real time:
-`detections`, `paths`, `serial_status`, `aliases`, `cumulative_log`
+`detections`, `paths`, `serial_status`, `aliases`, `cumulative_log`, `stations`
 
 ---
 

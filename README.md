@@ -73,9 +73,11 @@ port, the Meshtastic CLI and app can't use that port.
 **4. Level 1 stations, if you have any:** a station flashed with its position
 and heading (the level 1 firmware's "Station setup (map)" task, see the
 [`level1` README](https://github.com/tsuinami-1112/drone-mesh-custom/tree/level1#station-location-and-heading))
-places itself on the map, marked **auto**. For any other, set its position and
-heading once in the map's LEVEL 1 STATIONS panel. Their bearings then cross
-into positions.
+places itself on the map, marked **auto**, within 10 minutes over the mesh. For
+any other, set its position and heading once in the map's LEVEL 1 STATIONS
+panel. Their bearings then cross into positions. A position saved in the panel
+overrides the flashed one on this mapper; clear both position fields and press
+SAVE to go back to it.
 
 **On a Raspberry Pi**, the installer does steps 2-3 and starts the mapper on
 every boot:
@@ -91,13 +93,14 @@ Then save your radio once, as described in the
 ## Try it without a radio
 
 ```bash
-python3 mapper_test/fake_meshtastic_radio.py --tcp 4403 --demo --mapper http://127.0.0.1:5000 &
+python3 mapper_test/fake_meshtastic_radio.py --tcp 4403 --demo &
 python3 mesh-mapper.py --mesh tcp:127.0.0.1:4403
 ```
 
-The fake radio plays a demo mesh: a Remote ID drone, two level 1 stations and
-a standalone detector. `python3 mapper_test/test_mesh_direct.py` checks every
-message format end to end.
+The fake radio plays a demo mesh: a Remote ID drone, a standalone detector and
+two level 1 stations flashed with their positions, which place themselves on
+the map. `python3 mapper_test/test_mesh_direct.py` checks every message format
+end to end.
 
 ## Options
 
