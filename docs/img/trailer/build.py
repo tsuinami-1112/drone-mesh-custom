@@ -55,7 +55,6 @@ def build():
     for t, seed in TL.CUTS:
         hud.glitch(t, seed)
     hud.bars()
-    hud.progress([c[0] for c in TL.CUTS[1:5]] + [TL.CUTS[0][0], TL.CUTS[5][0]])
     B = new_layer('bar-text')
     hud.mark(B, 5, 1)
     text3(B, 14, 2, 'DRONE MESH MAPPER', C('#c9c7e6'))

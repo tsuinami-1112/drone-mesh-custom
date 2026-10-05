@@ -97,25 +97,6 @@ def caption(word, accent, detail, t0, t1, type_cps=70.0):
         rect(cover, 4, CAPTION_Y - 2, W - 8, 11, BLACK)
 
 
-def progress(marks):
-    """A thin progress line along the foot of the picture, the way a video player draws one:
-    it fills over the loop and ticks mark where each part of the film begins."""
-    y = PIC_Y1 - 1
-    T = new_layer('progress-ticks')
-    for t in marks:
-        x = int(round(W * t / T_LOOP))
-        for yy in (y - 1, y, y + 1):
-            T.set(x, yy, C('#6a6aa8'))
-    P = new_layer('progress', style='opacity:0',
-                  anim=tl([(0, dict(o=0, x=-W)), (.05, dict(o=1, x=-W)), (T_LOOP - .05, dict(o=1, x=-3)),
-                           (T_LOOP, dict(o=0, x=0))]))
-    for x in range(W):
-        P.set(x, y, MESH)
-    P.set(W - 1, y, C('#ffffff'), True)
-    P.set(W - 2, y, MESH_HOT, True)
-    return P
-
-
 # ----------------------------------------------------------------------------
 # screen effects: cuts, scanlines, vignette
 # ----------------------------------------------------------------------------
