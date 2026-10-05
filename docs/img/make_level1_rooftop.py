@@ -270,6 +270,35 @@ def glow(layers, cx, cy, r, color, amax=.5, levels=3, falloff=1.6,
             (out or L).set(x, y, mix(c, color, amax * lvl / levels))
 
 
+def bloom(name, tubes, color, bands, groups=(), anim=None, style=None):
+    """Light spreading out of a set of lit pixels: bands of translucent colour,
+    brightest nearest the tubes. bands: ((distance, alpha), ...), nearest first.
+    Returns the layers."""
+    tubes = set(tubes)
+    pts = list(tubes)
+    reach = int(math.ceil(bands[-1][0]))
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    rings = [set() for _ in bands]
+    for y in range(min(ys) - reach, max(ys) + reach + 1):
+        for x in range(min(xs) - reach, max(xs) + reach + 1):
+            if (x, y) in tubes:
+                continue
+            d = min(math.hypot(x - px, y - py) for (px, py) in pts)
+            for i, (limit, _) in enumerate(bands):
+                if d <= limit:
+                    rings[i].add((x, y))
+                    break
+    out = []
+    for i, (limit, alpha) in enumerate(bands):
+        if rings[i]:
+            L = new_layer('%s-bloom-%g' % (name, limit), alpha=alpha, groups=groups, anim=anim, style=style)
+            for (x, y) in rings[i]:
+                L.set(x, y, color)
+            out.append(L)
+    return out
+
+
 def seg_dist(px, py, x0, y0, x1, y1):
     """Distance from a point to a segment."""
     dx, dy = x1 - x0, y1 - y0
@@ -1098,8 +1127,8 @@ def city():
     # the neon bleeds onto whatever is near it
     glow(BG, 30, 124, 40, (255, 98, 150), amax=.42, levels=3, falloff=1.1, ex=1.1, ey=1.0, skip_lum=.7)
     glow(BG, 14, 108, 22, (255, 79, 216), amax=.5, levels=3, falloff=1.1, ex=1.0, ey=1.3, skip_lum=.66)
-    glow(BG, MESH_AT[0] + MESH_N // 2, MESH_AT[1] + MESH_N // 2, 17, (103, 234, 148), amax=.34, levels=3,
-         falloff=1.2, ex=1.0, ey=1.0, skip_lum=.66)
+    glow(BG, MESH_AT[0] + MESH_N // 2, MESH_AT[1] + MESH_N // 2, 30, (103, 234, 148), amax=.5, levels=4,
+         falloff=1.1, ex=1.0, ey=1.0, skip_lum=.66)
     x, y = TRIDENT_AT
     glow(BG, x + 5, y + 5, 11, (70, 120, 255), amax=.2, levels=3, falloff=1.3, ex=1.0, ey=1.1, skip_lum=.66)
     glow(BG, x + 5, y + 13, 9, (255, 215, 70), amax=.16, levels=3, falloff=1.3, ex=1.0, ey=1.0, skip_lum=.66)
@@ -1179,13 +1208,14 @@ def roof():
 
 
 def puddles():
-    """Wet roof: dark water holding the glow of the sky and the neon."""
+    """Wet roof: dark water holding the glow of the lights nearest each puddle."""
     L = new_layer('puddles')
-    for (cx, cy, rx, ry) in ((52, 124, 8, 1.6), (122, 128, 9, 1.4), (178, 129, 7, 1.2), (206, 125, 6, 1.2)):
+    for (cx, cy, rx, ry, hi) in ((52, 124, 8, 1.6, '#5a3a68'), (122, 128, 9, 1.4, '#58b8d8'),
+                                 (178, 129, 7, 1.2, '#6a58b0'), (206, 125, 6, 1.2, '#d09860')):
         for (x, y) in blob_pts(cx, cy, rx, ry):
-            L.set(x, y, C('#0a1220'))
+            L.set(x, y, C('#0a0820'))
         for (x, y) in blob_pts(cx - 1, cy - .5, rx * .6, ry * .4):
-            L.set(x, y, C('#3c296e'))
+            L.set(x, y, C(hi))
     return L
 
 
@@ -1890,64 +1920,19 @@ FEET_Y = 125.4                       # where the soles of standing feet land
 COVER_X = 62                         # where he crouches, next to Clawd
 T_ALERT = 4.2
 T_CLEAR = 19.2
-ARRIVE_A = [T_ALERT + .9 * k for k in range(8)]       # a ping from drone A lands on the mast
+ARRIVE_A = [T_ALERT + .9 * k for k in range(7)]       # a ping from drone A lands on the mast
 ARRIVE_B = [12.6 + .9 * k for k in range(7)]
 FLIGHT = 1.15                                          # seconds a ping takes to reach the mast
 
 
-def _ease(kind, u):
-    if kind == 'in':                       # accelerate hard
-        return u * u
-    if kind == 'out':                      # brake
-        return 1 - (1 - u) ** 2
-    if kind == 'snap':                     # slam on the brakes
-        return 1 - (1 - u) ** 3
-    if kind == 'io':                       # a quick lunge, start to finish
-        return u * u * (3 - 2 * u)
-    return u
+def drone_a(t):
+    """The first drone: right to left, close and fast."""
+    return 268 - 52.0 * (t - 5.4), 55 + 4 * math.sin((t - 5.4) * 1.5)
 
 
-def flight(points):
-    """A flight path through waypoints (t, x, y, how it gets there): a function
-    of time giving (x, y)."""
-    def at(t):
-        if t <= points[0][0]:
-            return points[0][1], points[0][2]
-        for (t0, x0, y0, _), (t1, x1, y1, how) in zip(points, points[1:]):
-            if t <= t1:
-                u = _ease(how, (t - t0) / float(t1 - t0))
-                return x0 + (x1 - x0) * u, y0 + (y1 - y0) * u
-        return points[-1][1], points[-1][2]
-    return at
-
-
-# The first drone, right to left and low: it bursts in, slams to a stop, hovers
-# with a twitch, lunges at the mast, searches in jerks, drops to look at the
-# roof's edge where the two of them are hiding, then bolts.
-drone_a = flight([
-    (0.0, 560, 46, 'lin'), (5.30, 272, 46, 'in'),
-    (5.95, 207, 49, 'snap'),
-    (6.15, 205, 51, 'lin'), (6.35, 208, 49, 'lin'), (6.55, 204, 50, 'lin'), (6.75, 207, 48, 'lin'),
-    (6.95, 205, 50, 'lin'),
-    (7.25, 143, 58, 'io'), (7.45, 138, 55, 'snap'),
-    (7.75, 140, 56, 'lin'), (7.95, 135, 54, 'lin'), (8.15, 133, 55, 'lin'),
-    (8.35, 114, 57, 'io'), (8.65, 113, 56, 'lin'),
-    (8.85, 95, 59, 'io'), (9.15, 94, 59, 'lin'),
-    (9.30, 88, 63, 'snap'), (9.55, 89, 62, 'lin'), (9.80, 87, 63, 'lin'),
-    (10.00, 80, 55, 'in'), (10.80, -40, 38, 'in'),
-])
-
-# The second, higher and farther: it creeps, then jumps from vantage to vantage,
-# pausing to scan each one, and finally sprints away.
-drone_b = flight([
-    (0.0, -300, 36, 'lin'), (11.60, -18, 36, 'in'),
-    (12.35, 28, 38, 'out'), (12.60, 28, 40, 'lin'), (12.85, 30, 38, 'lin'), (13.10, 29, 39, 'lin'),
-    (13.38, 93, 33, 'io'), (13.60, 94, 34, 'lin'), (13.90, 92, 33, 'lin'), (14.05, 94, 34, 'lin'),
-    (14.30, 150, 43, 'io'), (14.55, 151, 42, 'lin'), (14.85, 149, 43, 'lin'),
-    (15.10, 190, 36, 'io'), (15.40, 192, 36, 'lin'), (15.70, 191, 37, 'lin'), (15.95, 192, 36, 'lin'),
-    (16.20, 225, 41, 'io'), (16.40, 227, 40, 'lin'),
-    (17.10, 330, 30, 'in'),
-])
+def drone_b(t):
+    """The second: left to right, higher and farther off."""
+    return -14 + 46.0 * (t - 11.8), 41 + 3 * math.sin((t - 11.8) * 1.8)
 
 
 # ---- the people ------------------------------------------------------------
@@ -1984,8 +1969,9 @@ def human_frames():
     cx = COVER_X
     cr = on_ground('crouch', cx)
     pk = on_ground('peek', cx)
-    low = [(6.8, 7.6), (8.4, 10.6), (11.2, 12.5), (13.2, 14.6), (15.4, 17.0), (17.8, 18.4)]
-    up = [(7.6, 8.4), (10.6, 11.2), (12.5, 13.2), (14.6, 15.4), (17.0, 17.8)]
+    # he only looks up when a searchlight is not sweeping across his hiding place
+    low = [(6.8, 7.1), (7.8, 10.4), (11.0, 13.0), (13.7, 14.6), (15.4, 17.0), (17.8, 18.4)]
+    up = [(7.1, 7.8), (10.4, 11.0), (13.0, 13.7), (14.6, 15.4), (17.0, 17.8)]
     for (a, b) in low:
         F.append((a, b, 'crouch', 1, cr, False))
     for (a, b) in up:
@@ -2129,7 +2115,7 @@ def people():
     b = new_layer('clawd-arm-b', groups=grp, anim=cb, style=sb)
     clawd_arm(b, 9)
     # eyes: wide at the alarm, then on the sky while the drones are about; a blink or two
-    for kind, spans in (('wide', [(T_ALERT, 5.6), (9.2, 10.0)]), ('up', [(5.6, 9.2), (10.0, 18.0)]),
+    for kind, spans in (('wide', [(T_ALERT, 5.6)]), ('up', [(5.6, 18.0)]),
                         ('blink', [(1.4, 1.52), (9.3, 9.42), (21.2, 21.32), (27.6, 27.72), (13.9, 14.02)])):
         e = new_layer('clawd-eyes-' + kind, groups=grp + (gvis(spans, 'ce-' + kind),))
         clawd_eyes(e, kind)
@@ -2187,7 +2173,6 @@ LAMP = C('#fffbe0')
 BEAM = (214, 238, 255)                      # the searchlight's cold white
 SEARCH_ANGLES = (-75, -60, -45, -30, -15, 0, 15, 30, 45, 60, 75)     # degrees from straight down
 CLIPS['sky'] = (0, 0, W, 112)               # the beams end at the parapet
-SAMPLE = .05                                # seconds between flight keyframes
 POOLS = []                                  # where each searchlight lands: filled by drones(), drawn later
 
 
@@ -2215,33 +2200,18 @@ def rotor_discs(L_a, L_b, x0, y0, wd, centres, pw):
                     (L_a if (cx + i) % 2 == 0 else L_b).set(cx + i, y0 + 1, ROTOR_LO)
 
 
-class Banked:
-    """A layer seen with the drone banked: every column shifted up or down a
-    little, more toward the ends, so the rotors and arms tilt."""
-
-    def __init__(self, layer_, cx, lean):
-        self.layer, self.cx, self.lean = layer_, cx, lean
-        self.pix = layer_.pix
-
-    def set(self, x, y, c, emit=False):
-        self.layer.set(x, y + int(round(.14 * (self.cx - x) * -self.lean)), c, emit)
-
-
-def drone_layers(name, cx, y0, size, color, groups, lean, led_period):
-    """The drone, banked left (-1), level (0) or right (+1). `size`: M is 26
-    wide, S is 16. The arm LEDs wear `color`."""
+def drone(name, cx, y0, size, color, groups):
+    """`size`: M is 26 wide, S is 16. The arm LEDs wear `color`."""
     wd = dict(M=26, S=16)[size]
     x0 = cx - wd // 2
     P = DP
-    wrap = (lambda L: Banked(L, cx, lean)) if lean else (lambda L: L)
     (ca, sa), (cb, sb) = seq_frames(2, .12)
-    body_l = new_layer('drone-%s%+d' % (name, lean), groups=groups)
-    pa_l = new_layer('drone-%s%+d-rotor-a' % (name, lean), anim=ca, style=sa, groups=groups)
-    pb_l = new_layer('drone-%s%+d-rotor-b' % (name, lean), anim=cb, style=sb, groups=groups)
-    pcls, pstyle = pulse('led', .5, led_period)
-    led_l = new_layer('drone-%s%+d-led' % (name, lean), anim=pcls,
+    body = new_layer('drone-' + name, groups=groups)
+    pa = new_layer('drone-%s-rotor-a' % name, anim=ca, style=sa, groups=groups)
+    pb = new_layer('drone-%s-rotor-b' % name, anim=cb, style=sb, groups=groups)
+    pcls, pstyle = pulse('led', .5, 1.3)
+    led = new_layer('drone-%s-led' % name, anim=pcls,
                       style=pstyle + ';animation-delay:-%.1fs' % ((cx % 7) * .17), groups=groups)
-    body, pa, pb, led = wrap(body_l), wrap(pa_l), wrap(pb_l), wrap(led_l)
     if size == 'M':
         sym_rect(body, x0, y0, wd, 2, 2, 6, 4, P['b'])
         sym_rect(body, x0, y0, wd, 2, 2, 6, 2, P['d'])
@@ -2269,134 +2239,105 @@ def drone_layers(name, cx, y0, size, color, groups, lean, led_period):
         sym_set(led, x0, y0, wd, 1, 3, color, True)
         sym_set(led, x0, y0, wd, 7, 4, color, True)
         rotor_discs(pa, pb, x0, y0, wd, (2,), 5)
-        pb_l.pix.clear()
+        pb.pix.clear()
         lamp = (cx, y0 + 5)
-    halo = new_layer('drone-%s%+d-halo' % (name, lean), alpha=.3, groups=groups)
+    halo = new_layer('drone-%s-halo' % name, alpha=.3, groups=groups)
     for (dx, dy) in ((0, 0), (-1, 0), (1, 0), (0, 1), (0, -1), (-1, 1), (1, 1), (-2, 0), (2, 0), (0, 2)):
         halo.set(lamp[0] + dx, lamp[1] + dy, mix(color, (255, 255, 255), .3))
+    lens = new_layer('drone-%s-lens' % name, alpha=.5, groups=groups)       # the searchlight's lens, flaring
+    for (x, y) in blob_pts(lamp[0], lamp[1], 2.4, 1.8):
+        lens.set(x, y, BEAM)
+    star = new_layer('drone-%s-star' % name, alpha=.4, groups=groups)
+    for d in (2, 3):
+        for (dx, dy) in ((d, 0), (-d, 0), (0, d)):
+            star.set(lamp[0] + dx, lamp[1] + dy, BEAM)
     return lamp
 
 
 # ---- the searchlight --------------------------------------------------------
 def beam_a(t):
-    """Where the first drone points its light (degrees from straight down; negative is left)."""
-    if t < 5.95:
-        return -45                                           # ahead of it as it dives in
-    if t < 6.95:
-        return -8 + 36 * math.sin(2 * math.pi * (t - 5.95))  # sweeping while it hovers
-    if t < 7.25:
-        return -60                                           # leading the lunge
-    if t < 8.15:
-        return 6 - 36 * (t - 7.25) / .9                      # a slow pass over the mast
-    if t < 9.25:
-        return (-15, -30, -15, -45, -30)[min(4, int((t - 8.15) / .22))]      # jerking about
-    if t < 9.95:
-        return -30                                           # locked on to the roof's edge
-    return -75                                               # whipping away
+    """Where the first drone points its light, in degrees from straight down
+    (negative is to the left): a slow sweep from side to side."""
+    return -10 + 38 * math.sin(2 * math.pi * (t - 5.4) / 3.4)
 
 
 def beam_b(t):
-    if t < 12.35:
-        return 50
-    for (a, b) in ((13.10, 13.38), (14.05, 14.30), (14.85, 15.10), (15.95, 16.20), (16.40, 17.20)):
-        if a <= t < b:
-            return 60                                        # pointing ahead during each jump
-    return 40 * math.sin(2 * math.pi * (t - 12.0) / 1.6)
+    return 5 + 34 * math.sin(2 * math.pi * (t - 11.8) / 4.0)
 
 
-def nearest_angle(deg):
-    return min(SEARCH_ANGLES, key=lambda a: abs(a - deg))
+def fade_samples(times, values):
+    """Keyframes for an opacity that changes smoothly, dropping the points that
+    lie on a straight run."""
+    out = [(0.0, {'o': 0})]
+    n = len(times)
+    for i in range(n):
+        if 0 < i < n - 1 and abs(values[i] - values[i - 1]) < 1e-3 and abs(values[i] - values[i + 1]) < 1e-3:
+            continue
+        out.append((max(times[i], out[-1][0] + 1e-3), {'o': round(values[i], 3)}))
+    out.append((T_LOOP, {'o': 0}))
+    return out
 
 
-def beam_layers(name, apex, length_to, groups_by_angle, spans_by_angle, half_outer, half_core, strength):
-    """One translucent cone per angle it ever points at, drawn from the lamp
-    and shown only while the light points that way."""
+def beam_layers(name, apex, length_to, move_g, times, thetas, half_outer, half_core, strength):
+    """One translucent cone for each angle the light passes through; they
+    cross-fade as it turns, so the sweep is smooth."""
     ax, ay = apex[0] + .5, apex[1] + 1.0
     for ang in SEARCH_ANGLES:
-        spans = spans_by_angle.get(ang)
-        if not spans:
+        weights = [max(0.0, 1 - abs(th - ang) / 15.0) for th in thetas]
+        if max(weights) <= 0:
             continue
-        g = gvis(spans, 'beam-%s-%d' % (name, ang))
+        g = (tl(fade_samples(times, weights)) + ' h', '', 'beam-%s-%d' % (name, ang))
         length = min(170.0, (length_to - ay) / max(.25, math.cos(math.radians(ang))))
         for (half, alpha, tag) in ((half_outer, .16 * strength, 'o'), (half_core, .3 * strength, 'c')):
-            cone = new_layer('beam-%s-%d-%s' % (name, ang, tag), groups=groups_by_angle + (g,), alpha=alpha, clip='sky')
+            cone = new_layer('beam-%s-%d-%s' % (name, ang, tag), groups=(move_g, g), alpha=alpha, clip='sky')
             pts = [(ax, ay)] + [(ax + length * math.sin(math.radians(ang + d)),
                                  ay + length * math.cos(math.radians(ang + d))) for d in (-half, half)]
             for (x, y) in poly_pts(pts):
                 cone.set(x, y, BEAM)
 
 
-def lean_spans(fn, t0, t1):
-    """When the drone is tilting into an acceleration (or flaring against a
-    stop): spans for each lean."""
-    ts = [t0 + i * SAMPLE for i in range(int(round((t1 - t0) / SAMPLE)) + 1)]
-    xs = [fn(t)[0] for t in ts]
-    n = len(ts)
-    vx = [(xs[min(i + 1, n - 1)] - xs[max(i - 1, 0)]) / (2 * SAMPLE) for i in range(n)]
-    ax = [(vx[min(i + 1, n - 1)] - vx[max(i - 1, 0)]) / (2 * SAMPLE) for i in range(n)]
-    ax = [sum(ax[max(0, i - 1):i + 2]) / len(ax[max(0, i - 1):i + 2]) for i in range(n)]
-    out = {-1: [], 0: [], 1: []}
-    for t, a in zip(ts, ax):
-        lean = -1 if a < -260 else (1 if a > 260 else 0)
-        spans = out[lean]
-        if spans and abs(spans[-1][1] - t) < 1e-6:
-            spans[-1] = (spans[-1][0], t + SAMPLE)
-        else:
-            spans.append((t, t + SAMPLE))
+def pool_samples(times, pts, thetas, lamp_dy):
+    """Where the light lands on the parapet, and how bright the pool is."""
+    out = []
+    for t, (_, x, y), th in zip(times, pts, thetas):
+        hit = x + (112 - (y + lamp_dy)) * math.tan(math.radians(th))
+        o = max(0.0, min(1.0, (65 - abs(th)) / 10.0))               # fades as the light turns to the horizon
+        o *= max(0.0, min(1.0, (hit - 2) / 8.0)) * max(0.0, min(1.0, (254 - hit) / 8.0))
+        out.append((t, o, hit))
     return out
 
 
 def drones():
-    for (name, fn, size, t0, t1, ref, beam_fn, led_period) in (
-            ('a', drone_a, 'M', 5.15, 10.9, (128, 48), beam_a, .7),
-            ('b', drone_b, 'S', 11.5, 17.3, (128, 36), beam_b, .9)):
-        n = int(round((t1 - t0) / SAMPLE)) + 1
-        times = [t0 + i * SAMPLE for i in range(n)]
-        pts = [(t,) + fn(t) for t in times]
+    for (name, fn, size, t0, t1, ref, beam_fn) in (('a', drone_a, 'M', 5.2, 11.0, (128, 48), beam_a),
+                                                   ('b', drone_b, 'S', 11.6, 18.2, (128, 36), beam_b)):
+        pts, t = [], t0
+        while t < t1 + 1e-9:
+            x, y = fn(t)
+            pts.append((t, x, y))
+            t += .25
         cls, hidden = move(pts, ref=ref)
         move_g = (cls + (' h' if hidden else ''), '', 'drone-' + name)
         lamp_dy = 9 if size == 'M' else 5
-        apex = (ref[0], ref[1] + lamp_dy)
-        # the light first, so the drone sits in front of it
-        spans = {}
-        pool = []
-        prev_ang = None
-        for t, (_, x, y) in zip(times, pts):
-            ang = nearest_angle(beam_fn(t))
-            sp = spans.setdefault(ang, [])
-            if sp and abs(sp[-1][1] - t) < 1e-6:
-                sp[-1] = (sp[-1][0], t + SAMPLE)
-            else:
-                sp.append((t, t + SAMPLE))
-            # where the light lands on the parapet; it jumps when the angle does
-            for a_, when in ((prev_ang, t - EPS), (ang, t)):
-                if a_ is None or (a_ == ang and when != t):
-                    continue
-                hit = x + (112 - (y + lamp_dy)) * math.tan(math.radians(a_))
-                pool.append((when, abs(a_) <= 60 and 4 < hit < 252, hit))
-            prev_ang = ang
-        POOLS.append((name, pool))
-        length_to = 118
+        bt = [t0 + i * .1 for i in range(int(round((t1 - t0) / .1)) + 1)]
+        thetas = [beam_fn(t) for t in bt]
+        POOLS.append((name, pool_samples(bt, [(t,) + fn(t) for t in bt], thetas, lamp_dy)))
         small = size == 'S'
-        beam_layers(name, apex, length_to, (move_g,), spans, 8 if small else 11, 3 if small else 4.5,
-                    .7 if small else 1.0)
-        # the drone, banked into its turns
-        for lean, lspans in lean_spans(fn, t0, t1).items():
-            if not lspans:
-                continue
-            drone_layers(name, ref[0], ref[1], size, RED_N, (move_g, gvis(lspans, 'lean-%s%+d' % (name, lean))),
-                         lean, led_period)
+        # the light first, so the drone sits in front of it
+        beam_layers(name, (ref[0], ref[1] + lamp_dy), 118, move_g, bt, thetas, 8 if small else 11,
+                    3 if small else 4.5, .7 if small else 1.0)
+        drone(name, ref[0], ref[1], size, RED_N, (move_g,))
 
 
 def search_pools():
     """The pools of light the searchlights throw on the parapet."""
     for name, pool in POOLS:
         samples = [(0.0, {'o': 0, 'x': 0, 'y': 0})]
-        for (t, on, hit) in pool:
-            samples.append((t, {'o': 1 if on else 0, 'x': int(round(hit)) - 128, 'y': 0}))
-        last = samples[-1]
-        samples.append((min(last[0] + EPS, T_LOOP - .01), dict(last[1], o=0)))
-        samples.append((T_LOOP, dict(last[1], o=0)))
+        n = len(pool)
+        for i, (t, o, hit) in enumerate(pool):
+            if 0 < i < n - 1 and o == 0 and pool[i - 1][1] == 0 and pool[i + 1][1] == 0:
+                continue
+            samples.append((max(t, samples[-1][0] + 1e-3), {'o': round(o, 3), 'x': int(round(hit)) - 128, 'y': 0}))
+        samples.append((T_LOOP, dict(samples[-1][1], o=0)))
         grp = ((tl(samples) + ' h', '', 'pool-' + name),)
         outer = new_layer('pool-%s-o' % name, groups=grp, alpha=.2)
         for (x, y) in blob_pts(128, 113, 10, 2.4):
@@ -2521,9 +2462,12 @@ def blinkers():
         L = new_layer('beacon-%d' % i, anim=cls, style=style + ';animation-delay:-%.2fs' % ((i * .53) % 3))
         L.set(x, y, col, True)
         halo = new_layer('beacon-halo-%d' % i, anim=cls, style=style + ';animation-delay:-%.2fs' % ((i * .53) % 3),
-                         alpha=.35)
-        for (dx, dy) in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-            halo.set(x + dx, y + dy, col)
+                         alpha=.24)
+        for dy in range(-3, 4):                          # a round glow, dithered toward its edge
+            for dx in range(-3, 4):
+                d = math.hypot(dx, dy)
+                if 0 < d <= 1.1 or (1.1 < d <= 2.5 and (dx + dy) % 2 == 0):
+                    halo.set(x + dx, y + dy, col)
     # the station box: its three switch-line LEDs step through the four sectors
     frames = seq_frames(4, 1.6)
     dim = [(x, y, mix(c, INK, .72)) for (x, y, c) in station_leds()]
@@ -2533,9 +2477,12 @@ def blinkers():
     for ph, bits in enumerate(((0, 0, 0), (1, 0, 0), (0, 1, 0), (1, 1, 0))):
         cls, style = frames[ph]
         L = new_layer('station-leds-%d' % ph, anim=cls, style=style)
+        Hh = new_layer('station-leds-halo-%d' % ph, anim=cls, style=style, alpha=.3)
         for b, (x, y, c) in zip(bits, station_leds()):
             if b:
                 L.set(x, y, c, True)
+                for (dx, dy) in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    Hh.set(x + dx, y + dy, c)
     # a few windows go dark for a moment, and the neon stutters
     rng = Rng(31)
     cand = []
@@ -2553,6 +2500,12 @@ def blinkers():
     cls, style = flicker(3.7)
     L = new_layer('bar-flicker', anim=cls, style=style)
     text3(L, 12, 96 + 6, 'A', mix(PINK_D, INK, .55), emit=True, vertical=False)
+    cls, style = flicker(5.3, 1.7)                     # the Meshtastic tube stutters too
+    fm = new_layer('mesh-flicker', anim=cls, style=style)
+    for stroke in mesh_strokes(*MESH_AT):
+        for (p, q) in zip(stroke, stroke[1:]):
+            for (x, y) in line_pts(p[0], p[1], q[0], q[1]):
+                fm.set(x, y, MESH_DIM, True)
     cls, style = flicker(7.3, 2.0)
     tri = new_layer('trident-dim', anim=cls, style=style)
     x, y = TRIDENT_AT
@@ -2657,6 +2610,103 @@ def tv_windows():
         L.set(x + 1, y + 1, C('#e8f4ff'), True)
 
 
+# ---- light and glow ----------------------------------------------------------
+def neon_pulse(period):
+    """A neon that breathes: its bloom swells and eases, slowly."""
+    add_css('.np{animation:np 1s ease-in-out infinite alternate}')
+    add_css(keyframes('np', {0: 'opacity:.72', 100: 'opacity:1'}))
+    return 'np', 'animation-duration:%gs' % period
+
+
+def neon_dip(duration, delay):
+    """A bloom that dips whenever its tube stutters (see flicker())."""
+    add_css('.nd{animation:nd 1s %s}' % STEP)
+    add_css(keyframes('nd', {0: 'opacity:1', 88: 'opacity:.35', 90: 'opacity:1', 92: 'opacity:.35',
+                             94: 'opacity:1', 96: 'opacity:.35', 98: 'opacity:1'}))
+    return 'nd', 'animation-duration:%gs;animation-delay:-%gs' % (duration, delay)
+
+
+def sign_bloom(name, tubes, color, bands, breathe, stutter):
+    pc, ps = neon_pulse(breathe)
+    dc, ds = neon_dip(*stutter)
+    return bloom(name, tubes, color, bands, groups=((pc, ps, 'np-' + name), (dc, ds, 'nd-' + name)))
+
+
+def neon_blooms():
+    """The glow round the neon signs: the Meshtastic mark is the brightest
+    light on its tower, the little trident glows softly in blue and yellow.
+    (The pink BAR sign already has all the glow it needs.)"""
+    tubes = {p for p, c in layer('meshtastic').pix.items() if c in (MESH_GREEN, MESH_HOT)}
+    sign_bloom('mesh', tubes, MESH_GREEN, ((1.5, .34), (2.5, .22), (3.5, .14), (5, .08), (7.5, .04)),
+               3.6, (5.3, 1.7))
+    x, y = TRIDENT_AT
+    for tag, ch, col in (('blue', 'B', BLUE_N), ('gold', 'Y', GOLD_N)):
+        pix = {(x + i, y + j) for j, row in enumerate(TRIDENT) for i, c in enumerate(row) if c == ch}
+        sign_bloom('tri-' + tag, pix, col, ((1.5, .2), (2.5, .11), (4, .05)), 4.4, (7.3, 2.0))
+    street = set(layer('alley-street').pix)                 # lights far down in the alley
+    bloom('street', street, (255, 200, 150), ((1.5, .28), (2.5, .12)))
+
+
+def window_bloom():
+    """The lit windows of the near towers glow a little onto the wall round them."""
+    lit = {}
+    for (name, x, y, w, h, c) in WINDOWS:
+        if not name.startswith('near') or y > 104:
+            continue
+        top, topc = composite_at(LAYERS, x, y)
+        if top is None or top.name != name or topc != c:
+            continue
+        for j in range(h):
+            for i in range(w):
+                lit[(x + i, y + j)] = c
+    ring = {}
+    for (px, py), c in lit.items():
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                q = (px + dx, py + dy)
+                if q not in lit:
+                    ring.setdefault(c, set()).add(q)
+    for k, c in enumerate(sorted(ring)):
+        L = new_layer('window-bloom-%d' % k, alpha=.15)
+        for (x, y) in ring[c]:
+            L.set(x, y, c)
+
+
+def hut_lighting():
+    """The caged lamp over the hut door: a bloom, a cone down the door, a pool on the roof."""
+    lamp = blob_pts(237, 103, 2.4, 1.6)
+    dc, ds = neon_dip(9.1, 3.3)
+    bloom('hut', lamp, (255, 200, 120), ((1.5, .34), (2.5, .2), (4, .11), (6.5, .05)), groups=((dc, ds, 'nd-hut'),))
+    cone = new_layer('hut-cone', alpha=.1)
+    for p in poly_pts([(235.5, 105), (238.5, 105), (250, 128), (224, 128)]):
+        cone.set(p[0], p[1], C('#ffdc96'))
+    pool = new_layer('hut-pool', alpha=.14)
+    for p in blob_pts(237, 128, 14, 2):
+        pool.set(p[0], p[1], C('#ffdc96'))
+    cls, style = flicker(9.1, 3.3)                          # the bulb stutters now and then
+    dim = new_layer('hut-lamp-dim', anim=cls, style=style)
+    for p in lamp:
+        dim.set(p[0], p[1], C('#8a6a48'), True)
+
+
+def laptop_halos():
+    """The screen's light: a halo round the lid, a pool on the roof in front,
+    brighter while the map is lit, with red spilling off it each time a ping lands."""
+    display = {(SX0 + i, SY0 + j) for i in range(SW) for j in range(SH)}
+    bloom('lap', display, (90, 200, 230), ((1.5, .14), (3, .07)))
+    pool = new_layer('lap-pool', alpha=.12)
+    for p in blob_pts(98, 129, 22, 2.6):
+        pool.set(p[0], p[1], C('#8af4ff'))
+    on = (gvis([(T_ALERT, T_CLEAR)], 'lap-on'),)
+    bloom('lap-on', display, (120, 230, 255), ((1.5, .2), (3, .11), (5.5, .05)), groups=on)
+    pool_on = new_layer('lap-pool-on', groups=on, alpha=.1)
+    for p in blob_pts(98, 129, 24, 2.8):
+        pool_on.set(p[0], p[1], C('#8af4ff'))
+    spans = [(a, a + .22) for a in ARRIVE_A + ARRIVE_B]
+    bloom('lap-alarm', display, (255, 70, 100), ((1.5, .26), (3, .13), (5.5, .06)),
+          groups=(gvis(spans, 'lap-alarm'),))
+
+
 # ----------------------------------------------------------------------------
 # frame, output, build
 # ----------------------------------------------------------------------------
@@ -2696,9 +2746,9 @@ DESC = ('Pixel art: a tiny Clawd in a black hoodie works at a laptop on a roofto
         'apartment towers rise out of the frame all round, a Meshtastic logo glowing green on one of them '
         'and a small yellow and blue trident on another, and mesh links run from the mast to other '
         'rooftops. When the laptop lights up, the smoker flicks his cigarette away and ducks into cover '
-        'while two drones hunt across the rooftops, lunging, stopping dead and sweeping searchlights over '
-        'the roof; their pings fly to the antennas and show as red dots and lines on the map. Then he '
-        'lights another cigarette and sits back down.')
+        'while two drones glide across the rooftops sweeping searchlights over the roof; their pings '
+        'fly to the antennas and show as red dots and lines on the map. Then he lights another cigarette '
+        'and sits back down.')
 
 
 def clip_defs():
@@ -2720,6 +2770,8 @@ def write_svg(path, variant='animated'):
 def build():
     """Draw the layers back to front."""
     city()
+    window_bloom()
+    neon_blooms()
     window_people()
     air_cars()
     mesh_links()
@@ -2727,6 +2779,7 @@ def build():
     drones()
     stage()
     hut_light()
+    hut_lighting()
     roof_props()
     search_pools()
     mast()
@@ -2741,6 +2794,7 @@ def build():
     radar()
     screen_glare()
     screen_glow()
+    laptop_halos()
     pings()
     laptop_light()
     blinkers()
