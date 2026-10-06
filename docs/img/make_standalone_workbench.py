@@ -2134,18 +2134,23 @@ def lighting():
 
 
 def blind_stripes():
-    """Light through the slats of the blinds, thrown across the bench: soft
-    pink bands, brighter near the window."""
-    for strength, (y0, y1), name in ((.17, (90, 112), 'near'), (.1, (112, 133), 'far')):
+    """Light through the slats of the blinds, thrown across the bench top: soft
+    pink bands as level as the slats, as wide as the glass and leaning away from
+    it as they come toward us, brighter near the window. Only the bare bench
+    catches them: the wall under the sill is in the window's own plane, and
+    what stands on the bench keeps the light off itself."""
+    solid = [L for L in LAYERS if L.alpha is None]
+    tiers = ((.27, .07, (BENCH_Y + 1, 111), 'near'), (.19, .05, (111, 122), 'mid'),
+             (.13, .03, (122, FRONT_Y), 'far'))
+    for strength, haze, (y0, y1), name in tiers:
         L = new_layer('stripes-' + name, alpha=strength)
-        for k in range(7):
-            x0 = 10 + k * 13
-            top_dx = (y0 - 90) * .9
-            bot_dx = (y1 - 90) * .9
-            quad = [(x0 + top_dx, y0), (x0 + 5 + top_dx, y0), (x0 + 5 + bot_dx, y1), (x0 + bot_dx, y1)]
-            for p in poly_pts(quad):
-                if 0 <= p[0] <= 102 and not (GX0 - 4 <= p[0] <= GX1 + 4 and p[1] < 90):
-                    L.set(p[0], p[1], C('#ff5ac8'))
+        G = new_layer('glow-' + name, alpha=haze)           # the light between the bands, fainter
+        for y in range(y0, y1):
+            lean = int(.45 * (y - BENCH_Y))
+            for x in range(GX0 + lean, GX1 + lean + 1):
+                top, _ = composite_at(solid, x, y)
+                if top is not None and top.name == 'bench':
+                    (L if (y - BENCH_Y - 1) % 5 < 2 else G).set(x, y, C('#ff5ac8'))
 
 
 # ----------------------------------------------------------------------------
