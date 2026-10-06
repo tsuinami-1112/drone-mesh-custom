@@ -3,7 +3,7 @@
 Details for the standalone mapper branch. To get it running, start with the
 [README](../README.md). The station hardware, the firmware and the full
 project documentation live on the
-[`level2-main`](https://github.com/tsuinami-1112/drone-mesh-custom/tree/level2-main) branch.
+[`level2-main`](https://github.com/tsuinami-1112/drone-sentinel/tree/level2-main) branch.
 
 - [Mapper features](#mapper-features)
 - [Raspberry Pi installer](#raspberry-pi-installer)
@@ -77,7 +77,7 @@ makes it start on every boot. It:
    environment
 
 ```bash
-wget https://raw.githubusercontent.com/tsuinami-1112/drone-mesh-custom/standalone-mapper-meshtastic/RPI/install_rpi.py
+wget https://raw.githubusercontent.com/tsuinami-1112/drone-sentinel/standalone-mapper-meshtastic/RPI/install_rpi.py
 python3 install_rpi.py --branch standalone-mapper-meshtastic
 ```
 
@@ -120,7 +120,7 @@ Then open `http://<the Pi's IP>:5000` from another device. The mapper logs to
   ```ini
   # /etc/systemd/system/mesh-mapper.service
   [Unit]
-  Description=Drone Mesh Mapper
+  Description=Drone Sentinel mapper
   After=network.target
 
   [Service]
@@ -179,7 +179,7 @@ Only `--mesh-channel` (default 0, the channel serial modules send on) is read.
 
 **Level 1 stations.** A heartbeat registers its station in the LEVEL 1
 STATIONS panel. A station flashed with its position and heading
-([Station setup](https://github.com/tsuinami-1112/drone-mesh-custom/tree/level1#station-location-and-heading))
+([Station setup](https://github.com/tsuinami-1112/drone-sentinel/tree/level1#station-location-and-heading))
 sends them in its heartbeat, and the mapper places it there, marked **auto**.
 Over the mesh only some heartbeats carry the position (the first three after
 boot, then one every 10 minutes), so a mapper started later places the station
@@ -525,7 +525,7 @@ tail -f mapper.log             # what's it saying?
 ## Project layout
 
 ```
-drone-mesh-custom/  (standalone-mapper-meshtastic)
+drone-sentinel/  (standalone-mapper-meshtastic)
 |-- mesh-mapper.py              # Flask + SocketIO server, all UI inline, Meshtastic radio input
 |-- requirements.txt            # includes meshtastic, for --mesh
 |-- docs/

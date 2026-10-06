@@ -525,7 +525,7 @@ def _cache_worker(job_id):
     # Set up the HTTP session in a try/finally so we always release sockets
     sess = requests.Session()
     sess.headers.update({
-        'User-Agent': 'drone-mesh-mapper/offline-cacher (https://github.com/colonelpanichacks/drone-mesh-mapper)',
+        'User-Agent': 'drone-sentinel/offline-cacher (https://github.com/tsuinami-1112/drone-sentinel)',
         'Accept': 'image/png, image/jpeg, image/webp, application/x-protobuf, */*',
     })
 
@@ -1141,6 +1141,7 @@ def _post_webhook(payload, override_url: str = None):
     if not url:
         return
     try:
+        # Still the pre-rename name for now, in case a receiver filters on it
         requests.post(url, json=payload, timeout=5,
                       headers={'User-Agent': 'drone-mesh-mapper/geofence'})
     except Exception as e:
@@ -2721,8 +2722,8 @@ GEOCODE_CACHE_MAX = 256
 GEOCODE_MIN_INTERVAL = 1.05  # seconds; Nominatim asks for <=1 req/s
 GEOCODE_TIMEOUT = 8.0
 GEOCODE_USER_AGENT = (
-    'drone-mesh-mapper/offline-cacher '
-    '(https://github.com/colonelpanichacks/drone-mesh-mapper)'
+    'drone-sentinel/offline-cacher '
+    '(https://github.com/tsuinami-1112/drone-sentinel)'
 )
 
 
@@ -3718,7 +3719,7 @@ def _adsb_effective_source(cfg) -> tuple:
 def _adsb_poller_loop():
     """Background poller; respects ADSB_CONFIG['enabled'] and SHUTDOWN_EVENT."""
     sess = requests.Session()
-    sess.headers.update({'User-Agent': 'drone-mesh-mapper/adsb (https://github.com/colonelpanichacks/drone-mesh-mapper)'})
+    sess.headers.update({'User-Agent': 'drone-sentinel/adsb (https://github.com/tsuinami-1112/drone-sentinel)'})
     # Big connection pool — we fire up to 16 parallel tile fetches per poll, so
     # the default urllib3 pool of 10 thrashes. 32 keeps it cool with headroom.
     _big_adapter = HTTPAdapter(pool_connections=32, pool_maxsize=32, max_retries=0)
@@ -3838,7 +3839,7 @@ def _adsb_kick_fetch():
     if not src:
         return
     sess = requests.Session()
-    sess.headers.update({'User-Agent': 'drone-mesh-mapper/adsb-kick'})
+    sess.headers.update({'User-Agent': 'drone-sentinel/adsb-kick'})
     _big_adapter = HTTPAdapter(pool_connections=32, pool_maxsize=32, max_retries=0)
     sess.mount('https://', _big_adapter)
     sess.mount('http://', _big_adapter)
@@ -4164,7 +4165,7 @@ _TRACE_HOSTS = {
 }
 
 # globe.adsb.fi / globe.airplanes.live return 403 to non-browser User-Agents — so
-# the old 'drone-mesh-mapper/trace' UA got rejected and those fallbacks never worked
+# the old '<app>/trace' UA got rejected and those fallbacks never worked
 # (only adsb.lol, which doesn't check UA, ever served traces). A browser-like UA +
 # Referer gets HTTP 200 from all of them. This is what actually fixes flight paths.
 _TRACE_UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 '
@@ -4389,7 +4390,7 @@ def _import_worker(job_id, url):
 
         job['status'] = 'running'
         with requests.get(url, stream=True, timeout=30, allow_redirects=True,
-                          headers={'User-Agent': 'drone-mesh-mapper/import'}) as r:
+                          headers={'User-Agent': 'drone-sentinel/import'}) as r:
             if r.status_code != 200:
                 raise RuntimeError(f'HTTP {r.status_code} from {url}')
             total = 0

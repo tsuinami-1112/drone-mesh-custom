@@ -2,13 +2,13 @@
   <img src="docs/img/standalone-workbench.svg" width="768" alt="Pixel art of a dark makerspace: a laptop running the mapper on a workbench crowded with electronics, next to a window with half-drawn blinds. Outside, drones sweep searchlights over a cyberpunk city while their blips drift slowly across the laptop's map.">
 </p>
 
-# Drone Mesh Mapper - standalone mapper (experimental)
+# Drone Sentinel - standalone mapper (experimental)
 
 > Placeholder README for an experimental branch. This branch holds only the
 > mapper and what it needs. The detection stations, their firmware and the full
 > documentation are on
-> [`level2-main`](https://github.com/tsuinami-1112/drone-mesh-custom/tree/level2-main)
-> (level 2) and [`level1`](https://github.com/tsuinami-1112/drone-mesh-custom/tree/level1).
+> [`level2-main`](https://github.com/tsuinami-1112/drone-sentinel/tree/level2-main)
+> (level 2) and [`level1`](https://github.com/tsuinami-1112/drone-sentinel/tree/level1).
 
 ## What it does
 
@@ -51,8 +51,8 @@ On the ESP32, WiFi replaces Bluetooth. The radio's screen shows its IP address.
 **2. Install the mapper** (Python 3.9+):
 
 ```bash
-git clone -b standalone-mapper-meshtastic https://github.com/tsuinami-1112/drone-mesh-custom
-cd drone-mesh-custom
+git clone -b standalone-mapper-meshtastic https://github.com/tsuinami-1112/drone-sentinel
+cd drone-sentinel
 python3 -m venv .venv && . .venv/bin/activate     # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
@@ -72,7 +72,7 @@ port, the Meshtastic CLI and app can't use that port.
 
 **4. Level 1 stations, if you have any:** a station flashed with its position
 and heading (the level 1 firmware's "Station setup (map)" task, see the
-[`level1` README](https://github.com/tsuinami-1112/drone-mesh-custom/tree/level1#station-location-and-heading))
+[`level1` README](https://github.com/tsuinami-1112/drone-sentinel/tree/level1#station-location-and-heading))
 places itself on the map, marked **auto**, within 10 minutes over the mesh. For
 any other, set its position and heading once in the map's LEVEL 1 STATIONS
 panel. Their bearings then cross into positions. A position saved in the panel
@@ -83,7 +83,7 @@ SAVE to go back to it.
 every boot:
 
 ```bash
-wget https://raw.githubusercontent.com/tsuinami-1112/drone-mesh-custom/standalone-mapper-meshtastic/RPI/install_rpi.py
+wget https://raw.githubusercontent.com/tsuinami-1112/drone-sentinel/standalone-mapper-meshtastic/RPI/install_rpi.py
 python3 install_rpi.py --branch standalone-mapper-meshtastic
 ```
 
