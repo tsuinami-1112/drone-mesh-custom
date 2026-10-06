@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Drone Sentinel // Web Flasher</title>
 <meta name="description" content="Install Drone Sentinel level 2 firmware on a XIAO ESP32 from the browser: field station, home station, standalone detector and the C3 / C5 variants.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23030805'/%3E%3Ccircle cx='16' cy='16' r='11' fill='none' stroke='%2300ff66' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='5' fill='none' stroke='%23ff2bd6' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='1.5' fill='%2300ff66'/%3E%3C/svg%3E">
 <style>
   :root {
     --bg:        #030805;
@@ -325,6 +326,7 @@
     .arch { font-size: 9px; }
     .specs { grid-template-columns: minmax(0, 1fr); gap: 0; }
     .specs dd { margin-bottom: 6px; }
+    esp-web-install-button button { padding: 12px 12px; letter-spacing: 1px; font-size: 12px; }
   }
 </style>
 </head>
@@ -393,23 +395,23 @@
       A typical deployment: <b>Field station</b> firmware on every detector out on a pole or roof, and <b>Home station</b> firmware on the XIAO plugged into the computer running <a href="https://github.com/tsuinami-1112/drone-sentinel#quick-start">mesh-mapper.py</a>. Add as many field stations as you like.
     </p>
 
-    <pre class="arch"><span class="r">┌─────────────────────────────────────────────────────────────┐
-│              FIELD STATION   (pole or roof, solar)          │
-│  XIAO ESP32-S3 ──UART──> Heltec V4 (Meshtastic) ──LoRa──>   │
-│  detects drones          GPIO5 TX ──> Heltec 47             │
-│  over WiFi + BLE         GPIO6 RX <── Heltec 48             │
-└─────────────────────────────────────────────────────────────┘</span>
-                               │
+    <pre class="arch"><span class="r">+-------------------------------------------------------------+
+|              FIELD STATION   (pole or roof, solar)          |
+|  XIAO ESP32-S3 --UART--&gt; Heltec V4 (Meshtastic) --LoRa--&gt;   |
+|  detects drones          GPIO5 TX ---&gt; Heltec 47            |
+|  over WiFi + BLE         GPIO6 RX &lt;--- Heltec 48            |
++-------------------------------------------------------------+</span>
+                               |
                         LoRa mesh network
                        (multiple hops OK)
-                               │
-<span class="h">┌─────────────────────────────────────────────────────────────┐
-│              HOME STATION   (next to the mapper)            │
-│  Heltec V4 (Meshtastic) ──UART──> XIAO ESP32-S3 ──USB──>    │
-│  receives the mesh       Heltec 48 ──> GPIO6 RX   computer  │
-│                          Heltec 47 <── GPIO5 TX   running   │
-│  no detection            drops duplicates       the mapper  │
-└─────────────────────────────────────────────────────────────┘</span></pre>
+                               |
+<span class="h">+-------------------------------------------------------------+
+|              HOME STATION   (next to the mapper)            |
+|  Heltec V4 (Meshtastic) --UART--&gt; XIAO ESP32-S3 --USB--&gt;    |
+|  receives the mesh       Heltec 48 ---&gt; GPIO6 RX   computer |
+|                          Heltec 47 &lt;--- GPIO5 TX   running  |
+|  no detection            drops duplicates       the mapper  |
++-------------------------------------------------------------+</span></pre>
 
     <p class="intro">
       <b>Why two firmwares:</b> when five field stations hear the same drone, the mapper would otherwise get five copies of every detection. Each field station tags its reports with a <span class="kbd">node_id</span> taken from its own MAC. The home station keys on the drone's MAC: the first report goes straight through, copies from other stations within <b>500&nbsp;ms</b> are dropped, and the next one after that goes through. Level 1 bearing reports always pass, because the mapper needs bearings from several stations to cross them.
