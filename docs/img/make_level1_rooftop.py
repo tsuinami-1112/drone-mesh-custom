@@ -2173,8 +2173,9 @@ LAMP = C('#fffbe0')
 BEAM = (214, 238, 255)                      # the searchlight's cold white
 SEARCH_ANGLES = (-75, -60, -45, -30, -15, 0, 15, 30, 45, 60, 75)     # degrees from straight down
 CLIPS['sky'] = (0, 0, W, 112)               # the beams end at the parapet
-CLIPS['behind'] = (0, 0, NEAR_R[0], 112)    # the second drone flies behind the near tower on the right
-CLIPS['behind-ping'] = (0, 0, NEAR_R[0], H)     # and so do its pings
+# the second drone flies behind both near towers, so it comes out from behind the left one and goes behind the right
+CLIPS['behind'] = (NEAR_L[1] + 1, 0, NEAR_R[0] - NEAR_L[1] - 1, 112)
+CLIPS['behind-ping'] = (NEAR_L[1] + 1, 0, NEAR_R[0] - NEAR_L[1] - 1, H)     # and so do its pings
 POOLS = []                                  # where each searchlight lands: filled by drones(), drawn later
 
 
