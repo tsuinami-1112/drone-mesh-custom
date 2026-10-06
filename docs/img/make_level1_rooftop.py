@@ -2172,7 +2172,6 @@ ROTOR_HI, ROTOR_LO = C('#d6e2ff'), C('#6b80c4')
 LAMP = C('#fffbe0')
 BEAM = (214, 238, 255)                      # the searchlight's cold white
 SEARCH_ANGLES = (-75, -60, -45, -30, -15, 0, 15, 30, 45, 60, 75)     # degrees from straight down
-SKY_ANGLES = tuple(range(120, 241, 15))                                # and the ones that look up at the sky
 CLIPS['sky'] = (0, 0, W, 112)               # the beams end at the parapet
 # the second drone flies behind both near towers, so it comes out from behind the left one and goes behind the right
 CLIPS['behind'] = (NEAR_L[1] + 1, 0, NEAR_R[0] - NEAR_L[1] - 1, 112)
@@ -2266,8 +2265,7 @@ def beam_a(t):
 
 
 def beam_b(t):
-    """The second drone's light looks the wrong way: up at the sky, never down at the roof."""
-    return 180 + 34 * math.sin(2 * math.pi * (t - 11.8) / 4.0)
+    return 5 + 34 * math.sin(2 * math.pi * (t - 11.8) / 4.0)
 
 
 def fade_samples(times, values):
@@ -2284,22 +2282,27 @@ def fade_samples(times, values):
 
 
 def beam_layers(name, apex, length_to, move_g, times, thetas, half_outer, half_core, strength, clip='sky',
-                angles=SEARCH_ANGLES):
+                reach=None):
     """One translucent cone for each angle the light passes through; they
-    cross-fade as it turns, so the sweep is smooth."""
+    cross-fade as it turns, so the sweep is smooth. With a `reach` the light is
+    pointing away from us, into the depth of the picture: it is a short beam that
+    fades out before it gets anywhere near the roof."""
     ax, ay = apex[0] + .5, apex[1] + 1.0
-    for ang in angles:
+    for ang in SEARCH_ANGLES:
         weights = [max(0.0, 1 - abs(th - ang) / 15.0) for th in thetas]
         if max(weights) <= 0:
             continue
         g = (tl(fade_samples(times, weights)) + ' h', '', 'beam-%s-%d' % (name, ang))
         length = min(170.0, (length_to - ay) / max(.25, math.cos(math.radians(ang))))
         for (half, alpha, tag) in ((half_outer, .16 * strength, 'o'), (half_core, .3 * strength, 'c')):
-            cone = new_layer('beam-%s-%d-%s' % (name, ang, tag), groups=(move_g, g), alpha=alpha, clip=clip)
-            pts = [(ax, ay)] + [(ax + length * math.sin(math.radians(ang + d)),
-                                 ay + length * math.cos(math.radians(ang + d))) for d in (-half, half)]
-            for (x, y) in poly_pts(pts):
-                cone.set(x, y, BEAM)
+            # one cone, or (pointing away) three that get shorter, so the light thins out with distance
+            stages = [(length, alpha)] if not reach else [(reach * f, alpha / 3.0) for f in (1.0, .7, .4)]
+            for (n, (ln, a)) in enumerate(stages):
+                cone = new_layer('beam-%s-%d-%s%s' % (name, ang, tag, n or ''), groups=(move_g, g), alpha=a, clip=clip)
+                pts = [(ax, ay)] + [(ax + ln * math.sin(math.radians(ang + d)),
+                                     ay + ln * math.cos(math.radians(ang + d))) for d in (-half, half)]
+                for (x, y) in poly_pts(pts):
+                    cone.set(x, y, BEAM)
 
 
 def pool_samples(times, pts, thetas, lamp_dy):
@@ -2314,8 +2317,8 @@ def pool_samples(times, pts, thetas, lamp_dy):
 
 
 def drones():
-    for (name, fn, size, t0, t1, ref, beam_fn) in (('a', drone_a, 'M', 5.2, 11.0, (128, 48), beam_a),
-                                                   ('b', drone_b, 'S', 11.6, 18.2, (128, 36), beam_b)):
+    for (name, fn, size, t0, t1, ref, beam_fn, reach) in (('a', drone_a, 'M', 5.2, 11.0, (128, 48), beam_a, None),
+                                                          ('b', drone_b, 'S', 11.6, 18.2, (128, 36), beam_b, 46)):
         pts, t = [], t0
         while t < t1 + 1e-9:
             x, y = fn(t)
@@ -2326,15 +2329,13 @@ def drones():
         lamp_dy = 9 if size == 'M' else 5
         bt = [t0 + i * .1 for i in range(int(round((t1 - t0) / .1)) + 1)]
         thetas = [beam_fn(t) for t in bt]
-        pool = pool_samples(bt, [(t,) + fn(t) for t in bt], thetas, lamp_dy)
-        if any(o > 0 for (_, o, _) in pool):                        # a light that looks up leaves no pool
-            POOLS.append((name, pool))
+        if not reach:                                               # a light pointing away leaves no pool on the roof
+            POOLS.append((name, pool_samples(bt, [(t,) + fn(t) for t in bt], thetas, lamp_dy)))
         small = size == 'S'
         clip = 'behind' if name == 'b' else None
         # the light first, so the drone sits in front of it
         beam_layers(name, (ref[0], ref[1] + lamp_dy), 118, move_g, bt, thetas, 8 if small else 11,
-                    3 if small else 4.5, .7 if small else 1.0, clip or 'sky',
-                    SKY_ANGLES if name == 'b' else SEARCH_ANGLES)
+                    3 if small else 4.5, .7 if small else 1.0, clip or 'sky', reach)
         drone(name, ref[0], ref[1], size, RED_N, (move_g,), clip)
 
 
