@@ -1,8 +1,8 @@
-# Drone Mesh Mapper - Node Mode
+# Drone Sentinel - Node Mode
 
 Two firmwares for the Seeed XIAO ESP32S3 paired with a Heltec WiFi LoRa 32 V4 running Meshtastic. Remote nodes (field stations) detect drones. The home node receives detections from the mesh and feeds them to [`mesh-mapper.py`](../mesh-mapper.py) in this repository.
 
-Originally written by colonelpanichacks for [drone-mesh-mapper](https://github.com/colonelpanichacks/drone-mesh-mapper); this copy is maintained as part of drone-mesh-custom. For the full station build (parts, wiring, power, Meshtastic settings, flashing) start with the [main README](../README.md); this page covers how the two firmwares work.
+Originally written by colonelpanichacks for [drone-mesh-mapper](https://github.com/colonelpanichacks/drone-mesh-mapper); this copy is maintained as part of drone-sentinel. For the full station build (parts, wiring, power, Meshtastic settings, flashing) start with the [main README](../README.md); this page covers how the two firmwares work.
 
 ---
 

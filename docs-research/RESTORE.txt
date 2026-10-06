@@ -1,14 +1,15 @@
 RESTORING THIS WORK
 ===================
 
-Two files were produced:
+Two files were produced. Their names use drone-mesh-5plus, the project's
+working name before it became drone-sentinel:
 
 1. drone-mesh-5plus.bundle   - the complete git repository: every commit on
    main and on the intl-detection branch (which holds the FAA removal and the
    multi-protocol detection work), plus the original origin refs.
 
-     git clone drone-mesh-5plus.bundle drone-mesh-5plus
-     cd drone-mesh-5plus
+     git clone drone-mesh-5plus.bundle drone-sentinel
+     cd drone-sentinel
      git checkout intl-detection          # the new work
      git remote set-url origin <url of your new empty GitHub repo>
      git push --all origin
