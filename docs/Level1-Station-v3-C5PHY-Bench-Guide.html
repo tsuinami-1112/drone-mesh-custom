@@ -110,7 +110,7 @@
 <section class="sheet">
   <div class="runhead">Level 1 Station v3 — Bench Guide</div>
   <div class="body">
-    <p class="kicker">drone-mesh-5plus · Level 1 station · Bench guide</p>
+    <p class="kicker">drone-sentinel · Level 1 station · Bench guide</p>
     <h1>Level 1 Station v3 — C5 PHY prototype</h1>
     <p class="lead">The XIAO ESP32-C5's own 5 GHz Wi-Fi radio as the analog FPV receiver: sector direction finding and a software video check, with no RX5808 and no sync separator. Bench build and verification guide.</p>
 
@@ -200,7 +200,7 @@
 
     <div class="callout"><p><b>Before you start:</b> nothing in this station has run on hardware yet. The receiver is the C5's Wi-Fi PHY driven through undocumented calls that the C5VRX project proved on ESP-IDF 6.0; this firmware re-implements them on the fleet's Arduino/ESP-IDF 5.5 toolchain. The procedure on sheets 6–8 is ordered so that each stage proves the next one is worth doing: receiver alive, channel coverage, selectivity, video (NTSC then PAL), sensitivity against an RX5808 station, then the switch and the pattern. Two rules that are easy to break: the six I/Q lane pads (D0, D1, D2, D3, D6, D10) must stay unconnected, and every flash starts with a full erase. Full BOM on sheet 5.</p></div>
   </div>
-  <div class="foot"><span>drone-mesh-5plus · level1 · 2026-10-05 · firmware builds and links, nothing bench validated</span><span>Page 1 of 8</span></div>
+  <div class="foot"><span>drone-sentinel · level1 · 2026-10-05 · firmware builds and links, nothing bench validated</span><span>Page 1 of 8</span></div>
 </section>
 
 <!-- ===================================================== SHEET 2 — FULL BLOCK DIAGRAM -->
@@ -387,7 +387,7 @@
 
     <div class="callout"><p><b>GPIO numbers are from the Arduino core's <code>XIAO_ESP32C5</code> variant</b> (<code>config.h</code>); wire by the D-labels. D4 = GPIO23 / D5 = GPIO24 is corroborated by C5VRX's DAC on D4–D9 = GPIO 23, 24, 11, 12, 8, 9. The I/Q lanes are GPIO 1, 0, 25 (Q7–Q9) and 7, 10, 11 (I7–I9): six of C5VRX's eight, the bit-6 lanes and the underside GPIO2–5 pads left out so the eleven top-side pins hold lanes, UART and switch; the firmware reads the missing bit as the midpoint (<code>IQ_LANE_BITS</code>; measure <code>RF_NOISE_POWER</code> in this mode, stage 1). Each MODEM_DIAG bit is driven out through its pad and read back from it, so a load on a lane pad corrupts the samples.</p></div>
   </div>
-  <div class="foot"><span>drone-mesh-5plus · level1 · 2026-10-05 · firmware builds and links, nothing bench validated</span><span>Page 2 of 8</span></div>
+  <div class="foot"><span>drone-sentinel · level1 · 2026-10-05 · firmware builds and links, nothing bench validated</span><span>Page 2 of 8</span></div>
 </section>
 
 <!-- ===================================================== SHEET 3 — SECTOR LAYOUT AND RECEIVER -->
@@ -475,7 +475,7 @@ hit = level[best] &gt;= 8 dB and q[best] &gt;= 40 %</pre>
     </table>
     <p class="cap"><code>demod.c</code>, <code>bearing.c</code> and <code>report.c</code> are plain C, unit-tested on a desktop with synthetic 4-bit I/Q (<code>test/host</code>, <code>make</code>).</p>
   </div>
-  <div class="foot"><span>drone-mesh-5plus · level1 · 2026-10-05 · firmware builds and links, nothing bench validated</span><span>Page 3 of 8</span></div>
+  <div class="foot"><span>drone-sentinel · level1 · 2026-10-05 · firmware builds and links, nothing bench validated</span><span>Page 3 of 8</span></div>
 </section>
 
 <!-- ===================================================== SHEET 4 — VIDEO CHECK AND SERIAL OUTPUT -->
@@ -507,7 +507,7 @@ hit = level[best] &gt;= 8 dB and q[best] &gt;= 40 %</pre>
 
     <div class="callout"><p><code>rssi</code> is dBm like every other station tier; <code>rssi_raw</code> is the 10-bit RX5808-style value of the v2 contract. <code>bearing_deg</code> is relative to the box's face N — the mapper rotates it by the station heading set in its LEVEL 1 STATIONS panel, where each station's position is also set; two stations' crossing bearings give a position fix with an error radius. A station registers itself in the mapper from its first heartbeat. <code>tune_fail</code> counts channels the regulatory table refused, <code>cap_err</code> failed I/Q captures, <code>nf_dbm</code> the station's own noise-floor estimate from the quietest sector of the last sweep.</p></div>
   </div>
-  <div class="foot"><span>drone-mesh-5plus · level1 · 2026-10-05 · firmware builds and links, nothing bench validated</span><span>Page 4 of 8</span></div>
+  <div class="foot"><span>drone-sentinel · level1 · 2026-10-05 · firmware builds and links, nothing bench validated</span><span>Page 4 of 8</span></div>
 </section>
 
 <!-- ===================================================== SHEET 5 — FULL BILL OF MATERIALS -->
@@ -553,7 +553,7 @@ hit = level[best] &gt;= 8 dB and q[best] &gt;= 40 %</pre>
 
     <div class="callout"><p><b>Carrier PCB rules.</b> XIAO C5 footprint with D0, D1, D2, D3, D6, D10 <b>unrouted</b> (no test points; the underside GPIO2–5 pads are not used); SP4T with four u.FL launches and a u.FL to the XIAO (or a u.FL pair bridging the optional LNA); control lines on D7/D8/D9 via 2 kΩ; UART header on D4/D5; decoupling. Nothing else. Make it after stage 6.</p></div>
   </div>
-  <div class="foot"><span>drone-mesh-5plus · level1 · 2026-10-05 · firmware builds and links, nothing bench validated</span><span>Page 5 of 8</span></div>
+  <div class="foot"><span>drone-sentinel · level1 · 2026-10-05 · firmware builds and links, nothing bench validated</span><span>Page 5 of 8</span></div>
 </section>
 
 <!-- ===================================================== SHEET 6 — BENCH 0–3 -->
@@ -593,7 +593,7 @@ hit = level[best] &gt;= 8 dB and q[best] &gt;= 40 %</pre>
       <li><span class="cb"></span><div class="t">Hold the FPV channel nearest a live 5 GHz access point (A-band channels 5745–5825 overlap Wi-Fi 149–165). <b>Expected:</b> raised <code>level_db</code> but <code>q_phase</code> under 40 and no hit while scanning. Measured: level_db <span class="bl"></span> q_phase <span class="bl"></span></div></li>
     </ul>
   </div>
-  <div class="foot"><span>drone-mesh-5plus · level1 · 2026-10-05 · firmware builds and links, nothing bench validated</span><span>Page 6 of 8</span></div>
+  <div class="foot"><span>drone-sentinel · level1 · 2026-10-05 · firmware builds and links, nothing bench validated</span><span>Page 6 of 8</span></div>
 </section>
 
 <!-- ===================================================== SHEET 7 — BENCH 4–5 -->
@@ -636,7 +636,7 @@ hit = level[best] &gt;= 8 dB and q[best] &gt;= 40 %</pre>
       <p><b><span class="opt">Optional</span>With the LNA fitted</b>, run this calibration with the LNA in the chain and leave <code>RF_FRONTEND_GAIN_DB</code> at 0; <code>RF_FRONTEND_GAIN_DB = 20</code> only carries a calibration taken without the LNA over to a station that has one. Re-measure <code>RF_NOISE_POWER</code> (<code>p_mean</code> with no signal at gain 62): the LNA's output noise can exceed the C5's own floor. Expect the gain stepping (gain index 62 → lower) to engage ~20 dB earlier.</p>
     </div>
   </div>
-  <div class="foot"><span>drone-mesh-5plus · level1 · 2026-10-05 · firmware builds and links, nothing bench validated</span><span>Page 7 of 8</span></div>
+  <div class="foot"><span>drone-sentinel · level1 · 2026-10-05 · firmware builds and links, nothing bench validated</span><span>Page 7 of 8</span></div>
 </section>
 
 <!-- ===================================================== SHEET 8 — BENCH 6–7, POWER, RECORD -->
@@ -680,7 +680,7 @@ hit = level[best] &gt;= 8 dB and q[best] &gt;= 40 %</pre>
     </table>
     <p class="cap">Copy the numbers from every stage into the station record; the v2 station's guide stays the reference for the switch truth table, pattern sweep and field acceptance details.</p>
   </div>
-  <div class="foot"><span>drone-mesh-5plus · level1 · 2026-10-05 · firmware builds and links, nothing bench validated</span><span>Page 8 of 8</span></div>
+  <div class="foot"><span>drone-sentinel · level1 · 2026-10-05 · firmware builds and links, nothing bench validated</span><span>Page 8 of 8</span></div>
 </section>
 
 </body>

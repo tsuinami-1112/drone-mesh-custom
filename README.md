@@ -2,7 +2,7 @@
   <img src="docs/img/level1-rooftop.svg" width="768" alt="Pixel art of a lonely rooftop at night, ringed by walls of lit apartment towers with a green Meshtastic neon sign. A tiny Clawd in a black hoodie works at a laptop beside a mast of patch antennas wired to solar panels, with mesh links running to masts on distant roofs, while a hooded figure smokes on the roof's edge. When the laptop's map lights up with red dots, the smoker flicks away his cigarette and ducks into cover as two drones sweep searchlights across the rooftops, their pings flying to the antennas. Then he lights another cigarette and sits back down.">
 </p>
 
-<h1 align="center">drone-mesh-custom · level 1</h1>
+<h1 align="center">drone-sentinel · level 1</h1>
 
 <p align="center">
   Detection stations for drones that broadcast nothing detectable but their 5.8&nbsp;GHz analog video link.<br>
@@ -476,8 +476,8 @@ table says, and `s` then confirms the table.
 <summary>Expand</summary>
 
 ```bash
-git clone -b level1 https://github.com/tsuinami-1112/drone-mesh-custom
-cd drone-mesh-custom/level1-c5phy
+git clone -b level1 https://github.com/tsuinami-1112/drone-sentinel
+cd drone-sentinel/level1-c5phy
 ```
 
 In VS Code, **File → Open Folder…** and open `level1-c5phy` itself (PlatformIO
