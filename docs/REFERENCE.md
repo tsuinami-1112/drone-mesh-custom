@@ -578,7 +578,6 @@ drone-sentinel/
 |-- remoteid-mesh/              # WiFi-only firmware (C3 / S3)
 |-- remoteid-c5-5g/             # ESP32-C5 dual-band firmware
 |-- mapper_test/                # Mapper test scripts
-|-- firmware/                   # Legacy prebuilt binaries (predate the detection expansion)
 |-- .github/workflows/          # firmware.yml: builds every image, publishes the web flasher
 `-- flasher/                    # Web flasher page, its manifests and the site script
 ```
