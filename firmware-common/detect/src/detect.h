@@ -1,5 +1,5 @@
 /*
- * detect.h - shared passive drone-detection library for the Drone Mesh Mapper
+ * detect.h - shared passive drone-detection library for the Drone Sentinel
  *            ESP32 nodes.
  *
  * Pure C: no Arduino or ESP-IDF dependency, so the same code compiles and is

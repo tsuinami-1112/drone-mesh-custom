@@ -1,6 +1,6 @@
 # BLE 5 Long Range (LE Coded PHY) reception of Open Drone ID on ESP32 — research reference
 
-Research date: 2026-10-02. Target project: `drone-mesh-5plus` (Seeed XIAO ESP32-S3 primary; C3/C5/C6 variants; PlatformIO + pioarduino platform `55.03.312` = arduino-esp32 3.3.12 / ESP-IDF 5.5.5; the C5 env already uses `h2zero/NimBLE-Arduino@^2.1.0`).
+Research date: 2026-10-02. Target project: `drone-sentinel` (Seeed XIAO ESP32-S3 primary; C3/C5/C6 variants; PlatformIO + pioarduino platform `55.03.312` = arduino-esp32 3.3.12 / ESP-IDF 5.5.5; the C5 env already uses `h2zero/NimBLE-Arduino@^2.1.0`).
 
 No project files were modified. All findings below are cited; where a source could not be read (GitHub issue comment threads are blocked from this session; one ESP32 forum thread is behind a bot-challenge) this is stated explicitly.
 
@@ -46,7 +46,7 @@ Source: https://raw.githubusercontent.com/opendroneid/opendroneid-core-c/master/
 
 Every message starts with the header byte `[MessageType:4][ProtoVersion:4]` (type in the **upper** nibble — hence the firmware's `odid[0] & 0xF0` switch). ASTM F3411-19 §5.4.5.4 / Table 4.
 
-The project's bundled `opendroneid.h` (e.g. `/home/user/drone-mesh-5plus/remoteid-c5-5g/src/opendroneid.h`) already defines `ODID_PACK_MAX_MESSAGES 9`, `decodeMessagePack()` and `odid_message_process_pack(ODID_UAS_Data*, uint8_t *pack, size_t buflen)` (used for the Wi-Fi path) — the BT5 path can reuse it.
+The project's bundled `opendroneid.h` (e.g. `/home/user/drone-sentinel/remoteid-c5-5g/src/opendroneid.h`) already defines `ODID_PACK_MAX_MESSAGES 9`, `decodeMessagePack()` and `odid_message_process_pack(ODID_UAS_Data*, uint8_t *pack, size_t buflen)` (used for the Wi-Fi path) — the BT5 path can reuse it.
 
 ASTM F3411-19 Table 13 (Message Pack): *"Message Size … Set to 0x19 (25)"*, *"No of Msgs in Pack (N) … Up to 10"*, *"Messages … Up to 250 bytes"*; §5.4.7.7: *"No more than 10 messages shall (BB50120) be included in a Message Pack."* opendroneid-core-c (tracking F3411-22a / EN 4709-002) caps at **9** → pack = 3 + 9×25 = **228 bytes**; plus 4-byte AD header + app code + counter = **234 bytes of AD data**, which fits inside a single `AUX_ADV_IND` (AdvData max 254, 251 when the extended header is 3 bytes) — **no AUX_CHAIN_IND chaining needed** for ODID.
 
@@ -529,4 +529,4 @@ NimBLE-Arduino
 * Docs: `docs/Command_line_config.md`, `docs/Bluetooth 5 features.md`, example `examples/Bluetooth_5/NimBLE_extended_scan`
 * Discussion #669 (Coded PHY on XIAO ESP32S3): https://github.com/h2zero/NimBLE-Arduino/discussions/669
 
-Local files inspected (read-only): `/home/user/drone-mesh-5plus/remoteid-c5-5g/platformio.ini`, `/home/user/drone-mesh-5plus/remoteid-c5-5g/src/main.cpp`, `/home/user/drone-mesh-5plus/node-mode-dualcore/platformio.ini`, `/home/user/drone-mesh-5plus/node-mode-dualcore/src/main.cpp`, `/home/user/drone-mesh-5plus/remoteid-mesh-dualcore/platformio.ini`, `/home/user/drone-mesh-5plus/remoteid-c5-5g/src/opendroneid.h`.
+Local files inspected (read-only): `/home/user/drone-sentinel/remoteid-c5-5g/platformio.ini`, `/home/user/drone-sentinel/remoteid-c5-5g/src/main.cpp`, `/home/user/drone-sentinel/node-mode-dualcore/platformio.ini`, `/home/user/drone-sentinel/node-mode-dualcore/src/main.cpp`, `/home/user/drone-sentinel/remoteid-mesh-dualcore/platformio.ini`, `/home/user/drone-sentinel/remoteid-c5-5g/src/opendroneid.h`.

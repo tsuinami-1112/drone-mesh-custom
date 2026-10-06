@@ -1,6 +1,6 @@
 # Drone WiFi/BLE fingerprints and international Remote ID regimes
 
-Research reference for drone-mesh-5plus (ESP32 WiFi-promiscuous + BLE nodes, LoRa relay, Python map server).
+Research reference for drone-sentinel (ESP32 WiFi-promiscuous + BLE nodes, LoRa relay, Python map server).
 Compiled 2026-10-02 from web sources; nothing in the repository was modified.
 
 Confidence legend used throughout:

@@ -1,4 +1,4 @@
-# Drone Mesh Mapper - Reference
+# Drone Sentinel - Reference
 
 The detail that used to live in the main README. For the hardware, wiring,
 flashing and getting the mapper running, start with the
@@ -182,7 +182,7 @@ makes it start on every boot. It:
    environment
 
 ```bash
-wget https://raw.githubusercontent.com/tsuinami-1112/drone-mesh-custom/HEAD/RPI/install_rpi.py
+wget https://raw.githubusercontent.com/tsuinami-1112/drone-sentinel/HEAD/RPI/install_rpi.py
 python3 install_rpi.py
 ```
 
@@ -521,7 +521,7 @@ tail -f mapper.log             # what's it saying?
 ## Project layout
 
 ```
-drone-mesh-custom/
+drone-sentinel/
 |-- mesh-mapper.py              # Flask + SocketIO server, all UI inline
 |-- requirements.txt
 |-- docs/

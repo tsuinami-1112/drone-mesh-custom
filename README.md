@@ -2,7 +2,7 @@
   <img src="docs/img/trailer.svg" width="768" alt="Pixel-art trailer. Over a night city, solar-powered detector stations on the rooftops are joined by a glowing mesh, under the words countersurveillance, 24/7. A drone arrives and the rings of its broadcast reach the stations that can hear it. One station is opened up: its XIAO ESP32-S3 decodes the broadcast into one line of JSON and its Heltec V4 puts it on the LoRa mesh. The packets hop to the home station, which keeps the first copy and drops the rest, and the mapper shows the drone, its pilot and its path on an offline map. Then a day goes by in a few seconds while the stations keep watching.">
 </p>
 
-<h1 align="center">drone-mesh-custom · level 2 (main branch)</h1>
+<h1 align="center">drone-sentinel · level 2 (main branch)</h1>
 
 <div align="center">
 
@@ -452,7 +452,7 @@ below.
 **2. Get the code**
 
 ```bash
-git clone https://github.com/tsuinami-1112/drone-mesh-custom
+git clone https://github.com/tsuinami-1112/drone-sentinel
 ```
 
 Or in VS Code: Command Palette (`Ctrl+Shift+P`) → **Git: Clone**. Keep the
@@ -535,8 +535,8 @@ environment's `build_flags`. See the
 On the computer the home station (or a standalone detector) is plugged into:
 
 ```bash
-git clone https://github.com/tsuinami-1112/drone-mesh-custom
-cd drone-mesh-custom
+git clone https://github.com/tsuinami-1112/drone-sentinel
+cd drone-sentinel
 python3 -m venv .venv && . .venv/bin/activate     # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 python3 mesh-mapper.py
@@ -549,7 +549,7 @@ recent Raspberry Pi OS and Debian releases protect. If `venv` is missing,
 starts the mapper on boot:
 
 ```bash
-wget https://raw.githubusercontent.com/tsuinami-1112/drone-mesh-custom/HEAD/RPI/install_rpi.py
+wget https://raw.githubusercontent.com/tsuinami-1112/drone-sentinel/HEAD/RPI/install_rpi.py
 python3 install_rpi.py
 ```
 
@@ -565,13 +565,13 @@ port:
 ```ini
 # /etc/systemd/system/mesh-mapper.service
 [Unit]
-Description=Drone Mesh Mapper
+Description=Drone Sentinel mapper
 After=network.target
 
 [Service]
 User=pi
-WorkingDirectory=/home/pi/drone-mesh-custom
-ExecStart=/home/pi/drone-mesh-custom/.venv/bin/python mesh-mapper.py
+WorkingDirectory=/home/pi/drone-sentinel
+ExecStart=/home/pi/drone-sentinel/.venv/bin/python mesh-mapper.py
 Restart=always
 RestartSec=5
 
