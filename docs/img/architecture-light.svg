@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1680 440" width="1680" height="440" role="img" aria-labelledby="t d" font-family="Arial, 'Liberation Sans', Helvetica, sans-serif">
+<title id="t">Architecture</title>
+<desc id="d">Solar-powered field stations (XIAO ESP32-S3 detector, UART to a Heltec V4 Meshtastic radio) relay detections over a multi-hop LoRa mesh to the home station (Heltec V4, UART to a XIAO ESP32-S3 dedup bridge, USB to mesh-mapper.py and its live web map).</desc>
+<rect width="1680" height="440" fill="#ffffff"/>
+<rect x="40" y="64" width="588" height="336" rx="20" fill="#f6f8fa" stroke="#d0d7de"/>
+<text x="68" y="104" font-size="15" font-weight="700" letter-spacing="2" fill="#1f2328">FIELD STATIONS</text>
+<text x="68" y="127" font-size="15" fill="#59636e" textLength="115.09" lengthAdjust="spacingAndGlyphs">solar, unattended</text>
+<rect x="744" y="64" width="896" height="336" rx="20" fill="#f6f8fa" stroke="#d0d7de"/>
+<text x="772" y="104" font-size="15" font-weight="700" letter-spacing="2" fill="#1f2328">HOME STATION</text>
+<text x="772" y="127" font-size="15" fill="#59636e" textLength="150.09" lengthAdjust="spacingAndGlyphs">base, runs the mapper</text>
+<rect x="68.5" y="153" width="223" height="150" rx="13" fill="#e9ebed"/>
+<rect x="68.5" y="150" width="223" height="150" rx="13" fill="#ffffff" stroke="#d0d7de"/>
+<rect x="88" y="172" width="28" height="5" rx="2.5" fill="#0b7a85"/>
+<text x="88" y="204" font-size="13" font-weight="700" letter-spacing="1.6" fill="#0b7a85">DETECTOR</text>
+<text x="88" y="238" font-size="23" font-weight="700" fill="#1f2328" textLength="170.03" lengthAdjust="spacingAndGlyphs">XIAO ESP32-S3</text>
+<text x="88" y="266" font-size="16" fill="#59636e" textLength="149.84" lengthAdjust="spacingAndGlyphs">WiFi + BLE detection</text>
+<rect x="376.5" y="153" width="223" height="150" rx="13" fill="#e9ebed"/>
+<rect x="376.5" y="150" width="223" height="150" rx="13" fill="#ffffff" stroke="#d0d7de"/>
+<rect x="396" y="172" width="28" height="5" rx="2.5" fill="#4a43d6"/>
+<text x="396" y="204" font-size="13" font-weight="700" letter-spacing="1.6" fill="#4a43d6">LoRa RADIO</text>
+<text x="396" y="238" font-size="23" font-weight="700" fill="#1f2328" textLength="103.56" lengthAdjust="spacingAndGlyphs">Heltec V4</text>
+<text x="396" y="266" font-size="16" fill="#59636e" textLength="76.47" lengthAdjust="spacingAndGlyphs">Meshtastic</text>
+<rect x="772.5" y="153" width="223" height="150" rx="13" fill="#e9ebed"/>
+<rect x="772.5" y="150" width="223" height="150" rx="13" fill="#ffffff" stroke="#d0d7de"/>
+<rect x="792" y="172" width="28" height="5" rx="2.5" fill="#4a43d6"/>
+<text x="792" y="204" font-size="13" font-weight="700" letter-spacing="1.6" fill="#4a43d6">LoRa RADIO</text>
+<text x="792" y="238" font-size="23" font-weight="700" fill="#1f2328" textLength="103.56" lengthAdjust="spacingAndGlyphs">Heltec V4</text>
+<text x="792" y="266" font-size="16" fill="#59636e" textLength="76.47" lengthAdjust="spacingAndGlyphs">Meshtastic</text>
+<rect x="1080.5" y="153" width="223" height="150" rx="13" fill="#e9ebed"/>
+<rect x="1080.5" y="150" width="223" height="150" rx="13" fill="#ffffff" stroke="#d0d7de"/>
+<rect x="1100" y="172" width="28" height="5" rx="2.5" fill="#0b7a85"/>
+<text x="1100" y="204" font-size="13" font-weight="700" letter-spacing="1.6" fill="#0b7a85">BRIDGE</text>
+<text x="1100" y="238" font-size="23" font-weight="700" fill="#1f2328" textLength="170.03" lengthAdjust="spacingAndGlyphs">XIAO ESP32-S3</text>
+<text x="1100" y="266" font-size="16" fill="#59636e" textLength="96.08" lengthAdjust="spacingAndGlyphs">Dedup bridge</text>
+<rect x="1388.5" y="153" width="223" height="150" rx="13" fill="#e9ebed"/>
+<rect x="1388.5" y="150" width="223" height="150" rx="13" fill="#ffffff" stroke="#d0d7de"/>
+<rect x="1408" y="172" width="28" height="5" rx="2.5" fill="#9a5b00"/>
+<text x="1408" y="204" font-size="13" font-weight="700" letter-spacing="1.6" fill="#9a5b00">SOFTWARE</text>
+<text x="1408" y="238" font-size="23" font-weight="700" fill="#1f2328" textLength="182.8" lengthAdjust="spacingAndGlyphs">mesh-mapper.py</text>
+<text x="1408" y="266" font-size="16" fill="#59636e" textLength="98.72" lengthAdjust="spacingAndGlyphs">Live web map</text>
+<path d="M297.75 225H353" stroke="#6d7780" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+<path d="M353 217L369 225L353 233Z" fill="#6d7780"/>
+<text x="334" y="211.5" font-size="14" font-weight="700" letter-spacing="-1.5" text-anchor="middle" fill="#59636e">UART</text>
+<path d="M1001.75 225H1057" stroke="#6d7780" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+<path d="M1057 217L1073 225L1057 233Z" fill="#6d7780"/>
+<text x="1038" y="211.5" font-size="14" font-weight="700" letter-spacing="-1.5" text-anchor="middle" fill="#59636e">UART</text>
+<path d="M1309.75 225H1365" stroke="#6d7780" stroke-width="2.5" stroke-linecap="round" fill="none"/>
+<path d="M1365 217L1381 225L1365 233Z" fill="#6d7780"/>
+<text x="1346" y="211.5" font-size="14" font-weight="700" letter-spacing="-1.5" text-anchor="middle" fill="#59636e">USB</text>
+<text x="686" y="189" font-size="17" font-weight="700" text-anchor="middle" fill="#4a43d6" textLength="91.64" lengthAdjust="spacingAndGlyphs">LoRa mesh</text>
+<text x="686" y="210" font-size="14" text-anchor="middle" fill="#59636e" textLength="57.59" lengthAdjust="spacingAndGlyphs">multi-hop</text>
+<path d="M606.3 225L616.5 218.5V231.5Z" fill="#4a43d6"/>
+<path d="M766 225L756 218.5V231.5Z" fill="#4a43d6"/>
+<path d="M624.75 225H750" stroke="#4a43d6" stroke-width="3" stroke-linecap="round" stroke-dasharray="2 9" fill="none"/>
+<rect x="163" y="334" width="342" height="44" rx="22" fill="#ffffff" stroke="#d0d7de"/>
+<text x="212.5" y="361.5" font-size="16" fill="#1f2328" textLength="267.67" lengthAdjust="spacingAndGlyphs">Solar panel · MPPT · LiFePO₄ battery</text>
+<rect x="1021" y="334" width="342" height="44" rx="22" fill="#ffffff" stroke="#d0d7de"/>
+<text x="1070.5" y="361.5" font-size="16" fill="#1f2328" textLength="261.42" lengthAdjust="spacingAndGlyphs">Mains power, or its own solar system</text>
+<circle cx="191.25" cy="356.25" r="4.5" fill="#9a5b00"/>
+<path d="M198.75 356.25L200.75 356.25M196.55 361.55L197.97 362.97M191.25 363.75L191.25 365.75M185.95 361.55L184.53 362.97M183.75 356.25L181.75 356.25M185.95 350.95L184.53 349.53M191.25 348.75L191.25 346.75M196.55 350.95L197.97 349.53" stroke="#9a5b00" stroke-width="2" stroke-linecap="round" fill="none"/>
+<path d="M1050.25 346.75L1050 353H1055.5L1051.65 358L1046.15 365L1047.5 358H1043L1046 353Z" fill="#9a5b00"/>
+</svg>

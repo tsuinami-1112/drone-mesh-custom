@@ -60,8 +60,8 @@ the drone broadcasts, the mesh carries it, and the mapper runs offline.
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/img/architecture-dark.png">
-    <img src="docs/img/architecture-light.png" width="100%" alt="Architecture: solar-powered field stations (XIAO ESP32-S3 detector, UART to a Heltec V4 Meshtastic radio) relay detections over a multi-hop LoRa mesh to the home station (Heltec V4, UART to a XIAO ESP32-S3 dedup bridge, USB to mesh-mapper.py and its live web map).">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/img/architecture-dark.svg">
+    <img src="docs/img/architecture-light.svg" width="100%" alt="Architecture: solar-powered field stations (XIAO ESP32-S3 detector, UART to a Heltec V4 Meshtastic radio) relay detections over a multi-hop LoRa mesh to the home station (Heltec V4, UART to a XIAO ESP32-S3 dedup bridge, USB to mesh-mapper.py and its live web map).">
   </picture>
 </p>
 
