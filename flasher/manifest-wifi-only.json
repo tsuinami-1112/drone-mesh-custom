@@ -1,0 +1,26 @@
+{
+  "name": "Drone Sentinel \u2014 WiFi-only detector",
+  "version": "dev",
+  "new_install_prompt_erase": true,
+  "new_install_improv_wait_time": 0,
+  "builds": [
+    {
+      "chipFamily": "ESP32-C3",
+      "parts": [
+        {
+          "path": "firmware/wifi-only-esp32c3.bin",
+          "offset": 0
+        }
+      ]
+    },
+    {
+      "chipFamily": "ESP32-S3",
+      "parts": [
+        {
+          "path": "firmware/wifi-only-esp32s3.bin",
+          "offset": 0
+        }
+      ]
+    }
+  ]
+}

@@ -110,17 +110,52 @@ the XIAO D-labels differ from board to board:
 On the XIAO ESP32-C6 and ESP32-C5, GPIO5 and GPIO6 are not among the
 D0-D10 edge pins. Check Seeed's pinout for those boards before wiring.
 
-### Prebuilt binaries and the web flasher
+### Web flasher and releases
 
-There is no web flasher for this firmware. `flasher/` holds a retired web
-flasher page that isn't published anywhere, and a web flasher from another
-project installs that project's firmware, not this one. Build and flash with
-PlatformIO as the [README](../README.md#build-and-flash-the-firmware)
-describes. It takes a few minutes the first time.
+The [web flasher](https://tsuinami-1112.github.io/drone-sentinel/) installs the
+latest release from the browser (Chrome, Edge or Opera on a computer). Each
+[release](https://github.com/tsuinami-1112/drone-sentinel/releases) also lists
+its images for download, to flash with esptool at offset 0, for example
+`esptool.py write_flash 0x0 field-station-esp32s3.bin`:
 
-The images under `flasher/firmware/` and `firmware/` predate the detection
-expansion and are no longer maintained. They only decode US-style Remote ID
-on channel 6. They're kept for reference: don't flash them onto new stations.
+| Image | Firmware, environment | Board |
+|---|---|---|
+| `field-station-esp32s3.bin` | `node-mode-dualcore`, `remote_node` | XIAO ESP32-S3 |
+| `home-station-esp32s3.bin` | `node-mode-dualcore`, `home_node` | XIAO ESP32-S3 |
+| `standalone-esp32s3.bin`, `standalone-esp32c6.bin` | `remoteid-mesh-dualcore` | XIAO ESP32-S3 / ESP32-C6 |
+| `wifi-only-esp32c3.bin`, `wifi-only-esp32s3.bin` | `remoteid-mesh` | XIAO ESP32-C3 / ESP32-S3 |
+| `dual-band-esp32c5.bin`, `dual-band-esp32s3.bin` | `remoteid-c5-5g` | XIAO ESP32-C5 / ESP32-S3 |
+
+Each image is PlatformIO's `firmware.factory.bin`: bootloader, partition table
+and app in one file. Images are never committed to the repository. The
+**Firmware** workflow (`.github/workflows/firmware.yml`) builds them:
+
+- **Every push to `level2-main`, and every pull request,** that touches the
+  firmware builds all eight images and runs the host tests. A red X next to
+  the commit means a build broke. Nothing is published.
+- **Publishing is manual.** In the repository's **Actions** tab, pick
+  **Firmware** on the left, open **Run workflow** on the right, leave the
+  branch on `level2-main`, enter a new version name such as `v2.1` and click
+  **Run workflow**. When the run finishes, the web flasher serves that version
+  and a release named after it holds the images and the list of changes since
+  the previous release. The web flasher serves whatever you publish, so flash
+  and check a board from the new code first.
+
+Before the first publish, turn GitHub Pages on once: **Settings → Pages →
+Build and deployment → Source: GitHub Actions**.
+
+To preview the page with your own builds, collect the images under the names
+above and run:
+
+```bash
+python3 flasher/build_site.py path/to/images /tmp/site v0-test
+python3 -m http.server -d /tmp/site      # open http://localhost:8000
+```
+
+The ESP32 platform and the libraries are pinned in each `platformio.ini`, so
+the same code always builds the same images, locally and in the workflow. To
+move to a newer ESP32 core, change the release number in all four firmware
+folders together.
 
 ---
 
@@ -544,5 +579,6 @@ drone-sentinel/
 |-- remoteid-c5-5g/             # ESP32-C5 dual-band firmware
 |-- mapper_test/                # Mapper test scripts
 |-- firmware/                   # Legacy prebuilt binaries (predate the detection expansion)
-`-- flasher/                    # Retired web flasher page and its legacy images (not published)
+|-- .github/workflows/          # firmware.yml: builds every image, publishes the web flasher
+`-- flasher/                    # Web flasher page, its manifests and the site script
 ```
