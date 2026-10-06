@@ -26,13 +26,24 @@ def ambient(world, anc):
         L = new_layer('beacon', anim=cls, style=style)
         L.set(x, y, RED, True)
         bloom('beacon', [(x, y)], RED, ((1.5, .4), (3, .16)), anim=cls, style=style)
+    swap = Rng(12)
     for plane, count in (('mid', 9), ('near', 7), ('far', 5)):
         wins = city.WINDOWS.get(plane, [])
+        shown = [win for win in wins if window_shown(plane, *win[:4])]
         for (x, y, w, h, c) in [wins[rng.randint(0, len(wins) - 1)] for _ in range(count)]:
             period = rng.choice([5.25, 7.0, 10.5, 14.0])
             cls, style = pulse(.12, period, rng.uniform(0, period))
+            if not window_shown(plane, x, y, w, h):          # behind the roof or a nearer tower: blink one in view
+                x, y, w, h, c = shown[swap.randint(0, len(shown) - 1)]
             L = new_layer('twinkle', anim=cls, style=style)
             rect(L, x, y, w, h, mix(c, INK, .86))
+
+
+def window_shown(plane, x, y, w, h):
+    """True if the whole window can be seen: no solid layer drawn after its own covers any of it."""
+    after = LAYERS[LAYERS.index(layer('win-' + plane)) + 1:]
+    solid = [L for L in after if not (L.anim or L.style or L.alpha is not None or L.paint)]
+    return not any((x + i, y + j) in L.pix for L in solid for i in range(w) for j in range(h))
 
 
 def reach(world, anc, source):
