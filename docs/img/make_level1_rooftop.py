@@ -2173,6 +2173,8 @@ LAMP = C('#fffbe0')
 BEAM = (214, 238, 255)                      # the searchlight's cold white
 SEARCH_ANGLES = (-75, -60, -45, -30, -15, 0, 15, 30, 45, 60, 75)     # degrees from straight down
 CLIPS['sky'] = (0, 0, W, 112)               # the beams end at the parapet
+CLIPS['behind'] = (0, 0, NEAR_R[0], 112)    # the second drone flies behind the near tower on the right
+CLIPS['behind-ping'] = (0, 0, NEAR_R[0], H)     # and so do its pings
 POOLS = []                                  # where each searchlight lands: filled by drones(), drawn later
 
 
@@ -2200,18 +2202,18 @@ def rotor_discs(L_a, L_b, x0, y0, wd, centres, pw):
                     (L_a if (cx + i) % 2 == 0 else L_b).set(cx + i, y0 + 1, ROTOR_LO)
 
 
-def drone(name, cx, y0, size, color, groups):
+def drone(name, cx, y0, size, color, groups, clip=None):
     """`size`: M is 26 wide, S is 16. The arm LEDs wear `color`."""
     wd = dict(M=26, S=16)[size]
     x0 = cx - wd // 2
     P = DP
     (ca, sa), (cb, sb) = seq_frames(2, .12)
-    body = new_layer('drone-' + name, groups=groups)
-    pa = new_layer('drone-%s-rotor-a' % name, anim=ca, style=sa, groups=groups)
-    pb = new_layer('drone-%s-rotor-b' % name, anim=cb, style=sb, groups=groups)
+    body = new_layer('drone-' + name, groups=groups, clip=clip)
+    pa = new_layer('drone-%s-rotor-a' % name, anim=ca, style=sa, groups=groups, clip=clip)
+    pb = new_layer('drone-%s-rotor-b' % name, anim=cb, style=sb, groups=groups, clip=clip)
     pcls, pstyle = pulse('led', .5, 1.3)
     led = new_layer('drone-%s-led' % name, anim=pcls,
-                      style=pstyle + ';animation-delay:-%.1fs' % ((cx % 7) * .17), groups=groups)
+                      style=pstyle + ';animation-delay:-%.1fs' % ((cx % 7) * .17), groups=groups, clip=clip)
     if size == 'M':
         sym_rect(body, x0, y0, wd, 2, 2, 6, 4, P['b'])
         sym_rect(body, x0, y0, wd, 2, 2, 6, 2, P['d'])
@@ -2241,13 +2243,13 @@ def drone(name, cx, y0, size, color, groups):
         rotor_discs(pa, pb, x0, y0, wd, (2,), 5)
         pb.pix.clear()
         lamp = (cx, y0 + 5)
-    halo = new_layer('drone-%s-halo' % name, alpha=.3, groups=groups)
+    halo = new_layer('drone-%s-halo' % name, alpha=.3, groups=groups, clip=clip)
     for (dx, dy) in ((0, 0), (-1, 0), (1, 0), (0, 1), (0, -1), (-1, 1), (1, 1), (-2, 0), (2, 0), (0, 2)):
         halo.set(lamp[0] + dx, lamp[1] + dy, mix(color, (255, 255, 255), .3))
-    lens = new_layer('drone-%s-lens' % name, alpha=.5, groups=groups)       # the searchlight's lens, flaring
+    lens = new_layer('drone-%s-lens' % name, alpha=.5, groups=groups, clip=clip)       # the searchlight's lens, flaring
     for (x, y) in blob_pts(lamp[0], lamp[1], 2.4, 1.8):
         lens.set(x, y, BEAM)
-    star = new_layer('drone-%s-star' % name, alpha=.4, groups=groups)
+    star = new_layer('drone-%s-star' % name, alpha=.4, groups=groups, clip=clip)
     for d in (2, 3):
         for (dx, dy) in ((d, 0), (-d, 0), (0, d)):
             star.set(lamp[0] + dx, lamp[1] + dy, BEAM)
@@ -2278,7 +2280,7 @@ def fade_samples(times, values):
     return out
 
 
-def beam_layers(name, apex, length_to, move_g, times, thetas, half_outer, half_core, strength):
+def beam_layers(name, apex, length_to, move_g, times, thetas, half_outer, half_core, strength, clip='sky'):
     """One translucent cone for each angle the light passes through; they
     cross-fade as it turns, so the sweep is smooth."""
     ax, ay = apex[0] + .5, apex[1] + 1.0
@@ -2289,7 +2291,7 @@ def beam_layers(name, apex, length_to, move_g, times, thetas, half_outer, half_c
         g = (tl(fade_samples(times, weights)) + ' h', '', 'beam-%s-%d' % (name, ang))
         length = min(170.0, (length_to - ay) / max(.25, math.cos(math.radians(ang))))
         for (half, alpha, tag) in ((half_outer, .16 * strength, 'o'), (half_core, .3 * strength, 'c')):
-            cone = new_layer('beam-%s-%d-%s' % (name, ang, tag), groups=(move_g, g), alpha=alpha, clip='sky')
+            cone = new_layer('beam-%s-%d-%s' % (name, ang, tag), groups=(move_g, g), alpha=alpha, clip=clip)
             pts = [(ax, ay)] + [(ax + length * math.sin(math.radians(ang + d)),
                                  ay + length * math.cos(math.radians(ang + d))) for d in (-half, half)]
             for (x, y) in poly_pts(pts):
@@ -2322,10 +2324,11 @@ def drones():
         thetas = [beam_fn(t) for t in bt]
         POOLS.append((name, pool_samples(bt, [(t,) + fn(t) for t in bt], thetas, lamp_dy)))
         small = size == 'S'
+        clip = 'behind' if name == 'b' else None
         # the light first, so the drone sits in front of it
         beam_layers(name, (ref[0], ref[1] + lamp_dy), 118, move_g, bt, thetas, 8 if small else 11,
-                    3 if small else 4.5, .7 if small else 1.0)
-        drone(name, ref[0], ref[1], size, RED_N, (move_g,))
+                    3 if small else 4.5, .7 if small else 1.0, clip or 'sky')
+        drone(name, ref[0], ref[1], size, RED_N, (move_g,), clip)
 
 
 def search_pools():
@@ -2389,10 +2392,11 @@ def one_ping(k, pass_name, arrive, fn, strength):
     grp = ((cls + (' h' if hidden else ''), '', 'ping-%s-%d' % (pass_name, k)),)
     ang = math.atan2(ty - sy, tx - sx)
     ox, oy = int(round(sx)), int(round(sy))
-    front = new_layer('ping-front', groups=grp, alpha=.9 * strength)
+    clip = 'behind-ping' if pass_name == 'b' else None
+    front = new_layer('ping-front', groups=grp, alpha=.9 * strength, clip=clip)
     for (x, y) in arc_pts(6.5, ang):
         front.set(ox + x, oy + y, PING_HI, True)
-    rear = new_layer('ping-rear', groups=grp, alpha=.55 * strength)
+    rear = new_layer('ping-rear', groups=grp, alpha=.55 * strength, clip=clip)
     for r in (2.5, 4.5):
         for (x, y) in arc_pts(r, ang):
             rear.set(ox + x, oy + y, PING, True)
