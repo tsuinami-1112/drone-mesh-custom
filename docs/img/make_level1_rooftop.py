@@ -1272,6 +1272,7 @@ def hut_light():
 def stage():
     roof()
     puddles()
+    search_pools()          # the pools of light are behind the stair hut, which hides the middle of one
     hut()
 
 
@@ -2174,6 +2175,9 @@ BEAM = (214, 238, 255)                      # the searchlight's cold white
 SEARCH_ANGLES = (-75, -60, -45, -30, -15, 0, 15, 30, 45, 60, 75)     # degrees from straight down
 CLIPS['sky'] = (0, 0, W, 112)               # the beams end at the parapet
 # the second drone flies behind both near towers, so it comes out from behind the left one and goes behind the right
+CLIPS['roof'] = (EDGE_X, 0, W - EDGE_X, H)  # light pools only land where there is a roof
+CLIPS['alley'] = (0, 112, EDGE_X, H - 112)  # past the roof's end the beam carries on down the alley
+CLIPS['haze'] = (210, 0, W - 210, 116)      # the haze round the stair hut stops at the roof
 CLIPS['behind'] = (NEAR_L[1] + 1, 0, NEAR_R[0] - NEAR_L[1] - 1, 112)
 CLIPS['behind-ping'] = (NEAR_L[1] + 1, 0, NEAR_R[0] - NEAR_L[1] - 1, H)     # and so do its pings
 POOLS = []                                  # where each searchlight lands: filled by drones(), drawn later
@@ -2282,7 +2286,7 @@ def fade_samples(times, values):
 
 
 def beam_layers(name, apex, length_to, move_g, times, thetas, half_outer, half_core, strength, clip='sky',
-                reach=None):
+                reach=None, spill=False):
     """One translucent cone for each angle the light passes through; they
     cross-fade as it turns, so the sweep is smooth. With a `reach` the light is
     pointing away from us, into the depth of the picture: it is a short beam that
@@ -2303,6 +2307,16 @@ def beam_layers(name, apex, length_to, move_g, times, thetas, half_outer, half_c
                                      ay + ln * math.cos(math.radians(ang + d))) for d in (-half, half)]
                 for (x, y) in poly_pts(pts):
                     cone.set(x, y, BEAM)
+            if spill:       # off the end of the roof there is nothing to stop the light: it goes on down, thinning out
+                for k, (extra, frac) in enumerate(((8, .5), (18, .3), (34, .2))):
+                    ln = length + extra
+                    low = new_layer('beam-%s-%d-%s-low%d' % (name, ang, tag, k), groups=(move_g, g),
+                                    alpha=alpha * frac, clip='alley')
+                    pts = [(ax, ay)] + [(ax + ln * math.sin(math.radians(ang + d)),
+                                         ay + ln * math.cos(math.radians(ang + d))) for d in (-half, half)]
+                    for (x, y) in poly_pts(pts):
+                        if y >= 100:                        # only the part that can reach the alley
+                            low.set(x, y, BEAM)
 
 
 def pool_samples(times, pts, thetas, lamp_dy):
@@ -2335,7 +2349,7 @@ def drones():
         clip = 'behind' if name == 'b' else None
         # the light first, so the drone sits in front of it
         beam_layers(name, (ref[0], ref[1] + lamp_dy), 118, move_g, bt, thetas, 8 if small else 11,
-                    3 if small else 4.5, .7 if small else 1.0, clip or 'sky', reach)
+                    3 if small else 4.5, .7 if small else 1.0, clip or 'sky', reach, spill=not reach)
         drone(name, ref[0], ref[1], size, RED_N, (move_g,), clip)
 
 
@@ -2350,12 +2364,29 @@ def search_pools():
             samples.append((max(t, samples[-1][0] + 1e-3), {'o': round(o, 3), 'x': int(round(hit)) - 128, 'y': 0}))
         samples.append((T_LOOP, dict(samples[-1][1], o=0)))
         grp = ((tl(samples) + ' h', '', 'pool-' + name),)
-        outer = new_layer('pool-%s-o' % name, groups=grp, alpha=.2)
+        outer = new_layer('pool-%s-o' % name, groups=grp, alpha=.2, clip='roof')
         for (x, y) in blob_pts(128, 113, 10, 2.4):
             outer.set(x, y, BEAM)
-        core = new_layer('pool-%s-c' % name, groups=grp, alpha=.32)
+        core = new_layer('pool-%s-c' % name, groups=grp, alpha=.32, clip='roof')
         for (x, y) in blob_pts(128, 113, 5, 1.3):
             core.set(x, y, BEAM)
+
+
+def hut_haze():
+    """When the first drone's light swings behind the stair hut, it diffuses round the whole of it:
+    a faint haze hugging the hut's outline, strongest as the beam passes."""
+    t0, t1 = 4.0, 11.0                      # starts well before the drone is in view, with no haze
+    times = [t0 + i * .1 for i in range(int(round((t1 - t0) / .1)) + 1)]
+    weights = []
+    for t in times:
+        x, y = drone_a(t)
+        hit = x + (112 - (y + 9)) * math.tan(math.radians(beam_a(t)))
+        weights.append(max(0.0, 1 - abs(hit - 237) / 34.0) * max(0.0, min(1.0, (t - 5.4) / .5)))   # not before the drone is in
+    grp = (tl(fade_samples(times, weights)) + ' h', '', 'hut-haze')
+    hut_px = {(x, y) for x in range(223, 252) for y in range(93, 129)}
+    hut_px |= {(x, y) for x in (246, 247) for y in range(88, 93)} | {(x, y) for x in range(245, 249) for y in (87, 88)}
+    for L in bloom('hut-haze', hut_px, BEAM, ((1.5, .26), (3, .17), (5, .1), (8, .05), (12, .025)), groups=(grp,)):
+        L.clip = 'haze'
 
 
 # ---- the pings -------------------------------------------------------------
@@ -2500,8 +2531,9 @@ def blinkers():
     # a few windows go dark for a moment, and the neon stutters
     rng = Rng(31)
     cand = []
+    walls = [L for L in LAYERS if not (L.name.startswith('hut-haze') or '-low' in L.name)]    # light, not walls
     for (name, x, y, w, h, c) in WINDOWS:
-        top, topc = composite_at(LAYERS, x, y)
+        top, topc = composite_at(walls, x, y)
         if top is not None and top.name == name and topc == c and y < 104:
             cand.append((x, y, w, h, c))
     for k in range(18):
@@ -2795,7 +2827,7 @@ def build():
     hut_light()
     hut_lighting()
     roof_props()
-    search_pools()
+    hut_haze()
     mast()
     solar()
     vent()
