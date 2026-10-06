@@ -2,7 +2,7 @@
 """
 Mesh-Mapper Raspberry Pi installer
 
-Installs mesh-mapper.py from tsuinami-1112/drone-mesh-custom and starts it on
+Installs mesh-mapper.py from tsuinami-1112/drone-sentinel and starts it on
 every boot:
 
   1. downloads the repository from GitHub and unpacks it into the install
@@ -43,13 +43,13 @@ except ImportError:
     sys.exit(1)
 
 # GitHub repository configuration
-GITHUB_REPO = "tsuinami-1112/drone-mesh-custom"
+GITHUB_REPO = "tsuinami-1112/drone-sentinel"
 GITHUB_URL = f"https://github.com/{GITHUB_REPO}"
 TARGET_FILE = "mesh-mapper.py"
 REQUIREMENTS_FILE = "requirements.txt"
 # A file the web UI cannot work without; its absence means a broken unpack
 STATIC_CHECK_FILE = os.path.join("static", "leaflet", "leaflet.js")
-USER_AGENT = f"drone-mesh-custom-installer (+{GITHUB_URL})"
+USER_AGENT = f"drone-sentinel-installer (+{GITHUB_URL})"
 
 def get_current_user():
     """Get the current username"""
@@ -347,7 +347,7 @@ Examples:
 
     # Download and unpack the repository
     with tempfile.TemporaryDirectory() as tmp:
-        archive_path = os.path.join(tmp, 'drone-mesh-custom.tar.gz')
+        archive_path = os.path.join(tmp, 'drone-sentinel.tar.gz')
         if not download_file(construct_download_url(args.branch), archive_path):
             print("❌ Download failed")
             return 1

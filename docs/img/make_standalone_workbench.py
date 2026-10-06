@@ -596,7 +596,7 @@ def clip_defs():
 
 TITLE = 'A laptop in a dark makerspace, tracking drones'
 DESC = ('Pixel art: a dark hacker workbench crowded with electronics, lit by a laptop running the '
-        'drone mesh mapper. Beside it a window with half-drawn blinds looks over a cyberpunk city '
+        'Drone Sentinel mapper. Beside it a window with half-drawn blinds looks over a cyberpunk city '
         'at night, where drones sweep searchlights back and forth. Their blips drift slowly across '
         'the laptop\'s map.')
 
