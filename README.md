@@ -424,13 +424,16 @@ station.
 <details>
 <summary>Expand</summary>
 
-The firmware is built and flashed with PlatformIO in VS Code. The steps below
-flash a XIAO ESP32-S3. Other boards and variants are in the
-[reference](docs/REFERENCE.md#firmware-variants-and-build-options).
+The quickest way is the [web flasher](https://tsuinami-1112.github.io/drone-sentinel/):
+open it in Chrome or Edge on a computer, plug the XIAO in and click
+**Install** under your station type. It installs the latest
+[release](../../releases) and needs nothing installed.
 
-There is no web flasher for this firmware. The `flasher/` folder is a retired
-page whose images predate the current detection code, so build from source as
-below.
+Build from source with PlatformIO in VS Code, as below, to change the
+[detection knobs](docs/REFERENCE.md#detection-knobs) or to run code newer than
+the last release. The steps below flash a XIAO ESP32-S3. Other boards and
+variants are in the
+[reference](docs/REFERENCE.md#firmware-variants-and-build-options).
 
 **1. Install the tools (once)**
 

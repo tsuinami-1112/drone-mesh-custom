@@ -3,19 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Mesh-Detect // Web Flasher</title>
-<meta name="description" content="Mesh-Detect firmware installer — Standard Dualcore + Node Mode (Remote / Home) for XIAO ESP32-S3.">
+<title>Drone Sentinel // Web Flasher</title>
+<meta name="description" content="Install Drone Sentinel level 2 firmware on a XIAO ESP32 from the browser: field station, home station, standalone detector and the C3 / C5 variants.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23030805'/%3E%3Ccircle cx='16' cy='16' r='11' fill='none' stroke='%2300ff66' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='5' fill='none' stroke='%23ff2bd6' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='1.5' fill='%2300ff66'/%3E%3C/svg%3E">
 <style>
   :root {
     --bg:        #030805;
     --bg-grid:   #0a2015;
     --panel:     rgba(6, 14, 10, 0.82);
     --cyan:      #00e5ff;
-    --cyan-dim:  #0a5566;
     --magenta:   #ff2bd6;
     --green:     #00ff66;
-    --green-dim: #0a3a20;
-    --lime:      #a8ff3e;
     --text:      #cfe8d8;
     --muted:     #6a8878;
     --white:     #ffffff;
@@ -92,6 +90,14 @@
     text-shadow: 0 0 8px var(--magenta);
   }
   .subtitle .sep { color: var(--amber); margin: 0 10px; opacity: 0.6; }
+  .release {
+    color: var(--amber);
+    font-size: 12px;
+    letter-spacing: 2px;
+    margin: 10px 0 0;
+    position: relative;
+  }
+  .release a { color: var(--amber); border-bottom-color: rgba(255,176,0,0.5); }
 
   /* --- CYBER SECTIONS --- */
   .panel {
@@ -112,9 +118,17 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: 12px;
   }
-  .panel > header .right { color: var(--muted); font-size: 10px; letter-spacing: 2px; }
+  .panel > header .right { color: var(--muted); font-size: 10px; letter-spacing: 2px; text-align: right; }
   .panel > .body { padding: 24px 22px; }
+  .panel .intro {
+    max-width: 620px;
+    margin: 0 auto 14px;
+    color: var(--text);
+    font-size: 13px;
+    text-align: left;
+  }
 
   /* Node-mode gets a magenta-tinted header so it visually reads as its own group */
   .panel.node-mode { border-color: rgba(255,43,214,0.30); }
@@ -123,16 +137,6 @@
     border-bottom-color: rgba(255,43,214,0.30);
     color: var(--magenta);
   }
-
-  /* Retired notice: amber so it reads as a warning before anything else */
-  .panel.retired { border-color: var(--amber); }
-  .panel.retired > header {
-    background: var(--amber-bg);
-    border-bottom-color: var(--amber);
-    color: var(--amber);
-  }
-  .panel.retired p { margin: 0 0 12px; line-height: 1.6; }
-  .panel.retired p:last-child { margin-bottom: 0; }
 
   /* --- STEPS --- */
   .step {
@@ -173,7 +177,7 @@
 
   /* --- FLASH BUTTONS --- */
   esp-web-install-button { display: inline-block; margin-top: 10px; }
-  esp-web-install-button::part(button) {
+  esp-web-install-button button {
     background: #050f08;
     color: var(--green);
     border: 1px solid var(--green);
@@ -186,15 +190,15 @@
     cursor: pointer;
     transition: background 0.15s ease, color 0.15s ease;
   }
-  esp-web-install-button::part(button):hover {
+  esp-web-install-button button:hover {
     background: var(--green);
     color: #050f08;
   }
-  esp-web-install-button.magenta::part(button) {
+  esp-web-install-button.magenta button {
     color: var(--magenta);
     border-color: var(--magenta);
   }
-  esp-web-install-button.magenta::part(button):hover {
+  esp-web-install-button.magenta button:hover {
     background: var(--magenta);
     color: #050f08;
   }
@@ -206,34 +210,6 @@
     font-size: 13px;
     max-width: 520px;
   }
-
-  /* --- ROLE PICKER (Node Mode sub-select) --- */
-  .role-pick {
-    display: flex; flex-wrap: wrap; gap: 8px;
-    margin: 8px 0 14px;
-    justify-content: center;
-  }
-  .role-pick label {
-    flex: 1 1 260px;
-    display: flex; gap: 10px; align-items: flex-start;
-    padding: 12px 14px;
-    border: 1px solid rgba(255,43,214,0.28);
-    background: rgba(255,43,214,0.03);
-    cursor: pointer;
-    color: var(--text);
-    font-size: 13px;
-    line-height: 1.5;
-    text-align: left;
-    transition: border-color 0.15s ease, background 0.15s ease;
-  }
-  .role-pick label:hover { border-color: var(--magenta); }
-  .role-pick label.on { border-color: var(--magenta); background: rgba(255,43,214,0.07); }
-  .role-pick input[type=radio] { margin: 3px 0 0 0; accent-color: var(--magenta); flex-shrink: 0; }
-  .role-pick .role-name {
-    color: var(--magenta); font-weight: 500; letter-spacing: 2px;
-    text-transform: uppercase; font-size: 12px;
-  }
-  .role-pick .role-desc { color: var(--muted); font-size: 12px; }
 
   /* --- MODE / VARIANT BLOCKS --- */
   .mode {
@@ -273,8 +249,8 @@
     line-height: 1.6;
   }
   .specs {
-    display: inline-grid;
-    grid-template-columns: auto auto;
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
     gap: 4px 18px;
     text-align: left;
     padding: 10px 16px;
@@ -282,6 +258,7 @@
     border: 1px solid rgba(0,255,102,0.18);
     font-size: 13px;
     margin: 4px auto 12px;
+    max-width: 560px;
   }
   .mode.node-tag .specs {
     background: rgba(255,43,214,0.03);
@@ -294,9 +271,7 @@
     font-size: 11px;
     align-self: center;
   }
-  .specs dd { margin: 0; color: var(--green); }
-  .mode.node-tag .specs dd { color: var(--magenta); }
-  .specs dd.val { color: var(--text); }
+  .specs dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
 
   .kbd {
     display: inline-block;
@@ -345,83 +320,164 @@
   @media (max-width: 520px) {
     .banner { font-size: 7px; }
     .subtitle { letter-spacing: 3px; font-size: 11px; }
+    .subtitle .sep { margin: 0 6px; }
+    .panel > .body { padding: 20px 14px; }
+    .panel > header { padding: 10px 14px; letter-spacing: 3px; }
     .arch { font-size: 9px; }
+    .specs { grid-template-columns: minmax(0, 1fr); gap: 0; }
+    .specs dd { margin-bottom: 6px; }
+    esp-web-install-button button { padding: 12px 12px; letter-spacing: 1px; font-size: 12px; }
   }
 </style>
 </head>
 <body>
 
 <header class="terminal">
-  <pre class="banner">  __  __           _     ____       _            _
- |  \/  | ___  ___| |__ |  _ \  ___| |_ ___  ___| |_
- | |\/| |/ _ \/ __| '_ \| | | |/ _ \ __/ _ \/ __| __|
- | |  | |  __/\__ \ | | | |_| |  __/ ||  __/ (__| |_
- |_|  |_|\___||___/_| |_|____/ \___|\__\___|\___|\__|</pre>
-  <div class="subtitle">MESH<span class="accent">&ndash;</span>DETECT<span class="sep">//</span>WEB FLASHER<span class="sep">//</span>XIAO ESP32&ndash;S3</div>
+  <pre class="banner"> ____                         ____             _   _            _
+|  _ \ _ __ ___  _ __   ___  / ___|  ___ _ __ | |_(_)_ __   ___| |
+| | | | '__/ _ \| '_ \ / _ \ \___ \ / _ \ '_ \| __| | '_ \ / _ \ |
+| |_| | | | (_) | | | |  __/  ___) |  __/ | | | |_| | | | |  __/ |
+|____/|_|  \___/|_| |_|\___| |____/ \___|_| |_|\__|_|_| |_|\___|_|</pre>
+  <div class="subtitle">DRONE<span class="accent">&ndash;</span>SENTINEL<span class="sep">//</span>WEB FLASHER<span class="sep">//</span>LEVEL 2</div>
+  <div class="release" id="release">Preview build, not a published release</div>
 </header>
 
 <main>
 
 <!-- =============================================================
-     RETIRED NOTICE
-     ============================================================= -->
-<section class="panel retired">
-  <header><span>Retired</span><span class="right">do not use</span></header>
-  <div class="body">
-    <p><b>This web flasher is retired and isn't published anywhere.</b> Its images are older firmware that predates the current detection code: they only decode US-style Remote ID on WiFi channel 6, and the instructions below describe the older Heltec V3 wiring.</p>
-    <p>Build and flash the current firmware from source with PlatformIO, as described in <a href="https://github.com/tsuinami-1112/drone-sentinel#build-and-flash-the-firmware">Build and flash the firmware</a>, and wire stations as in <a href="https://github.com/tsuinami-1112/drone-sentinel#build-a-station">Build a station</a>.</p>
-  </div>
-</section>
-
-<!-- =============================================================
      INSTALL / GETTING STARTED
      ============================================================= -->
 <section class="panel">
-  <header><span>Install</span><span class="right">3 steps</span></header>
+  <header><span>Install</span><span class="right">about 1 minute per board</span></header>
   <div class="body">
 
     <div class="step">
       <div class="n">1</div>
-      <h3>Plug the board in</h3>
-      <p>Use a real USB-C <b>data</b> cable — charge-only cables won't show up as a serial port. If it's your first flash, hold the <span class="kbd">BOOT</span> button while plugging in.</p>
+      <h3>Use Chrome or Edge on a computer</h3>
+      <p>Flashing from a web page needs Web Serial: Chrome, Edge or Opera on Windows, macOS, Linux or ChromeOS. Firefox, Safari and phones can't do it.</p>
     </div>
 
     <div class="step">
       <div class="n">2</div>
-      <h3>Pick a build below and hit Flash</h3>
-      <p>Chrome, Edge, or Opera on desktop. Your browser will show a list of serial ports — pick the XIAO. The install takes about 30 seconds.</p>
+      <h3>Plug the XIAO in</h3>
+      <p>Use a USB-C <b>data</b> cable: charge-only cables never show up as a port. On a field station that's already wired, unplug the <b>3V3</b> wire to the Heltec first. Close the mapper or any serial monitor, since only one program can hold the port.</p>
     </div>
 
     <div class="step">
       <div class="n">3</div>
-      <h3>Wire it to a Heltec V3</h3>
-      <p>All three builds send Remote ID JSON out UART on <b>GPIO5 (TX)</b> / <b>GPIO6 (RX)</b>. Wire that to a Heltec V3 running Meshtastic in serial TEXTMSG mode at 115200. See the <a href="https://github.com/tsuinami-1112/drone-sentinel#build-a-station">wiring diagram</a>.</p>
+      <h3>Pick your station below and click Install</h3>
+      <p>Choose the XIAO in the browser's port list. Tick <b>Erase device</b> the first time you install over other firmware. The page detects the chip (ESP32-S3, C3, C5 or C6) and installs the matching image.</p>
+    </div>
+
+    <div class="step">
+      <div class="n">4</div>
+      <h3>Restart and check</h3>
+      <p>Press <span class="kbd">R</span> on the XIAO if it doesn't restart by itself. To watch it boot, click the same button again and choose <b>Logs &amp; Console</b>: the boot banner lists the enabled detection layers, then a heartbeat follows every 60&nbsp;s on a field station (30&nbsp;s on a home station).</p>
+    </div>
+
+    <div class="step">
+      <div class="n">5</div>
+      <h3>Wire it to a Heltec V4</h3>
+      <p>XIAO <b>D4 / GPIO5 (TX)</b> to Heltec <b>47</b>, <b>D5 / GPIO6 (RX)</b> to Heltec <b>48</b>, GND to GND, and 3V3 to 3V3 on field stations only. Set the Heltec's Meshtastic serial module to TEXTMSG, 115200 baud, RX 47, TX 48. Full steps: <a href="https://github.com/tsuinami-1112/drone-sentinel#build-a-station">Build a station</a> and <a href="https://github.com/tsuinami-1112/drone-sentinel#set-up-the-heltec-v4-meshtastic">Set up the Heltec V4</a>.</p>
     </div>
 
   </div>
 </section>
 
 <!-- =============================================================
-     STANDARD DUALCORE - the "one board, one mesh" main build
+     LEVEL 2 NETWORK - field + home pair
+     ============================================================= -->
+<section class="panel node-mode">
+  <header><span>Level 2 network</span><span class="right">field + home stations</span></header>
+  <div class="body">
+
+    <p class="intro">
+      A typical deployment: <b>Field station</b> firmware on every detector out on a pole or roof, and <b>Home station</b> firmware on the XIAO plugged into the computer running <a href="https://github.com/tsuinami-1112/drone-sentinel#quick-start">mesh-mapper.py</a>. Add as many field stations as you like.
+    </p>
+
+    <pre class="arch"><span class="r">+-------------------------------------------------------------+
+|              FIELD STATION   (pole or roof, solar)          |
+|  XIAO ESP32-S3 --UART--&gt; Heltec V4 (Meshtastic) --LoRa--&gt;   |
+|  detects drones          GPIO5 TX ---&gt; Heltec 47            |
+|  over WiFi + BLE         GPIO6 RX &lt;--- Heltec 48            |
++-------------------------------------------------------------+</span>
+                               |
+                        LoRa mesh network
+                       (multiple hops OK)
+                               |
+<span class="h">+-------------------------------------------------------------+
+|              HOME STATION   (next to the mapper)            |
+|  Heltec V4 (Meshtastic) --UART--&gt; XIAO ESP32-S3 --USB--&gt;    |
+|  receives the mesh       Heltec 48 ---&gt; GPIO6 RX   computer |
+|                          Heltec 47 &lt;--- GPIO5 TX   running  |
+|  no detection            drops duplicates       the mapper  |
++-------------------------------------------------------------+</span></pre>
+
+    <p class="intro">
+      <b>Why two firmwares:</b> when five field stations hear the same drone, the mapper would otherwise get five copies of every detection. Each field station tags its reports with a <span class="kbd">node_id</span> taken from its own MAC. The home station keys on the drone's MAC: the first report goes straight through, copies from other stations within <b>500&nbsp;ms</b> are dropped, and the next one after that goes through. Level 1 bearing reports always pass, because the mapper needs bearings from several stations to cross them.
+    </p>
+
+    <div class="mode node-tag">
+      <span class="tag">[ FIELD ]</span>
+      <h3>Field station</h3>
+      <p>Scans WiFi on one core and BLE on the other, and sends every detection to the mesh as one compact JSON line. Blinks per detection, heartbeat every 60&nbsp;s.</p>
+      <dl class="specs">
+        <dt>Board</dt><dd>XIAO ESP32-S3</dd>
+        <dt>Detects</dt><dd>Remote ID (BLE 4, BLE 5 Long Range, WiFi NAN and beacon), DJI DroneID, MAVLink, WiFi / BLE fingerprints</dd>
+        <dt>UART</dt><dd>GPIO5 TX / GPIO6 RX at 115200 to Heltec V4 47 / 48</dd>
+        <dt>Deploy</dt><dd>One per field station</dd>
+      </dl>
+      <esp-web-install-button class="magenta" manifest="./manifest-field-station.json">
+        <button slot="activate">&gt;&gt; Install field station &lt;&lt;</button>
+        <span slot="unsupported" class="unsupported">This browser can't flash boards. Open the page in Chrome, Edge or Opera on a computer.</span>
+        <span slot="not-allowed" class="not-allowed">Flashing only works when the page is served over HTTPS.</span>
+      </esp-web-install-button>
+    </div>
+
+    <div class="mode node-tag">
+      <span class="tag">[ HOME ]</span>
+      <h3>Home station</h3>
+      <p>No scanning. Reads the mesh from its Heltec over UART, drops duplicate reports and forwards the rest over USB to the mapper. Heartbeat every 30&nbsp;s.</p>
+      <dl class="specs">
+        <dt>Board</dt><dd>XIAO ESP32-S3</dd>
+        <dt>Role</dt><dd>Mesh-to-USB bridge with duplicate filter</dd>
+        <dt>Dedup</dt><dd>500 ms per drone MAC; level 1 bearings pass through</dd>
+        <dt>Deploy</dt><dd>One, plugged into the mapper's computer</dd>
+      </dl>
+      <esp-web-install-button class="magenta" manifest="./manifest-home-station.json">
+        <button slot="activate">&gt;&gt; Install home station &lt;&lt;</button>
+        <span slot="unsupported" class="unsupported">This browser can't flash boards. Open the page in Chrome, Edge or Opera on a computer.</span>
+        <span slot="not-allowed" class="not-allowed">Flashing only works when the page is served over HTTPS.</span>
+      </esp-web-install-button>
+    </div>
+
+    <p class="intro" style="margin-top: 8px;">
+      Level 1 bearing stations run their own firmware from the <a href="https://github.com/tsuinami-1112/drone-sentinel/tree/level1">level1 branch</a>, flashed with PlatformIO. They share this mesh and home station.
+    </p>
+
+  </div>
+</section>
+
+<!-- =============================================================
+     STANDALONE DETECTOR
      ============================================================= -->
 <section class="panel">
-  <header><span>Standard Dualcore</span><span class="right">1 board · main build</span></header>
+  <header><span>Standalone detector</span><span class="right">one board, no home station</span></header>
   <div class="body">
 
     <div class="mode">
-      <span class="tag">[ MAIN ]</span>
-      <h3>RemoteID Mesh — Dualcore</h3>
-      <p>Single-board build. Core 0 sniffs WiFi (Open Drone ID NAN + beacon vendor IEs), Core 1 scans BLE for ODID advertisements. Every detection goes straight out USB and out UART to your Heltec. <b>Use this if you have one detector and one Heltec mesh</b> — no multi-node dedup needed.</p>
+      <span class="tag">[ STANDALONE ]</span>
+      <h3>Standalone detector</h3>
+      <p>One board plugged straight into the mapper's computer: every detection goes out USB as JSON. If a Heltec is wired up, it also posts a short text alert with map links to the mesh every 5&nbsp;s, which any Meshtastic app can read but the mapper doesn't plot. <b>Don't run several of these into one mapper</b>; that's what field and home stations are for.</p>
       <dl class="specs">
-        <dt>Target</dt><dd class="val">XIAO ESP32-S3</dd>
-        <dt>Mode</dt><dd class="val">WiFi + BLE, concurrent</dd>
-        <dt>UART Out</dt><dd class="val">GPIO5 TX / GPIO6 RX @ 115200</dd>
-        <dt>JSON</dt><dd class="val">to USB Serial + Heltec V3</dd>
+        <dt>Board</dt><dd>XIAO ESP32-S3 or ESP32-C6, picked automatically</dd>
+        <dt>Detects</dt><dd>Same as a field station</dd>
+        <dt>UART</dt><dd>GPIO5 TX / GPIO6 RX at 115200 (on the C6 these aren't edge pins: check Seeed's pinout)</dd>
       </dl>
-      <esp-web-install-button id="flashMain" manifest="./manifest-main.json">
-        <button slot="activate">&gt;&gt; CONNECT &amp; FLASH MAIN &lt;&lt;</button>
-        <span slot="unsupported" class="unsupported">Your browser doesn't support Web Serial. Open this page in Chrome, Edge, or Opera on a desktop.</span>
-        <span slot="not-allowed" class="not-allowed">This page must be served over HTTPS. GitHub Pages handles that automatically.</span>
+      <esp-web-install-button manifest="./manifest-standalone.json">
+        <button slot="activate">&gt;&gt; Install standalone &lt;&lt;</button>
+        <span slot="unsupported" class="unsupported">This browser can't flash boards. Open the page in Chrome, Edge or Opera on a computer.</span>
+        <span slot="not-allowed" class="not-allowed">Flashing only works when the page is served over HTTPS.</span>
       </esp-web-install-button>
     </div>
 
@@ -429,90 +485,41 @@
 </section>
 
 <!-- =============================================================
-     NODE MODE - remote + home pair, with dedup explainer
+     OTHER BOARDS - C3 / C5 variants
      ============================================================= -->
-<section class="panel node-mode">
-  <header><span>Node Mode</span><span class="right">2 roles · multi-node mesh</span></header>
+<section class="panel">
+  <header><span>Other boards</span><span class="right">ESP32-C3 · ESP32-C5</span></header>
   <div class="body">
 
-    <p style="max-width: 620px; margin: 0 auto 14px; color: var(--text); font-size: 13px; text-align: left;">
-      Node Mode splits the standard build into <b>two firmwares</b>: put <b>Remote</b> on every field detector, and <b>Home</b> on the base receiver plugged into <a href="https://github.com/tsuinami-1112/drone-sentinel#quick-start">mesh-mapper.py</a>. Deploy as many Remotes as you want.
-    </p>
-
-    <pre class="arch"><span class="r">┌─────────────────────────────────────────────────────────────┐
-│                   REMOTE NODE   (field)                     │
-│   XIAO ESP32S3 ──UART──> Heltec V3 (Meshtastic) ──LoRa──>   │
-│   WiFi + BLE drone       GPIO5 TX -> Heltec RX              │
-│   detection              GPIO6 RX <- Heltec TX              │
-│   (Open Drone ID)                                           │
-└─────────────────────────────────────────────────────────────┘</span>
-                                │
-                         LoRa Mesh Network
-                        (multiple hops OK)
-                                │
-<span class="h">┌─────────────────────────────────────────────────────────────┐
-│                    HOME NODE   (base)                       │
-│   Heltec V3 (Meshtastic) ──UART──> XIAO ESP32S3 ──USB──>    │
-│   receives mesh data      GPIO6 RX <- Heltec TX  computer   │
-│                           GPIO5 TX -> Heltec RX  running    │
-│   NO detection.           dedup engine           mesh-mapper│
-│   Just a smart bridge.                                      │
-└─────────────────────────────────────────────────────────────┘</span></pre>
-
-    <p style="max-width: 620px; margin: 4px auto 18px; color: var(--text); font-size: 13px; text-align: left;">
-      <b>The dedup problem:</b> when 5 Remotes see the same drone, without dedup the mapper gets 5 copies of one detection. Every Remote tags its JSON with a unique <span class="kbd">node_id</span> derived from its ESP32 MAC. The Home node keys on the drone's MAC — the first hit forwards instantly, duplicates from other Remotes within <b>500ms</b> are dropped, and after 500ms the next hit goes through (drone moved). Near real-time tracking, no multi-node spam.
-    </p>
-
-    <div class="role-pick" role="radiogroup" aria-label="Node role">
-      <label class="on" data-role="remote">
-        <input type="radio" name="role" value="remote" checked>
-        <span>
-          <span class="role-name">Remote &nbsp;/&nbsp; Field</span><br>
-          <span class="role-desc">Detects drones over WiFi + BLE, tags each detection with its own <b>node_id</b>, ships JSON out UART to the Heltec mesh. Flash one per field board.</span>
-        </span>
-      </label>
-      <label data-role="home">
-        <input type="radio" name="role" value="home">
-        <span>
-          <span class="role-name">Home &nbsp;/&nbsp; Base</span><br>
-          <span class="role-desc">No detection. Reads mesh JSON from a Heltec V3 over UART, dedups on drone MAC (500ms window), forwards clean data over USB to mesh-mapper.py. Flash one for your base receiver.</span>
-        </span>
-      </label>
-    </div>
-
-    <!-- Node Remote -->
-    <div class="mode node-tag" id="modeRemote">
-      <span class="tag">[ REMOTE ]</span>
-      <h3>Node Mode — Remote (Field Detector)</h3>
-      <p>Dual-core: WiFi promiscuous on Core 0, BLE scan on Core 1. Every detection tagged with <b>node_id</b> (4-char hex from the ESP32 MAC) so the Home node can dedup. LED blinks per detection, heartbeat every 60s.</p>
+    <div class="mode">
+      <span class="tag">[ WIFI ONLY ]</span>
+      <h3>WiFi-only detector</h3>
+      <p>The original variant, for boards without BLE scanning. JSON on USB for the mapper, compact text to the mesh. <b>Different UART pins</b> from every other build.</p>
       <dl class="specs">
-        <dt>Target</dt><dd class="val">XIAO ESP32-S3</dd>
-        <dt>Role</dt><dd class="val">Detection + mesh sender</dd>
-        <dt>UART</dt><dd class="val">GPIO5 TX / GPIO6 RX @ 115200 → Heltec V3</dd>
-        <dt>Deploy</dt><dd class="val">One per field board (N remotes OK)</dd>
+        <dt>Board</dt><dd>XIAO ESP32-C3 or ESP32-S3, picked automatically</dd>
+        <dt>Detects</dt><dd>Remote ID over WiFi (NAN and beacon), DJI DroneID, MAVLink, WiFi fingerprints</dd>
+        <dt>UART</dt><dd>GPIO6 TX / GPIO7 RX: D4 / D5 on the C3, D5 / D8 on the S3</dd>
       </dl>
-      <esp-web-install-button id="flashRemote" class="magenta" manifest="./manifest-node-remote.json">
-        <button slot="activate">&gt;&gt; CONNECT &amp; FLASH REMOTE &lt;&lt;</button>
-        <span slot="unsupported" class="unsupported">Your browser doesn't support Web Serial. Open this page in Chrome, Edge, or Opera on a desktop.</span>
-        <span slot="not-allowed" class="not-allowed">This page must be served over HTTPS. GitHub Pages handles that automatically.</span>
+      <esp-web-install-button manifest="./manifest-wifi-only.json">
+        <button slot="activate">&gt;&gt; Install WiFi only &lt;&lt;</button>
+        <span slot="unsupported" class="unsupported">This browser can't flash boards. Open the page in Chrome, Edge or Opera on a computer.</span>
+        <span slot="not-allowed" class="not-allowed">Flashing only works when the page is served over HTTPS.</span>
       </esp-web-install-button>
     </div>
 
-    <!-- Node Home (hidden by default; toggled by radio) -->
-    <div class="mode node-tag" id="modeHome" style="display:none;">
-      <span class="tag">[ HOME ]</span>
-      <h3>Node Mode — Home (Base Bridge)</h3>
-      <p>Lean mesh-to-USB bridge. Reads JSON from the Heltec over UART, dedups on drone MAC (first-in wins within 500ms), forwards over USB to <span class="kbd">mesh-mapper.py</span>. Bidirectional pass-through for sending commands back to the Heltec. Non-JSON lines forwarded with a <span class="kbd">[MESH]</span> prefix.</p>
+    <div class="mode">
+      <span class="tag">[ DUAL BAND ]</span>
+      <h3>Dual-band detector</h3>
+      <p>Adds the 5&nbsp;GHz UNII-3 channels (149-165) that Remote ID may use, on top of 2.4&nbsp;GHz WiFi and BLE. The ESP32-C5 covers both bands; on an ESP32-S3 the same firmware runs 2.4&nbsp;GHz only.</p>
       <dl class="specs">
-        <dt>Target</dt><dd class="val">XIAO ESP32-S3</dd>
-        <dt>Role</dt><dd class="val">Dedup + USB bridge (no scanning)</dd>
-        <dt>Dedup</dt><dd class="val">500ms window, keyed on drone MAC</dd>
-        <dt>Deploy</dt><dd class="val">One base board (plug into mapper)</dd>
+        <dt>Board</dt><dd>XIAO ESP32-C5 (or ESP32-S3), picked automatically</dd>
+        <dt>Detects</dt><dd>Same as a field station, plus 5 GHz Remote ID on the C5</dd>
+        <dt>UART</dt><dd>GPIO5 TX / GPIO6 RX at 115200 (on the C5 these aren't edge pins: check Seeed's pinout)</dd>
       </dl>
-      <esp-web-install-button id="flashHome" class="magenta" manifest="./manifest-node-home.json">
-        <button slot="activate">&gt;&gt; CONNECT &amp; FLASH HOME &lt;&lt;</button>
-        <span slot="unsupported" class="unsupported">Your browser doesn't support Web Serial. Open this page in Chrome, Edge, or Opera on a desktop.</span>
-        <span slot="not-allowed" class="not-allowed">This page must be served over HTTPS. GitHub Pages handles that automatically.</span>
+      <esp-web-install-button manifest="./manifest-dual-band.json">
+        <button slot="activate">&gt;&gt; Install dual band &lt;&lt;</button>
+        <span slot="unsupported" class="unsupported">This browser can't flash boards. Open the page in Chrome, Edge or Opera on a computer.</span>
+        <span slot="not-allowed" class="not-allowed">Flashing only works when the page is served over HTTPS.</span>
       </esp-web-install-button>
     </div>
 
@@ -528,32 +535,40 @@
 
     <div class="step">
       <div class="n">?</div>
-      <h3>Nothing shows up in the port picker</h3>
-      <p>Try a different USB-C cable (charge-only won't work), install CH340 or CP210x drivers if your OS doesn't auto-detect, or hold <span class="kbd">BOOT</span> while plugging in to force download mode.</p>
+      <h3>The XIAO isn't in the port list</h3>
+      <p>Try another cable (charge-only cables are common). Then put the XIAO into bootloader mode: hold <span class="kbd">B</span>, press and release <span class="kbd">R</span>, release <span class="kbd">B</span>, and click Install again. On Linux your user needs the <span class="kbd">dialout</span> group (see the <a href="https://github.com/tsuinami-1112/drone-sentinel#build-and-flash-the-firmware">flashing steps</a>).</p>
     </div>
 
     <div class="step">
       <div class="n">?</div>
-      <h3>Heltec not receiving JSON from a Remote</h3>
-      <p>Confirm serial module is enabled on the Heltec: <span class="kbd">serial.enabled true</span>, <span class="kbd">serial.mode TEXTMSG</span>, <span class="kbd">serial.baud BAUD_115200</span>, <span class="kbd">serial.rxd 19</span>, <span class="kbd">serial.txd 20</span>. All Heltecs must share the same Meshtastic channel + key.</p>
+      <h3>"Your board is not supported"</h3>
+      <p>That button has no image for the chip it found. A C3 only has the WiFi-only build, a C5 only the dual-band build, and a C6 only the standalone build.</p>
     </div>
 
     <div class="step">
       <div class="n">?</div>
-      <h3>mesh-mapper.py sees duplicate detections</h3>
-      <p>You're probably running <b>Standard Dualcore</b> on multiple boards feeding one mapper. That build has no dedup. Reflash the field boards with <b>Node Mode / Remote</b> and the base board with <b>Node Mode / Home</b>.</p>
+      <h3>The Heltec doesn't pass detections on</h3>
+      <p>Check its serial module: <span class="kbd">serial.enabled true</span>, <span class="kbd">serial.mode TEXTMSG</span>, <span class="kbd">serial.baud BAUD_115200</span>, <span class="kbd">serial.rxd 47</span>, <span class="kbd">serial.txd 48</span>. Every Heltec, field and home, must share the same primary channel and key.</p>
+    </div>
+
+    <div class="step">
+      <div class="n">?</div>
+      <h3>The mapper shows duplicate detections</h3>
+      <p>Several standalone detectors feed one mapper and nothing drops the copies. Flash the detectors as <b>field stations</b> and the board on the mapper as a <b>home station</b>.</p>
     </div>
 
     <div class="step">
       <div class="n">?</div>
       <h3>No drone detections at all</h3>
-      <p>Confirm firmware is running: open serial monitor at 115200 and look for the heartbeat line. Some drones don't broadcast Remote ID — required in many jurisdictions but not universal.</p>
+      <p>Check the boot banner in Logs &amp; Console first. Many drones broadcast no Remote ID, and DJI aircraft only do with the motors running. More in the README's <a href="https://github.com/tsuinami-1112/drone-sentinel#no-drone-detections">No drone detections</a>.</p>
     </div>
 
   </div>
 </section>
 
 <footer>
+  <span id="footer-release">Preview build</span><br>
+  Releases and image downloads &middot; <a href="https://github.com/tsuinami-1112/drone-sentinel/releases">github.com/tsuinami-1112/drone-sentinel/releases</a><br>
   Source &middot; <a href="https://github.com/tsuinami-1112/drone-sentinel">github.com/tsuinami-1112/drone-sentinel</a><br>
   Based on &middot; <a href="https://github.com/colonelpanichacks/drone-mesh-mapper">colonelpanichacks/drone-mesh-mapper</a>
 </footer>
@@ -562,19 +577,27 @@
 
 <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
 <script>
+  // version.json is written by flasher/build_site.py when the Firmware
+  // workflow publishes; a local copy of this page just says "preview".
   (function () {
-    var modeRemote = document.getElementById('modeRemote');
-    var modeHome   = document.getElementById('modeHome');
-    document.querySelectorAll('.role-pick input[name="role"]').forEach(function (r) {
-      r.addEventListener('change', function () {
-        var role = r.value;
-        modeRemote.style.display = (role === 'remote') ? '' : 'none';
-        modeHome.style.display   = (role === 'home')   ? '' : 'none';
-        document.querySelectorAll('.role-pick label').forEach(function (l) {
-          l.classList.toggle('on', l.dataset.role === role);
-        });
-      });
-    });
+    var repo = 'https://github.com/tsuinami-1112/drone-sentinel';
+    fetch('version.json', { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (v) {
+        if (!v || !v.version) return;
+        var tag = encodeURIComponent(v.version);
+        var commit = (v.commit || '').slice(0, 7);
+        var release = document.getElementById('release');
+        release.textContent = 'RELEASE ';
+        var a = document.createElement('a');
+        a.href = repo + '/releases/tag/' + tag;
+        a.textContent = v.version;
+        release.appendChild(a);
+        release.appendChild(document.createTextNode(' · ' + (v.date || '') + (commit ? ' · ' + commit : '')));
+        document.getElementById('footer-release').textContent =
+          'Release ' + v.version + (v.date ? ' · built ' + v.date : '') + (commit ? ' from ' + commit : '');
+      })
+      .catch(function () {});
   })();
 </script>
 </body>

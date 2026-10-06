@@ -1,0 +1,165 @@
+# Builds every firmware variant and runs the detection library's host tests
+# on each push to level2-main and on each pull request that touches firmware.
+#
+# Publishing is manual: Actions -> Firmware -> Run workflow, on level2-main,
+# with a version name. That run also puts the web flasher and the fresh
+# images on GitHub Pages and creates a GitHub Release with the images
+# attached. Nothing is committed back to the repository.
+# Details: docs/REFERENCE.md#web-flasher-and-releases
+name: Firmware
+
+on:
+  push:
+    branches: [level2-main]
+    paths:
+      - "firmware-common/**"
+      - "node-mode-dualcore/**"
+      - "remoteid-mesh/**"
+      - "remoteid-mesh-dualcore/**"
+      - "remoteid-c5-5g/**"
+      - "flasher/**"
+      - ".github/workflows/firmware.yml"
+  pull_request:
+    paths:
+      - "firmware-common/**"
+      - "node-mode-dualcore/**"
+      - "remoteid-mesh/**"
+      - "remoteid-mesh-dualcore/**"
+      - "remoteid-c5-5g/**"
+      - "flasher/**"
+      - ".github/workflows/firmware.yml"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version name for this release, e.g. v2.1"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firmware-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
+
+jobs:
+  check-version:
+    # Publishing only: reject a bad version name before spending time on builds.
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the branch and version name
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [ "$GITHUB_REF_NAME" != "$DEFAULT_BRANCH" ]; then
+            echo "::error::Publish from $DEFAULT_BRANCH. This run was started on $GITHUB_REF_NAME."
+            exit 1
+          fi
+          if ! [[ "$VERSION" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+            echo "::error::'$VERSION' isn't a usable version name. Use letters, digits, dots and dashes, e.g. v2.1"
+            exit 1
+          fi
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$VERSION" --silent 2>/dev/null; then
+            echo "::error::Version $VERSION already exists. Pick a new name."
+            exit 1
+          fi
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Detection library host tests
+        run: make -C firmware-common/test
+
+  build:
+    name: build ${{ matrix.image }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # image names must match the paths in flasher/manifest-*.json
+        include:
+          - { image: field-station-esp32s3, dir: node-mode-dualcore,     env: remote_node }
+          - { image: home-station-esp32s3,  dir: node-mode-dualcore,     env: home_node }
+          - { image: standalone-esp32s3,    dir: remoteid-mesh-dualcore, env: seeed_xiao_esp32s3 }
+          - { image: standalone-esp32c6,    dir: remoteid-mesh-dualcore, env: seeed_xiao_esp32c6 }
+          - { image: wifi-only-esp32c3,     dir: remoteid-mesh,          env: seeed_xiao_esp32c3 }
+          - { image: wifi-only-esp32s3,     dir: remoteid-mesh,          env: seeed_xiao_esp32s3 }
+          - { image: dual-band-esp32c5,     dir: remoteid-c5-5g,         env: seeed_xiao_esp32c5 }
+          - { image: dual-band-esp32s3,     dir: remoteid-c5-5g,         env: seeed_xiao_esp32s3 }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install PlatformIO
+        run: pip install platformio==6.2.0
+      - name: Build
+        run: pio run -d "${{ matrix.dir }}" -e "${{ matrix.env }}"
+      - name: Collect the image
+        # firmware.factory.bin is bootloader + partition table + app merged
+        # into one file that flashes at offset 0
+        run: |
+          mkdir -p out
+          cp "${{ matrix.dir }}/.pio/build/${{ matrix.env }}/firmware.factory.bin" "out/${{ matrix.image }}.bin"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: image-${{ matrix.image }}
+          path: out/${{ matrix.image }}.bin
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: [check-version, test, build]
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # create the release
+      pages: write      # deploy the site
+      id-token: write   # required by deploy-pages
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: image-*
+          merge-multiple: true
+          path: images
+      - name: Assemble the site
+        run: python3 flasher/build_site.py images site "${{ inputs.version }}" "$GITHUB_SHA"
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@v5
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          PAGE_URL: ${{ steps.deploy.outputs.page_url }}
+        run: |
+          cat > notes.md <<EOF
+          Install from the web flasher: ${PAGE_URL}
+
+          Or flash an image below with esptool at offset 0 (\`esptool.py write_flash 0x0 <file>\`):
+
+          | File | Station | Board |
+          |---|---|---|
+          | \`field-station-esp32s3.bin\` | Field station | XIAO ESP32-S3 |
+          | \`home-station-esp32s3.bin\` | Home station | XIAO ESP32-S3 |
+          | \`standalone-esp32s3.bin\`, \`standalone-esp32c6.bin\` | Standalone detector | XIAO ESP32-S3 / ESP32-C6 |
+          | \`wifi-only-esp32c3.bin\`, \`wifi-only-esp32s3.bin\` | WiFi-only detector | XIAO ESP32-C3 / ESP32-S3 |
+          | \`dual-band-esp32c5.bin\`, \`dual-band-esp32s3.bin\` | Dual-band detector | XIAO ESP32-C5 / ESP32-S3 |
+          EOF
+          gh release create "$VERSION" images/*.bin \
+            --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "$VERSION" --notes "$(cat notes.md)" --generate-notes
