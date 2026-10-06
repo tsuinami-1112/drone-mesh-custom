@@ -2172,6 +2172,7 @@ ROTOR_HI, ROTOR_LO = C('#d6e2ff'), C('#6b80c4')
 LAMP = C('#fffbe0')
 BEAM = (214, 238, 255)                      # the searchlight's cold white
 SEARCH_ANGLES = (-75, -60, -45, -30, -15, 0, 15, 30, 45, 60, 75)     # degrees from straight down
+SKY_ANGLES = tuple(range(120, 241, 15))                                # and the ones that look up at the sky
 CLIPS['sky'] = (0, 0, W, 112)               # the beams end at the parapet
 # the second drone flies behind both near towers, so it comes out from behind the left one and goes behind the right
 CLIPS['behind'] = (NEAR_L[1] + 1, 0, NEAR_R[0] - NEAR_L[1] - 1, 112)
@@ -2265,7 +2266,8 @@ def beam_a(t):
 
 
 def beam_b(t):
-    return 5 + 34 * math.sin(2 * math.pi * (t - 11.8) / 4.0)
+    """The second drone's light looks the wrong way: up at the sky, never down at the roof."""
+    return 180 + 34 * math.sin(2 * math.pi * (t - 11.8) / 4.0)
 
 
 def fade_samples(times, values):
@@ -2281,11 +2283,12 @@ def fade_samples(times, values):
     return out
 
 
-def beam_layers(name, apex, length_to, move_g, times, thetas, half_outer, half_core, strength, clip='sky'):
+def beam_layers(name, apex, length_to, move_g, times, thetas, half_outer, half_core, strength, clip='sky',
+                angles=SEARCH_ANGLES):
     """One translucent cone for each angle the light passes through; they
     cross-fade as it turns, so the sweep is smooth."""
     ax, ay = apex[0] + .5, apex[1] + 1.0
-    for ang in SEARCH_ANGLES:
+    for ang in angles:
         weights = [max(0.0, 1 - abs(th - ang) / 15.0) for th in thetas]
         if max(weights) <= 0:
             continue
@@ -2323,12 +2326,15 @@ def drones():
         lamp_dy = 9 if size == 'M' else 5
         bt = [t0 + i * .1 for i in range(int(round((t1 - t0) / .1)) + 1)]
         thetas = [beam_fn(t) for t in bt]
-        POOLS.append((name, pool_samples(bt, [(t,) + fn(t) for t in bt], thetas, lamp_dy)))
+        pool = pool_samples(bt, [(t,) + fn(t) for t in bt], thetas, lamp_dy)
+        if any(o > 0 for (_, o, _) in pool):                        # a light that looks up leaves no pool
+            POOLS.append((name, pool))
         small = size == 'S'
         clip = 'behind' if name == 'b' else None
         # the light first, so the drone sits in front of it
         beam_layers(name, (ref[0], ref[1] + lamp_dy), 118, move_g, bt, thetas, 8 if small else 11,
-                    3 if small else 4.5, .7 if small else 1.0, clip or 'sky')
+                    3 if small else 4.5, .7 if small else 1.0, clip or 'sky',
+                    SKY_ANGLES if name == 'b' else SEARCH_ANGLES)
         drone(name, ref[0], ref[1], size, RED_N, (move_g,), clip)
 
 
@@ -2423,11 +2429,13 @@ def pings():
 
 # ---- what the map shows ----------------------------------------------------
 def map_dots(fn, arrivals, row):
-    """Where each ping puts a drone on the little map: east-west from how far
-    along the sky it was when the ping left, so a hover shows as a cluster."""
+    """Where each ping puts a drone on the little map: east-west from where the
+    drone is halfway through the time that ping's dot stays on the screen, so
+    the red line keeps up with the drone instead of trailing behind it."""
     out = []
-    for a in arrivals:
-        x, y = fn(a - FLIGHT)
+    for k, a in enumerate(arrivals):
+        nxt = arrivals[k + 1] if k + 1 < len(arrivals) else a + .9
+        x, y = fn((a + nxt) / 2.0)
         mx = max(1, min(20, int(round(2 + 18.0 * (x - 20) / 230.0))))
         my = max(1, min(5, int(round(row + (y - 44) / 14.0))))
         out.append((mx, my))
