@@ -374,6 +374,9 @@ station.
 
 ### Flash the XIAO ESP32-S3
 
+<details>
+<summary>Expand</summary>
+
 ### Recommended (web flasher)
 
 Open the [web flasher](https://tsuinami-1112.github.io/drone-sentinel/) in
@@ -479,6 +482,8 @@ pio device monitor -b 115200
 Detection knobs (stay on channel 6, drop fingerprints, dwell times) go in the
 environment's `build_flags`. See the
 [reference](docs/REFERENCE.md#detection-knobs).
+
+</details>
 
 ### Set up the Heltec V4 (Meshtastic)
 
