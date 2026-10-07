@@ -377,8 +377,9 @@ static inline void ledUpdate(uint32_t now) {
 // window is dropped. The drone's lat/long comes from the Remote ID broadcast
 // and is the same regardless of which node picks it up.
 //
-// Level 1 bearing reports ("type":"analog_fm") are the exception. Every level
-// 1 station that hears the same video carrier reports the same channel-derived
+// Level 1 bearing reports ("type":"analog_fm" for an analog carrier,
+// "type":"wideband" for a digital video link) are the exception. Every level
+// 1 station that hears the same video link reports the same channel-derived
 // MAC, but each one carries that station's own bearing, and mesh-mapper.py
 // needs a bearing from two or more stations to intersect them into a position.
 // They are never duplicates of each other, and the level 1 firmware already
@@ -398,7 +399,7 @@ static void processJsonLine(const char* line, int len, uint32_t now) {
 
   msgReceived++;
 
-  if (strstr(line, "\"type\":\"analog_fm\"")) {
+  if (strstr(line, "\"type\":\"analog_fm\"") || strstr(line, "\"type\":\"wideband\"")) {
     txPrintln(line);
     msgForwarded++;
     ledFlash();
