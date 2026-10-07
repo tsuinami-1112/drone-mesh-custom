@@ -1,11 +1,18 @@
-# Builds every firmware variant and runs the detection library's host tests
-# on each push to level2-main and on each pull request that touches firmware.
+# Builds every firmware variant, runs the detection library's host tests and
+# assembles the web flasher on each push to level2-main and on each pull
+# request that touches firmware.
 #
 # Publishing is manual: Actions -> Firmware -> Run workflow, on level2-main,
 # with a version name. That run also puts the web flasher and the fresh
-# images on GitHub Pages and creates a GitHub Release with the images
-# attached. Nothing is committed back to the repository.
+# images on GitHub Pages and creates a GitHub Release with the images, their
+# SHA256SUMS and a build provenance attestation attached. Nothing is
+# committed back to the repository.
 # Details: docs/REFERENCE.md#web-flasher-and-releases
+#
+# Every action is pinned to a commit SHA, with the release it was taken from
+# in a comment, so a moved or hijacked version tag can't change what runs
+# here. Dependabot (.github/dependabot.yml) opens a pull request when one of
+# them has a new release; keep the SHA and the comment in step.
 name: Firmware
 
 on:
@@ -70,7 +77,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Detection library host tests
         run: make -C firmware-common/test
 
@@ -91,8 +98,8 @@ jobs:
           - { image: dual-band-esp32c5,     dir: remoteid-c5-5g,         env: seeed_xiao_esp32c5 }
           - { image: dual-band-esp32s3,     dir: remoteid-c5-5g,         env: seeed_xiao_esp32s3 }
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       - name: Install PlatformIO
@@ -105,21 +112,47 @@ jobs:
         run: |
           mkdir -p out
           cp "${{ matrix.dir }}/.pio/build/${{ matrix.env }}/firmware.factory.bin" "out/${{ matrix.image }}.bin"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: image-${{ matrix.image }}
           path: out/${{ matrix.image }}.bin
           if-no-files-found: error
           retention-days: 14
 
+  site:
+    # Assembles the web flasher from the fresh images, so a broken manifest, a
+    # missing image or a bad esp-web-tools pin fails here on every push and
+    # pull request instead of at publish time. The result is downloadable
+    # from the run's artifacts for a local preview.
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: image-*
+          merge-multiple: true
+          path: images
+      - name: Assemble the site
+        env:
+          VERSION: ${{ inputs.version || 'preview' }}
+        run: python3 flasher/build_site.py images site "$VERSION" "$GITHUB_SHA"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: site
+          path: site
+          if-no-files-found: error
+          retention-days: 14
+
   publish:
-    needs: [check-version, test, build]
+    needs: [check-version, test, build, site]
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # create the release
-      pages: write      # deploy the site
-      id-token: write   # required by deploy-pages
+      contents: write      # create the release
+      pages: write         # deploy the site
+      id-token: write      # deploy-pages and attest-build-provenance sign with the job's identity token
+      attestations: write  # store the build provenance attestation
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
@@ -127,20 +160,30 @@ jobs:
       group: pages
       cancel-in-progress: false
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/download-artifact@v8
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: image-*
           merge-multiple: true
           path: images
       - name: Assemble the site
-        run: python3 flasher/build_site.py images site "${{ inputs.version }}" "$GITHUB_SHA"
-      - uses: actions/configure-pages@v6
-      - uses: actions/upload-pages-artifact@v5
+        # The version is a workflow input, so it reaches the shell through an
+        # environment variable rather than being pasted into the script.
+        env:
+          VERSION: ${{ inputs.version }}
+        run: python3 flasher/build_site.py images site "$VERSION" "$GITHUB_SHA"
+      - name: Attest the build provenance of the images
+        # Signs a statement that these exact files came out of this workflow
+        # run; `gh attestation verify <file> --repo <owner>/<repo>` checks it.
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: images/*.bin
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: site
       - id: deploy
-        uses: actions/deploy-pages@v5
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -159,7 +202,11 @@ jobs:
           | \`standalone-esp32s3.bin\`, \`standalone-esp32c6.bin\` | Standalone detector | XIAO ESP32-S3 / ESP32-C6 |
           | \`wifi-only-esp32c3.bin\`, \`wifi-only-esp32s3.bin\` | WiFi-only detector | XIAO ESP32-C3 / ESP32-S3 |
           | \`dual-band-esp32c5.bin\`, \`dual-band-esp32s3.bin\` | Dual-band detector | XIAO ESP32-C5 / ESP32-S3 |
+
+          To check a download, run \`sha256sum -c SHA256SUMS\` in the folder with the image, or
+          \`gh attestation verify <file> --repo ${GITHUB_REPOSITORY}\` to confirm GitHub built that exact
+          file from this repository's Firmware workflow.
           EOF
-          gh release create "$VERSION" images/*.bin \
+          gh release create "$VERSION" images/*.bin site/firmware/SHA256SUMS \
             --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "$VERSION" --notes "$(cat notes.md)" --generate-notes

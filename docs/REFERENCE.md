@@ -126,13 +126,21 @@ its images for download, to flash with esptool at offset 0, for example
 | `wifi-only-esp32c3.bin`, `wifi-only-esp32s3.bin` | `remoteid-mesh` | XIAO ESP32-C3 / ESP32-S3 |
 | `dual-band-esp32c5.bin`, `dual-band-esp32s3.bin` | `remoteid-c5-5g` | XIAO ESP32-C5 / ESP32-S3 |
 
+Each release also carries `SHA256SUMS` and a build provenance attestation.
+To check a downloaded image, run `sha256sum -c SHA256SUMS` in the folder with
+the image, or `gh attestation verify field-station-esp32s3.bin --repo
+tsuinami-1112/drone-sentinel`, which confirms GitHub built that exact file
+from this repository's Firmware workflow. The web flasher serves the same
+checksums at `firmware/SHA256SUMS`.
+
 Each image is PlatformIO's `firmware.factory.bin`: bootloader, partition table
 and app in one file. Images are never committed to the repository. The
 **Firmware** workflow (`.github/workflows/firmware.yml`) builds them:
 
 - **Every push to `level2-main`, and every pull request,** that touches the
-  firmware builds all eight images and runs the host tests. A red X next to
-  the commit means a build broke. Nothing is published.
+  firmware builds all eight images, runs the host tests and assembles the web
+  flasher (the run's `site` artifact holds it, ready for a local preview). A
+  red X next to the commit means a build broke. Nothing is published.
 - **Publishing is manual.** In the repository's **Actions** tab, pick
   **Firmware** on the left, open **Run workflow** on the right, leave the
   branch on `level2-main`, enter a new version name such as `v2.1` and click
@@ -156,6 +164,23 @@ The ESP32 platform and the libraries are pinned in each `platformio.ini`, so
 the same code always builds the same images, locally and in the workflow. To
 move to a newer ESP32 core, change the release number in all four firmware
 folders together.
+
+The page's flashing library, [esp-web-tools](https://github.com/esphome/esp-web-tools),
+is not loaded from a CDN. `build_site.py` downloads the release pinned in
+`ESP_WEB_TOOLS_VERSION` from the npm registry, refuses it unless its SHA-256
+matches `ESP_WEB_TOOLS_SHA256`, and unpacks it into `vendor/` on the site. To
+update it, change both constants together (the hash is `sha256sum` of
+`https://registry.npmjs.org/esp-web-tools/-/esp-web-tools-<version>.tgz`),
+preview the page and flash a board. Set `ESP_WEB_TOOLS_TGZ` to a local copy
+of the tarball to build without network access.
+
+The page declares a Content-Security-Policy that runs scripts served by the
+site itself only, so page logic belongs in `flasher/release.js`, never in an
+inline `<script>` block or a CDN tag.
+
+The actions the workflow uses are pinned to commit SHAs, with the release in
+a comment next to each. Dependabot (`.github/dependabot.yml`) opens a pull
+request when one of them has a new release.
 
 ---
 
