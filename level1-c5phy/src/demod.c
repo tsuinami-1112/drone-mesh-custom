@@ -133,6 +133,88 @@ void iq_metrics(const uint8_t* buf, int n, IqMetrics* m)
     m->stuck = stuck;
 }
 
+/* ---- lag autocorrelation (wideband path) ---------------------------------- */
+
+/* R(0) and the component sums of the window (< 2^21 and < 2^18 for 16 K samples). */
+typedef struct { int n; int32_t p0, si, sq; } LagWindow;
+
+static void lag_window(const uint8_t* buf, int n, LagWindow* w)
+{
+    int32_t p0 = 0, si = 0, sq = 0;
+    for (int k = 0; k < n; k++) {
+        unsigned b = buf[k];
+        p0 += s_pwr_lut[b];
+        si += s_val_lut[b >> 4];
+        sq += s_val_lut[b & 0xF];
+    }
+    w->n = n; w->p0 = p0; w->si = si; w->sq = sq;
+}
+
+/* |R(lag)| / R(0) with the window mean removed: the 4-lane decode (bits 9..6 of
+ * a two's complement sample = floor) carries -0.5 LSB per component, which
+ * would put n * 0.5 / R0 (0.19 on bare noise) into every lag; the 3-lane
+ * midpoint decode happens to cancel it. One pass of LUT decodes and integer
+ * MACs: |dot|,|cross| <= 128 per product, so the sums stay under 2^21. R(lag)
+ * runs over the n - lag products the lag leaves and is not rescaled against
+ * R(0) over all n; the WB_R* thresholds were set with this normalisation (model). */
+static float lag_ratio(const uint8_t* buf, const LagWindow* w, int lag)
+{
+    int n = w->n;
+    if (lag < 1 || lag >= n) return 0.0f;
+    int32_t re = 0, im = 0, ai = 0, aq = 0, bi = 0, bq = 0;
+    for (int k = lag; k < n; k++) {
+        unsigned a = buf[k - lag], b = buf[k];
+        int i0 = s_val_lut[a >> 4], q0 = s_val_lut[a & 0xF];
+        int i1 = s_val_lut[b >> 4], q1 = s_val_lut[b & 0xF];
+        re += i0 * i1 + q0 * q1;
+        im += i0 * q1 - q0 * i1;
+        ai += i1; aq += q1;                 /* sums of the leading samples ... */
+        bi += i0; bq += q0;                 /* ... and of the lagging ones */
+    }
+    float mi = (float)w->si / (float)n, mq = (float)w->sq / (float)n;
+    float m2 = mi * mi + mq * mq;
+    float p0 = (float)w->p0 - (float)n * m2;
+    if (p0 <= 0.0f) return 0.0f;            /* a stuck bus */
+    float rc = (float)re - mi * (float)(ai + bi) - mq * (float)(aq + bq) + (float)(n - lag) * m2;
+    float ic = (float)im - mq * (float)(bi - ai) - mi * (float)(aq - bq);
+    return hypotf(rc, ic) / p0;
+}
+
+void iq_lag_features(const uint8_t* buf, int n, IqLagFeatures* f)
+{
+    memset(f, 0, sizeof(*f));
+    if (!s_ready) demod_init_bits(s_bits);
+    if (n > DEMOD_MAX_SAMPLES) n = DEMOD_MAX_SAMPLES;
+    LagWindow w;
+    lag_window(buf, n, &w);
+    f->r1 = lag_ratio(buf, &w, 1);
+    f->r4 = lag_ratio(buf, &w, 4);
+    f->r128 = lag_ratio(buf, &w, 128);
+    f->r512 = lag_ratio(buf, &w, 512);
+    for (int lag = 2665; lag <= 2669; lag++) {      /* 66.7 us = 2666.7 samples */
+        float r = lag_ratio(buf, &w, lag);
+        if (r > f->r2667) f->r2667 = r;
+    }
+}
+
+int iq_lag_scan(const uint8_t* buf, int n, int lag_min, int lag_max, float* r_out)
+{
+    if (!s_ready) demod_init_bits(s_bits);
+    if (n > DEMOD_MAX_SAMPLES) n = DEMOD_MAX_SAMPLES;
+    if (lag_min < 1) lag_min = 1;
+    if (lag_max >= n) lag_max = n - 1;
+    LagWindow w;
+    lag_window(buf, n, &w);
+    int best = 0;
+    float best_r = 0.0f;
+    for (int lag = lag_min; lag <= lag_max; lag += (lag < 400) ? 1 : 2) {
+        float r = lag_ratio(buf, &w, lag);
+        if (r > best_r) { best_r = r; best = lag; }
+    }
+    if (r_out) *r_out = best_r;
+    return best;
+}
+
 /* ---- video line structure ------------------------------------------------- */
 
 #define W_MIN    128     /* 3.2 us sync-shaped pulse */

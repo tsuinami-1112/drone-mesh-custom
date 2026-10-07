@@ -1,0 +1,16 @@
+# Dependabot opens a pull request when one of the GitHub Actions pinned by
+# commit SHA in .github/workflows/ has a newer release, updating the SHA and
+# the version comment next to it. The Firmware workflow runs on that pull
+# request, so an update that breaks a build shows up before it is merged.
+#
+# It does not watch `pip install platformio==...` inside the workflow; that is
+# bumped by hand, together with level2-main's copy.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]

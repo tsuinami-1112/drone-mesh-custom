@@ -1,4 +1,5 @@
 #include "report.h"
+#include "fpv_channels.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
@@ -50,9 +51,15 @@ void report_mac(char out[18], char band, int ch, int freq_mhz)
              ((unsigned)freq_mhz >> 8) & 0xFF, (unsigned)freq_mhz & 0xFF);
 }
 
+void report_wb_mac(char out[18], char band, int ch, int freq_mhz)
+{
+    snprintf(out, 18, "DF:00:%02X:%02X:%02X:%02X", (unsigned)(unsigned char)band, (unsigned)ch & 0xFF,
+             ((unsigned)freq_mhz >> 8) & 0xFF, (unsigned)freq_mhz & 0xFF);
+}
+
 void report_basic_id(char* out, size_t cap, char band, int ch, int freq_mhz)
 {
-    snprintf(out, cap, "5.8G-%c%d-%dMHz", band, ch, freq_mhz);
+    snprintf(out, cap, "%s-%c%d-%dMHz", fpv_band_prefix(freq_mhz), band, ch, freq_mhz);
 }
 
 void report_fp(char* out, size_t cap, const char* video, int sync_hz, const char* carrier, int freq_peak)
@@ -61,6 +68,11 @@ void report_fp(char* out, size_t cap, const char* video, int sync_hz, const char
         snprintf(out, cap, "%s/%d/%d", video, sync_hz, freq_peak);
     else
         snprintf(out, cap, "%s/%d", carrier ? carrier : "fm", freq_peak);
+}
+
+void report_wb_fp(char* out, size_t cap, const char* cls, int bw_mhz, float fc_mhz)
+{
+    snprintf(out, cap, "%s/%d/%.1f", cls ? cls : "wb", bw_mhz, (double)fc_mhz);
 }
 
 int report_rssi_raw(float dbm)
@@ -153,6 +165,77 @@ int report_detection_json(char* out, size_t cap, const DetectionReport* r, int f
     return json_end(&j);
 }
 
+int report_wideband_json(char* out, size_t cap, const WidebandReport* r, int full)
+{
+    char mac[18], basic[32], fp[32], sectors[64];
+    report_wb_mac(mac, r->band, r->ch, r->freq_mhz);
+    report_basic_id(basic, sizeof(basic), r->band, r->ch, r->freq_mhz);
+    report_wb_fp(fp, sizeof(fp), r->cls, r->bw_mhz, r->fc_mhz);
+    int rssi = (int)lrintf(r->rssi_dbm);
+
+    Json j;
+    json_begin(&j, out, cap);
+    if (full) {
+        sectors_text(sectors, sizeof(sectors), r->sectors_dbm, r->sector_count);
+        json_add(&j, "\"type\":\"wideband\"");
+        json_add(&j, "\"receiver\":\"%s\"", r->receiver);
+        json_add(&j, "\"hw\":\"%s\"", r->hw);
+        json_add(&j, "\"mac\":\"%s\"", mac);
+        json_add(&j, "\"freq_mhz\":%d", r->freq_mhz);
+        json_add(&j, "\"fc_mhz\":%.1f", (double)r->fc_mhz);
+        json_add(&j, "\"band\":\"%c\"", r->band);
+        json_add(&j, "\"ch\":%d", r->ch);
+        json_add(&j, "\"rssi\":%d", rssi);
+        json_add(&j, "\"rssi_dbm\":%.1f", (double)r->rssi_dbm);
+        json_add(&j, "\"rssi_raw\":%d", report_rssi_raw(r->rssi_dbm));
+        json_add(&j, "\"rssi_min\":%d", (int)lrintf(r->rssi_min_dbm));
+        json_add(&j, "\"rssi_max\":%d", (int)lrintf(r->rssi_max_dbm));
+        json_add(&j, "\"rssi_n\":%d", r->rssi_n);
+        json_add(&j, "\"level_db\":%.1f", (double)r->level_db);
+        json_add(&j, "\"gain\":%d", r->gain);
+        json_add(&j, "\"q_phase\":%d", r->q_phase);
+        json_add(&j, "\"cfo_khz\":%d", r->cfo_khz);
+        json_add(&j, "\"cls\":\"%s\"", r->cls);
+        json_add(&j, "\"conf\":\"%s\"", r->conf);
+        json_add(&j, "\"bw_mhz\":%d", r->bw_mhz);
+        json_add(&j, "\"duty\":%d", r->duty_pct);
+        json_add(&j, "\"cv2\":%.2f", (double)r->cv2);
+        json_add(&j, "\"r1\":%.2f", (double)r->r1);
+        json_add(&j, "\"r128\":%.3f", (double)r->r128);
+        json_add(&j, "\"r512\":%.3f", (double)r->r512);
+        json_add(&j, "\"r2667\":%.3f", (double)r->r2667);
+        json_add(&j, "\"span_mhz\":%d", r->span_mhz);
+        json_add(&j, "\"sectors\":%s", sectors);
+        json_add(&j, "\"sector\":%d", r->sector);
+        json_add(&j, "\"bearing_deg\":%d", r->bearing_deg);
+        json_add(&j, "\"bearing_sigma_deg\":%d", r->bearing_sigma_deg);
+        json_add(&j, "\"station_heading\":%d", r->heading);
+        json_add(&j, "\"fp\":\"%s\"", fp);
+        json_add(&j, "\"basic_id\":\"%s\"", basic);
+        json_add(&j, "\"node_id\":\"%s\"", r->node_id);
+        json_add(&j, "\"seq\":%u", r->seq);
+        return json_end(&j);
+    }
+    /* Mesh: identity and bearing first, then what names the system (class,
+     * centre, bandwidth, duty); the tail gives way to a long node id. */
+    if (!json_add(&j, "\"type\":\"wideband\"")) return 0;
+    if (!json_add(&j, "\"mac\":\"%s\"", mac)) return 0;
+    if (!json_add(&j, "\"node_id\":\"%s\"", r->node_id)) return 0;
+    if (!json_add(&j, "\"freq_mhz\":%d", r->freq_mhz)) return 0;
+    json_add(&j, "\"rssi\":%d", rssi);
+    json_add(&j, "\"bearing_deg\":%d", r->bearing_deg);
+    json_add(&j, "\"bearing_sigma_deg\":%d", r->bearing_sigma_deg);
+    json_add(&j, "\"cls\":\"%s\"", r->cls);
+    json_add(&j, "\"fc_mhz\":%.1f", (double)r->fc_mhz);
+    json_add(&j, "\"bw_mhz\":%d", r->bw_mhz);
+    json_add(&j, "\"duty\":%d", r->duty_pct);
+    json_add(&j, "\"conf\":\"%s\"", r->conf);
+    json_add(&j, "\"fp\":\"%s\"", fp);
+    json_add(&j, "\"sector\":%d", r->sector);
+    json_add(&j, "\"seq\":%u", r->seq);
+    return json_end(&j);
+}
+
 int report_heartbeat_json(char* out, size_t cap, const HeartbeatReport* h, int full)
 {
     Json j;
@@ -177,6 +260,12 @@ int report_heartbeat_json(char* out, size_t cap, const HeartbeatReport* h, int f
         json_add(&j, "\"gain_max\":%d", h->gain_max);
         json_add(&j, "\"bw40\":%d", h->bw40);
         json_add(&j, "\"fe_gain_db\":%.1f", (double)h->fe_gain_db);
+        json_add(&j, "\"bands\":\"%s\"", h->bands ? h->bands : "5.8");
+        json_add(&j, "\"antenna_dbi\":%.1f", (double)h->antenna_dbi);
+        json_add(&j, "\"beamwidth_deg\":%d", h->beamwidth_deg);
+        json_add(&j, "\"bearing_k\":%.2f", (double)h->bearing_k);
+        json_add(&j, "\"wb_seen\":%d", h->wb_seen);
+        json_add(&j, "\"pullin\":%u", h->pullin);
         json_add(&j, "\"tune_fail\":%u", h->tune_fail);
         json_add(&j, "\"cap_err\":%u", h->cap_err);
         json_add(&j, "\"bus_stuck\":%u", h->bus_stuck);
@@ -185,6 +274,7 @@ int report_heartbeat_json(char* out, size_t cap, const HeartbeatReport* h, int f
         json_add(&j, "\"usb_drop\":%u", h->usb_drop);
         json_add(&j, "\"mesh_drop\":%u", h->mesh_drop);
         json_add(&j, "\"nf_dbm\":%.0f", (double)h->nf_dbm);
+        if (h->has_nf_24) json_add(&j, "\"nf_dbm_24\":%.0f", (double)h->nf_dbm_24);
         json_add(&j, "\"temp_c\":%.1f", (double)h->temp_c);
         json_add(&j, "\"uptime_s\":%u", h->uptime_s);
         json_add(&j, "\"seq\":%u", h->seq);
@@ -202,6 +292,7 @@ int report_heartbeat_json(char* out, size_t cap, const HeartbeatReport* h, int f
     json_add(&j, "\"scanning\":%s", h->scanning ? "true" : "false");
     json_add(&j, "\"sweeps\":%u", h->sweeps);
     json_add(&j, "\"video_seen\":%d", h->video_seen);
+    json_add(&j, "\"wb_seen\":%d", h->wb_seen);
     json_add(&j, "\"nf_dbm\":%.0f", (double)h->nf_dbm);
     json_add(&j, "\"temp_c\":%.1f", (double)h->temp_c);
     json_add(&j, "\"uptime_s\":%u", h->uptime_s);

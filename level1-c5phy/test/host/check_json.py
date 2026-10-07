@@ -6,8 +6,12 @@ import json
 import sys
 
 MESH_MAX = 191
+# Every record kind must appear under both tags: the suite prints the USB and
+# the mesh variant of each.
+KINDS = ("analog_fm", "wideband", "heartbeat")
 ok = True
 count = 0
+seen = set()
 with open(sys.argv[1]) as fh:
     for lineno, line in enumerate(fh, 1):
         line = line.rstrip("\n")
@@ -23,8 +27,10 @@ with open(sys.argv[1]) as fh:
         count += 1
         if "heartbeat" in obj:
             need = ("node_id", "receiver")
+            seen.add((tag, "heartbeat"))
         else:
             need = ("type", "mac", "node_id", "freq_mhz", "rssi", "bearing_deg")
+            seen.add((tag, obj.get("type")))
         for key in need:
             if key not in obj:
                 print(f"line {lineno}: missing {key}: {payload}")
@@ -35,6 +41,11 @@ with open(sys.argv[1]) as fh:
 if count == 0:
     print("no JSON lines found")
     ok = False
+for tag in ("JSON_USB", "JSON_MESH"):
+    for kind in KINDS:
+        if (tag, kind) not in seen:
+            print(f"no {kind} line with the {tag} tag")
+            ok = False
 with open(sys.argv[1]) as fh:
     text = fh.read()
 if "ALL TESTS PASSED" not in text or "\nFAIL " in text:

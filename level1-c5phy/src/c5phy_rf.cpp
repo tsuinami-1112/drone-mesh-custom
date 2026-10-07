@@ -1,5 +1,6 @@
 /*
- * c5phy_rf.cpp - the C5's Wi-Fi PHY held receive-only as the analog FM front end.
+ * c5phy_rf.cpp - the C5's Wi-Fi PHY held receive-only as the I/Q front end
+ * (5.8 GHz analog FM and digital links; 2.4 GHz too under DUAL_BAND).
  *
  * Re-implements, on the Arduino core 3.3 / ESP-IDF 5.5 toolchain the fleet
  * builds with, the receiver bring-up that the C5VRX project proved on hardware
@@ -27,8 +28,10 @@
 
 #if C5PHY_STRONG_PHY_SYMBOLS
 #define PHY_SYM
+#define PHY_LINKED(sym) true                 /* a strong symbol is there or the link failed */
 #else
 #define PHY_SYM __attribute__((weak))
+#define PHY_LINKED(sym) ((sym) != nullptr)   /* a weak one may be missing from this core's libphy */
 #endif
 extern "C" {
 void phy_disable_agc(void) PHY_SYM;
@@ -78,7 +81,7 @@ static inline void fence(void) { __asm__ __volatile__("fence iorw, iorw" ::: "me
 /* Hardware-disable the five LMAC transmit queues: the radio can no longer transmit. */
 static esp_err_t lock_rx_only(void)
 {
-    if (lmac_stop_hw_txq) (void)lmac_stop_hw_txq();
+    if (PHY_LINKED(lmac_stop_hw_txq)) (void)lmac_stop_hw_txq();
     for (unsigned q = 0; q < MAC_TXQ_COUNT; ++q)
         REG32(MAC_TXQ0_CONF - q * MAC_TXQ_STRIDE) &= ~MAC_TXQ_ENABLE;
     fence();
@@ -166,10 +169,10 @@ esp_err_t rf_start(void)
 {
     s_started = false;
     /* The calls the receiver cannot work without. */
-    if (!phy_disable_agc)    { s_last_call = "phy_disable_agc (not exported by libphy)"; return ESP_ERR_NOT_FOUND; }
-    if (!phy_rfagc_disable)  { s_last_call = "phy_rfagc_disable (not exported by libphy)"; return ESP_ERR_NOT_FOUND; }
-    if (!phy_wifi_fbw_sel)   { s_last_call = "phy_wifi_fbw_sel (not exported by libphy)"; return ESP_ERR_NOT_FOUND; }
-    if (!phy_force_rx_gain)  { s_last_call = "phy_force_rx_gain (not exported by libphy)"; return ESP_ERR_NOT_FOUND; }
+    if (!PHY_LINKED(phy_disable_agc))    { s_last_call = "phy_disable_agc (not exported by libphy)"; return ESP_ERR_NOT_FOUND; }
+    if (!PHY_LINKED(phy_rfagc_disable))  { s_last_call = "phy_rfagc_disable (not exported by libphy)"; return ESP_ERR_NOT_FOUND; }
+    if (!PHY_LINKED(phy_wifi_fbw_sel))   { s_last_call = "phy_wifi_fbw_sel (not exported by libphy)"; return ESP_ERR_NOT_FOUND; }
+    if (!PHY_LINKED(phy_force_rx_gain))  { s_last_call = "phy_force_rx_gain (not exported by libphy)"; return ESP_ERR_NOT_FOUND; }
 
     TRY(init_nvs());
     esp_err_t e = esp_netif_init();
@@ -188,11 +191,14 @@ esp_err_t rf_start(void)
     e = esp_wifi_set_country_code(RF_COUNTRY_CC, false);
     if (e != ESP_OK) { s_last_call = "esp_wifi_set_country_code"; return e; }
 
-#if CONFIG_SOC_WIFI_SUPPORT_5G
-    TRY(esp_wifi_set_band_mode(WIFI_BAND_MODE_5G_ONLY));
-#else
+#if !CONFIG_SOC_WIFI_SUPPORT_5G
     s_last_call = "no 5 GHz support in this core";
     return ESP_ERR_NOT_SUPPORTED;
+#elif DUAL_BAND
+    /* Both bands: esp_wifi_set_channel picks the band from the channel number. */
+    TRY(esp_wifi_set_band_mode(WIFI_BAND_MODE_AUTO));
+#else
+    TRY(esp_wifi_set_band_mode(WIFI_BAND_MODE_5G_ONLY));
 #endif
     TRY(esp_wifi_set_ps(WIFI_PS_NONE));
 
@@ -202,9 +208,15 @@ esp_err_t rf_start(void)
     TRY(esp_wifi_set_protocols(WIFI_IF_STA, &protocols));
 
     /* BW40 on 5 GHz is a hardware requirement for the diag bus I/Q (C5VRX: no
-     * BW20 fallback). The analog filter is chosen separately with phy_wifi_fbw_sel. */
+     * BW20 fallback). The analog filter is chosen separately with phy_wifi_fbw_sel.
+     * DUAL_BAND asks for BW40 on 2.4 GHz as well, on the same grounds; C5VRX
+     * proved the diag bus on 5 GHz only, so bench stage 1 on a G channel confirms it. */
     wifi_bandwidths_t bandwidths = {};
+#if DUAL_BAND
+    bandwidths.ghz_2g = WIFI_BW40;
+#else
     bandwidths.ghz_2g = WIFI_BW20;
+#endif
     bandwidths.ghz_5g = WIFI_BW40;
     TRY(esp_wifi_set_bandwidths(WIFI_IF_STA, &bandwidths));
 
@@ -231,7 +243,7 @@ esp_err_t rf_start(void)
     TRY(route_modem_iq());
     enable_continuous_modem();
     assert_analog_contract();
-    if (phy_track_pll_deinit) phy_track_pll_deinit();   /* no PLL/RX recalibration mid-capture */
+    if (PHY_LINKED(phy_track_pll_deinit)) phy_track_pll_deinit();   /* no PLL/RX recalibration mid-capture */
 
     s_started = true;
     return ESP_OK;
@@ -242,18 +254,23 @@ esp_err_t rf_tune(uint16_t freq_mhz)
     if (!s_started) { s_last_call = "rf_tune before rf_start"; return ESP_ERR_INVALID_STATE; }
     uint8_t ch = 0;
     uint16_t centre = 0;
-    if (!fpv_wifi_bootstrap(freq_mhz, &ch, &centre)) { s_last_call = "outside the C5 5 GHz window"; return ESP_ERR_NOT_SUPPORTED; }
+    if (!fpv_wifi_bootstrap(freq_mhz, &ch, &centre)) { s_last_call = "outside the C5 tuning windows"; return ESP_ERR_NOT_SUPPORTED; }
 
-    /* A supported public centre first; the regulatory table may refuse the nearest
-     * one (173 and 177 in some tables), in which case the next nearest within
-     * reach of phy_set_freq is used. */
+    /* A supported public centre of the target's band first (fpv_wifi_bootstrap_rank
+     * never crosses bands); the regulatory table may refuse the nearest one (173
+     * and 177 in some tables), in which case the next nearest within reach of
+     * phy_set_freq is used. A target with no centre within that reach (L1-L3
+     * at the 60 MHz default) is refused as such, not blamed on the table. */
     esp_err_t e = ESP_FAIL;
+    bool tried = false;
     for (int rank = 0; fpv_wifi_bootstrap_rank(freq_mhz, rank, &ch, &centre); rank++) {
         if (abs((int)freq_mhz - (int)centre) > C5PHY_MAX_BOOTSTRAP_OFFSET_MHZ) break;
-        if (freq_mhz != centre && !phy_set_freq) { s_last_call = "phy_set_freq (not exported by libphy)"; return ESP_ERR_NOT_SUPPORTED; }
+        if (freq_mhz != centre && !PHY_LINKED(phy_set_freq)) { s_last_call = "phy_set_freq (not exported by libphy)"; return ESP_ERR_NOT_SUPPORTED; }
+        tried = true;
         e = esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
         if (e == ESP_OK) break;
     }
+    if (!tried) { s_last_call = "no public centre within C5PHY_MAX_BOOTSTRAP_OFFSET_MHZ"; return ESP_ERR_NOT_SUPPORTED; }
     if (e != ESP_OK) { s_last_call = "esp_wifi_set_channel (regulatory table)"; return e; }
     uint8_t primary = 0;
     wifi_second_chan_t secondary = WIFI_SECOND_CHAN_NONE;
@@ -271,7 +288,7 @@ esp_err_t rf_tune(uint16_t freq_mhz)
 void rf_set_gain(uint8_t gain_idx)
 {
     s_gain = gain_idx;
-    if (s_started && phy_force_rx_gain) phy_force_rx_gain(true, gain_idx);
+    if (s_started && PHY_LINKED(phy_force_rx_gain)) phy_force_rx_gain(true, gain_idx);
 }
 
 uint8_t rf_gain(void) { return s_gain; }
@@ -279,12 +296,13 @@ uint8_t rf_gain(void) { return s_gain; }
 void rf_set_bw40(bool bw40)
 {
     s_bw40 = bw40;
-    if (s_started && phy_wifi_fbw_sel) phy_wifi_fbw_sel(bw40 ? 1u : 0u);
+    if (s_started && PHY_LINKED(phy_wifi_fbw_sel)) phy_wifi_fbw_sel(bw40 ? 1u : 0u);
 }
 
 bool        rf_bw40(void)             { return s_bw40; }
 const char* rf_last_call(void)        { return s_last_call; }
 uint8_t     rf_wifi_channel(void)     { return s_wifi_ch; }
 uint16_t    rf_freq_mhz(void)         { return s_freq_mhz; }
-bool        rf_has_phy_set_freq(void) { return phy_set_freq != nullptr; }
+uint8_t     rf_band_ghz(void)         { return s_freq_mhz ? (uint8_t)fpv_freq_band_ghz(s_freq_mhz) : 5; }   /* parked on 5 GHz (149) until rf_start tunes */
+bool        rf_has_phy_set_freq(void) { return PHY_LINKED(phy_set_freq); }
 bool        rf_started(void)          { return s_started; }

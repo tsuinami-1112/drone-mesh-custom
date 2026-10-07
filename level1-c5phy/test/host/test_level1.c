@@ -2,12 +2,15 @@
  *
  * Synthetic 4-bit I/Q at 40 MS/s exercises exactly the code that runs on the
  * XIAO ESP32-C5: noise, a bare carrier, an off-channel carrier, FM video with
- * PAL and NTSC line timing, the bearing arithmetic and the two JSON records.
- * JSON lines are printed with a JSON_USB / JSON_MESH tag for check_json.py. */
+ * PAL and NTSC line timing, the digital video waveforms the wideband path has
+ * to tell apart (LTE-like and 802.11-like OFDM, single-carrier QPSK), the
+ * bearing arithmetic and the JSON records. JSON lines are printed with a
+ * JSON_USB / JSON_MESH tag for check_json.py. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <complex.h>
 #include "demod.h"
 #include "bearing.h"
 #include "report.h"
@@ -17,6 +20,15 @@
 #define FS 40.0e6
 #define N  16384
 #define PI 3.14159265358979323846
+
+/* Build variants under test: the Makefile runs the suite with the defaults and
+ * again with -DDUAL_BAND=1 -DLOWBAND=2. */
+#ifndef DUAL_BAND
+#define DUAL_BAND 0
+#endif
+#ifndef LOWBAND
+#define LOWBAND 1
+#endif
 
 static int g_fail = 0;
 #define CHECK(cond, ...) do { if (!(cond)) { g_fail++; printf("FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
@@ -69,6 +81,18 @@ static double video_ire(double t_us, double line_us, int line)
     return v < 0 ? 0 : v;
 }
 
+/* The modulated waveforms are built at unit amplitude in g_wave and quantised
+ * by quant(), so a window can be retaken at a lower gain the way the firmware's
+ * gain loop does without drawing a new waveform. */
+static double complex g_wave[N];
+
+/* buf = pack(amp * wave + sigma * noise): the receiver's gain and its noise floor. */
+static void quant(uint8_t* buf, int n, double amp, double sigma)
+{
+    for (int k = 0; k < n; k++)
+        buf[k] = pack(amp * creal(g_wave[k]) + sigma * nrand(), amp * cimag(g_wave[k]) + sigma * nrand());
+}
+
 /* FM video: deviation 4 MHz per 100 IRE (sync -1.6 MHz, white +4 MHz),
  * polarity +1 = higher luminance at higher frequency. */
 static void gen_fm_video(uint8_t* buf, int n, double line_samples, double cfo_hz, double amp,
@@ -84,7 +108,115 @@ static void gen_fm_video(uint8_t* buf, int n, double line_samples, double cfo_hz
         double ire = video_ire(t_us, line_us, line);
         double f = cfo_hz + polarity * ire / 100.0 * 4.0e6;
         ph += 2 * PI * f / FS;
-        buf[k] = pack(amp * cos(ph) + sigma * nrand(), amp * sin(ph) + sigma * nrand());
+        g_wave[k] = cos(ph) + sin(ph) * I;
+    }
+    quant(buf, n, amp, sigma);
+}
+
+/* CP-OFDM in continuous time: subcarriers f[] (Hz), a fresh random QPSK symbol
+ * per subcarrier per OFDM symbol of tu_s + tcp_s, advanced sample by sample
+ * with one complex rotation per subcarrier; on_us / off_us > 0 gates it into
+ * bursts (Wi-Fi traffic). Unit power. */
+static void gen_ofdm(uint8_t* buf, int n, const double* f, int nsc, double tu_s, double tcp_s,
+                     double on_us, double off_us, double amp, double sigma)
+{
+    static double complex p[2048], w[2048];
+    double tsym = tu_s + tcp_s;
+    double t0 = urand() * tsym;                             /* random symbol phase */
+    double t_off = urand() * (on_us + off_us);              /* random burst phase */
+    for (int m = 0; m < nsc; m++) w[m] = cexp(I * 2 * PI * f[m] / FS);
+    int cur = -1;
+    for (int k = 0; k < n; k++) {
+        double t = k / FS + t0;
+        int s = (int)(t / tsym);
+        if (s != cur) {                                     /* new symbol: new data, phased to its own start */
+            cur = s;
+            double tau = t - s * tsym - tcp_s;
+            for (int m = 0; m < nsc; m++) {
+                double complex x = (urand() < 0.5 ? 1 : -1) + (urand() < 0.5 ? 1 : -1) * I;
+                p[m] = x * cexp(I * 2 * PI * f[m] * tau);
+            }
+        }
+        double complex v = 0;
+        for (int m = 0; m < nsc; m++) { v += p[m]; p[m] *= w[m]; }
+        if (off_us > 0 && fmod(t * 1e6 + t_off, on_us + off_us) >= on_us) v = 0;
+        g_wave[k] = v / sqrt(2.0 * nsc);
+    }
+    quant(buf, n, amp, sigma);
+}
+
+/* Single-carrier QPSK at rs symbols/s through a raised-cosine pulse (alpha 0.35,
+ * +/-8 symbols), offset foff Hz. Unit power. */
+static void gen_sc(uint8_t* buf, int n, double rs, double foff, double amp, double sigma)
+{
+    static double complex a[8192];
+    double T = 1 / rs;
+    int nsym = (int)(n / FS * rs) + 40;
+    for (int s = 0; s < nsym; s++) a[s] = (urand() < 0.5 ? 1 : -1) + (urand() < 0.5 ? 1 : -1) * I;
+    for (int k = 0; k < n; k++) {
+        double t = k / FS + 20 * T;
+        int c = (int)(t / T);
+        double complex v = 0;
+        for (int s = c - 8; s <= c + 8; s++) {
+            if (s < 0 || s >= nsym) continue;
+            double x = (t - s * T) / T;
+            double h = fabs(x) < 1e-9 ? 1 : sin(PI * x) / (PI * x);
+            double d = 1 - 4 * 0.35 * 0.35 * x * x;
+            h *= fabs(d) < 1e-6 ? PI / 4 : cos(PI * 0.35 * x) / d;
+            v += a[s] * h;
+        }
+        g_wave[k] = v * cexp(I * 2 * PI * foff * k / FS) / sqrt(2.0);
+    }
+    quant(buf, n, amp, sigma);
+}
+
+/* The waveforms of SPEC section 11, +0.5 MHz off the tuned frequency. */
+enum { WF_FM, WF_LTE, WF_DOT11, WF_DOT11_BURST, WF_DOT11_40, WF_SC, WF_COUNT };
+static const char* const k_wf_names[WF_COUNT] = {
+    "FM video", "LTE-like 9 MHz", "802.11-like 20 MHz", "802.11-like 20 MHz bursty", "802.11-like 40 MHz", "SC QPSK 10 Msym/s",
+};
+
+static void gen_waveform(int kind, uint8_t* buf, int n, double amp, double sigma)
+{
+    static double f[2048];
+    const double foff = 0.5e6;
+    int nsc = 0;
+    switch (kind) {
+    case WF_FM:                                             /* NTSC line timing, picture polarity +1 */
+        gen_fm_video(buf, n, 2542.2, foff, amp, sigma, +1);
+        break;
+    case WF_LTE:                                            /* 600 x 15 kHz = 9 MHz, Tu 66.67 us, CP 4.69 us */
+        for (int m = 0; m < 600; m++) f[nsc++] = foff + (m - 299.5) * 15e3;
+        gen_ofdm(buf, n, f, nsc, 1 / 15e3, 4.69e-6, 0, 0, amp, sigma);
+        break;
+    case WF_DOT11:                                          /* 52 x 312.5 kHz, Tu 3.2 us, CP 0.8 us */
+    case WF_DOT11_BURST:                                    /* the same, 300 us on / 700 us off */
+        for (int m = -26; m <= 26; m++) if (m) f[nsc++] = foff + m * 312.5e3;
+        gen_ofdm(buf, n, f, nsc, 3.2e-6, 0.8e-6, kind == WF_DOT11_BURST ? 300 : 0, kind == WF_DOT11_BURST ? 700 : 0, amp, sigma);
+        break;
+    case WF_DOT11_40:                                       /* m = -58..58, |m| > 1 */
+        for (int m = -58; m <= 58; m++) if (abs(m) > 1) f[nsc++] = foff + m * 312.5e3;
+        gen_ofdm(buf, n, f, nsc, 3.2e-6, 0.8e-6, 0, 0, amp, sigma);
+        break;
+    case WF_SC:
+        gen_sc(buf, n, 10e6, foff, amp, sigma);
+        break;
+    }
+}
+
+/* The firmware's gain loop on the waveform just generated: step the gain down
+ * (GAIN_STEP 3 dB) and retake while more than CLIP_MAX_PCT of the samples clip.
+ * buf holds the window at amp / sigma on entry; returns the back-off in dB and
+ * the metrics of the window kept. */
+static double gain_loop(uint8_t* buf, int n, double amp, double sigma, IqMetrics* m)
+{
+    double back = 0;
+    for (;;) {
+        iq_metrics(buf, n, m);
+        if (m->clip_pct <= 3.0f || back >= 60) return back;
+        back += 3;
+        double s = pow(10, -back / 20.0);
+        quant(buf, n, s * amp, s * sigma);
     }
 }
 
@@ -242,19 +374,55 @@ static void test_bearing(void)
 
 static void test_channels(void)
 {
-    CHECK(fpv_channel_count() == 40, "40 channels, got %d", fpv_channel_count());
+    int expect = 50;                                        /* R A B E F + X1 X2 + D1..D3 + L4..L8 */
+    if (DUAL_BAND) expect += 5;                             /* G1..G5 */
+    if (LOWBAND >= 2) expect += 3;                          /* L1..L3 */
+    CHECK(fpv_channel_count() == expect, "%d channels, got %d", expect, fpv_channel_count());
+    /* R, A, B, E, F first in table order, the additions after F8 */
+    int order_ok = 1;
+    for (int i = 0; i < 40; i++) {
+        const FpvChannel* c = fpv_channel(i);
+        if (!c || c->band != "RABEF"[i / 8] || c->number != i % 8 + 1) order_ok = 0;
+    }
+    CHECK(order_ok, "R A B E F first");
+    CHECK(fpv_channel(40)->band == 'X' && fpv_channel(42)->band == 'D' && fpv_channel(45)->band == 'L', "X, D, L after F8");
+    CHECK(fpv_channel(fpv_channel_count() - 1)->band == (DUAL_BAND ? 'G' : 'L'), "last channel");
     int r3 = fpv_find("R3");
     CHECK(r3 >= 0 && fpv_channel(r3)->freq_mhz == 5732, "R3");
     CHECK(fpv_find("5732") == r3 && fpv_find("r3") == r3, "find by MHz / lower case");
     CHECK(fpv_find("Z9") < 0 && fpv_find("") < 0, "unknown channel");
     CHECK(fpv_nearest(5734) == r3 || fpv_channel(fpv_nearest(5734))->freq_mhz == 5733, "nearest");
+    int d1 = fpv_find("D1"), x2 = fpv_find("X2"), l4 = fpv_find("L4"), l1 = fpv_find("L1"), g3 = fpv_find("G3");
+    CHECK(d1 >= 0 && fpv_channel(d1)->freq_mhz == 5190, "D1");
+    CHECK(x2 >= 0 && fpv_channel(x2)->freq_mhz == 5715, "X2");
+    CHECK(l4 >= 0 && fpv_channel(l4)->freq_mhz == 5473, "L4");
+    CHECK((l1 >= 0) == (LOWBAND >= 2), "L1 only with LOWBAND 2 (%d)", l1);
+    CHECK((g3 >= 0) == (DUAL_BAND != 0) && (g3 < 0 || fpv_channel(g3)->freq_mhz == 2442), "G3 only with DUAL_BAND (%d)", g3);
+    CHECK(fpv_freq_band_ghz(5190) == 5 && fpv_freq_band_ghz(2442) == 2, "band of a frequency");
+    CHECK(fpv_channel_band_ghz(r3) == 5 && fpv_channel_band_ghz(d1) == 5 && fpv_channel_band_ghz(-1) == 0, "band of a channel");
+    if (g3 >= 0) CHECK(fpv_channel_band_ghz(g3) == 2, "G3 is 2.4 GHz");
+    CHECK(strcmp(fpv_band_prefix(5732), "5.8G") == 0 && strcmp(fpv_band_prefix(5190), "5.8G") == 0
+          && strcmp(fpv_band_prefix(2442), "2.4G") == 0, "band prefix");
+
     uint8_t ch; uint16_t mhz;
     CHECK(fpv_wifi_bootstrap(5732, &ch, &mhz) && ch == 144 && mhz == 5720, "bootstrap R3 -> ch144");
     CHECK(fpv_wifi_bootstrap(5865, &ch, &mhz) && ch == 173 && mhz == 5865, "bootstrap A1 exact");
-    CHECK(!fpv_wifi_bootstrap(5100, &ch, &mhz), "out of window");
+    CHECK(fpv_wifi_bootstrap(5190, &ch, &mhz) && ch == 36 && mhz == 5180, "bootstrap D1 -> ch36");
+    CHECK(fpv_wifi_bootstrap(5473, &ch, &mhz) && ch == 100 && mhz == 5500, "bootstrap L4 -> ch100");
+    /* 2.4 GHz centres sit 5 MHz apart: G3 2442 is channel 7 itself, G1 2402 ten under channel 1 */
+    CHECK(fpv_wifi_bootstrap(2442, &ch, &mhz) && ch == 7 && mhz == 2442, "bootstrap G3 -> ch7 (%d)", ch);
+    CHECK(fpv_wifi_bootstrap(2402, &ch, &mhz) && ch == 1 && mhz == 2412, "bootstrap G1 -> ch1");
+    CHECK(fpv_wifi_bootstrap_rank(2442, 1, &ch, &mhz) && (ch == 6 || ch == 8), "second nearest centre for G3 (%d)", ch);
+    CHECK(!fpv_wifi_bootstrap(5100, &ch, &mhz) && !fpv_wifi_bootstrap(2340, &ch, &mhz) && !fpv_wifi_bootstrap(2540, &ch, &mhz), "out of window");
     CHECK(fpv_wifi_bootstrap_rank(5865, 1, &ch, &mhz) && (ch == 169 || ch == 177), "second nearest centre for A1 (%d)", ch);
-    CHECK(fpv_wifi_bootstrap_rank(5865, 11, &ch, &mhz) && ch == 132, "farthest centre");
-    CHECK(!fpv_wifi_bootstrap_rank(5865, 12, &ch, &mhz), "rank past the table");
+    CHECK(fpv_wifi_bootstrap_rank(5865, 11, &ch, &mhz) && ch == 132, "farthest UNII-2C/3 centre");
+    CHECK(fpv_wifi_bootstrap_rank(5865, 23, &ch, &mhz) && ch == 36, "farthest centre");
+    CHECK(!fpv_wifi_bootstrap_rank(5865, 24, &ch, &mhz), "rank past the table");
+    /* a 2.4 GHz target never parks on a 5 GHz centre, nor the other way round */
+    int cross = 0, n24 = 0, n5 = 0;
+    for (int rank = 0; fpv_wifi_bootstrap_rank(2442, rank, &ch, &mhz); rank++) { n24++; if (mhz > 3000) cross = 1; }
+    for (int rank = 0; fpv_wifi_bootstrap_rank(5732, rank, &ch, &mhz); rank++) { n5++; if (mhz < 3000) cross = 1; }
+    CHECK(!cross && n24 == 13 && n5 == 24, "band-aware ranking: %d 2.4 GHz and %d 5 GHz centres", n24, n5);
     CHECK(fpv_wifi_top_centre_mhz() == 5885, "top centre 5885");
 }
 
@@ -347,9 +515,10 @@ static void test_report(void)
     CHECK(report_detection_json(tiny, sizeof(tiny), &r, 0) == 0, "tiny buffer");
 
     HeartbeatReport h = {
-        .node_id = "RX01", .receiver = "c5phy", .hw = "v3", .scanning = 1, .channels = 40, .sectors = 4,
+        .node_id = "RX01", .receiver = "c5phy", .hw = "v3", .scanning = 1, .channels = fpv_channel_count(), .sectors = 4,
         .heading = 0, .threshold_dbm = -87.0f, .threshold_level_db = 8.0f, .video_seen = 7, .gain_max = 62,
-        .bw40 = 1, .fe_gain_db = 0, .tune_fail = 0, .cap_err = 0, .sweeps = 1830, .usb_drop = 0, .mesh_drop = 0,
+        .bw40 = 1, .fe_gain_db = 0, .bands = "5.8", .antenna_dbi = 8.0f, .beamwidth_deg = 72, .bearing_k = 3.0f,
+        .wb_seen = 2, .pullin = 1, .tune_fail = 0, .cap_err = 0, .sweeps = 1830, .usb_drop = 0, .mesh_drop = 0,
         .nf_dbm = -98, .temp_c = 41.2f, .uptime_s = 3600, .seq = 42,
     };
     int n3 = report_heartbeat_json(usb, sizeof(usb), &h, 1);
@@ -358,6 +527,10 @@ static void test_report(void)
     printf("JSON_MESH %s\n", mesh);
     CHECK(n3 > 0 && n4 > 0 && n4 <= 191, "heartbeat json");
     CHECK(!strstr(usb, "\"lat\"") && !strstr(mesh, "\"lat\""), "no position unless the station has one");
+    /* Antenna model and wideband counters: after fe_gain_db in the USB line, wb_seen after video_seen in the mesh line. */
+    CHECK(strstr(usb, "\"fe_gain_db\":0.0,\"bands\":\"5.8\",\"antenna_dbi\":8.0,\"beamwidth_deg\":72,\"bearing_k\":3.00,\"wb_seen\":2,\"pullin\":1,\"tune_fail\":0,"),
+          "usb heartbeat antenna and wideband fields in order");
+    CHECK(strstr(mesh, "\"video_seen\":7,\"wb_seen\":2,\"nf_dbm\":-98,"), "mesh heartbeat wb_seen after video_seen");
 
     /* Flashed position (STATION_LAT / STATION_LON): both fields, 6 decimals, right
      * after the heading, in the USB line and in the mesh line; in the mesh line it
@@ -381,6 +554,230 @@ static void test_report(void)
     report_heartbeat_json(usb, sizeof(usb), &h, 1);
     report_heartbeat_json(mesh, sizeof(mesh), &h, 0);
     CHECK(strcmp(usb, usb_nopos) == 0 && strcmp(mesh, mesh_nopos) == 0, "without a position the lines are unchanged");
+
+    /* DUAL_BAND: the 2.4 GHz noise floor rides on the USB heartbeat only, right after nf_dbm. */
+    h.has_nf_24 = 1; h.nf_dbm_24 = -96;
+    int n8 = report_heartbeat_json(usb, sizeof(usb), &h, 1);
+    int n9 = report_heartbeat_json(mesh, sizeof(mesh), &h, 0);
+    printf("JSON_USB %s\n", usb);
+    CHECK(n8 > 0 && strstr(usb, "\"nf_dbm\":-98,\"nf_dbm_24\":-96,\"temp_c\":41.2,"), "usb heartbeat nf_dbm_24 after nf_dbm");
+    CHECK(n9 > 0 && n9 <= 191 && !strstr(mesh, "nf_dbm_24"), "mesh heartbeat carries no nf_dbm_24");
+}
+
+static void test_wideband_report(void)
+{
+    char mac[18], fp[32], basic[32];
+    report_wb_mac(mac, 'R', 4, 5769);
+    CHECK(strcmp(mac, "DF:00:52:04:16:89") == 0, "wb mac %s", mac);
+    report_wb_fp(fp, sizeof(fp), "lte", 10, 5768.5f);
+    CHECK(strcmp(fp, "lte/10/5768.5") == 0, "wb fp %s", fp);
+    report_basic_id(basic, sizeof(basic), 'R', 4, 5769);
+    CHECK(strcmp(basic, "5.8G-R4-5769MHz") == 0, "wb basic_id %s", basic);
+    report_basic_id(basic, sizeof(basic), 'D', 1, 5190);
+    CHECK(strcmp(basic, "5.8G-D1-5190MHz") == 0, "5.1 GHz keeps the 5.8G prefix: %s", basic);
+    report_basic_id(basic, sizeof(basic), 'G', 3, 2442);
+    CHECK(strcmp(basic, "2.4G-G3-2442MHz") == 0, "2.4 GHz basic_id %s", basic);
+
+    /* A DJI-like 10 MHz link on R4, confirmed over 8 windows */
+    float sectors[4] = { -66.3f, -72.8f, -90.1f, -84.0f };
+    WidebandReport r = {
+        .node_id = "RX01", .receiver = "c5phy", .hw = "v3",
+        .band = 'R', .ch = 4, .freq_mhz = 5769, .fc_mhz = 5768.5f, .cfo_khz = -480,
+        .rssi_dbm = -66.3f, .rssi_min_dbm = -67.9f, .rssi_max_dbm = -65.1f, .rssi_n = 8,
+        .level_db = 28.7f, .gain = 44, .q_phase = 41,
+        .cls = "lte", .conf = "high", .bw_mhz = 10, .duty_pct = 100,
+        .cv2 = 0.98f, .r1 = 0.85f, .r128 = 0.009f, .r512 = 0.007f, .r2667 = 0.056f, .span_mhz = 0,
+        .sectors_dbm = sectors, .sector_count = 4, .sector = 0,
+        .bearing_deg = 20, .bearing_sigma_deg = 16, .heading = 0, .seq = 43,
+    };
+    char usb[768], mesh[192];
+    int n1 = report_wideband_json(usb, sizeof(usb), &r, 1);
+    int n2 = report_wideband_json(mesh, sizeof(mesh), &r, 0);
+    printf("JSON_USB %s\n", usb);
+    printf("JSON_MESH %s\n", mesh);
+    CHECK(n1 > 0 && n1 == (int)strlen(usb) && n1 < 640, "wb usb json length %d", n1);
+    CHECK(strstr(usb, "{\"type\":\"wideband\",\"receiver\":\"c5phy\",\"hw\":\"v3\",\"mac\":\"DF:00:52:04:16:89\",\"freq_mhz\":5769,\"fc_mhz\":5768.5,\"band\":\"R\",\"ch\":4,"
+                      "\"rssi\":-66,\"rssi_dbm\":-66.3,\"rssi_raw\":559,\"rssi_min\":-68,\"rssi_max\":-65,\"rssi_n\":8,\"level_db\":28.7,\"gain\":44,\"q_phase\":41,\"cfo_khz\":-480,"),
+          "wb usb identity and level fields in order");
+    CHECK(strstr(usb, "\"cls\":\"lte\",\"conf\":\"high\",\"bw_mhz\":10,\"duty\":100,\"cv2\":0.98,\"r1\":0.85,\"r128\":0.009,\"r512\":0.007,\"r2667\":0.056,\"span_mhz\":0,"
+                      "\"sectors\":[-66.3,-72.8,-90.1,-84.0],\"sector\":0,\"bearing_deg\":20,\"bearing_sigma_deg\":16,\"station_heading\":0,"),
+          "wb usb class, feature and bearing fields in order");
+    CHECK(strstr(usb, "\"fp\":\"lte/10/5768.5\",\"basic_id\":\"5.8G-R4-5769MHz\",\"node_id\":\"RX01\",\"seq\":43}"), "wb usb tail");
+    CHECK(n2 > 0 && n2 <= 191 && mesh[n2 - 1] == '}', "wb mesh json %d bytes", n2);
+    CHECK(strstr(mesh, "{\"type\":\"wideband\",\"mac\":\"DF:00:52:04:16:89\",\"node_id\":\"RX01\",\"freq_mhz\":5769,\"rssi\":-66,\"bearing_deg\":20,\"bearing_sigma_deg\":16,"
+                       "\"cls\":\"lte\",\"fc_mhz\":5768.5,\"bw_mhz\":10,\"duty\":100,"),
+          "wb mesh identity, bearing and class first");
+
+    /* A long node id: the tail gives way, what names the system stays. */
+    r.node_id = "STATION-NORTH-TOWER-01";
+    n2 = report_wideband_json(mesh, sizeof(mesh), &r, 0);
+    printf("JSON_MESH %s\n", mesh);
+    CHECK(n2 > 0 && n2 <= 191 && mesh[n2 - 1] == '}', "wb mesh json with long node id (%d)", n2);
+    CHECK(strstr(mesh, "\"bearing_sigma_deg\":16,\"cls\":\"lte\",\"fc_mhz\":5768.5"), "wb mesh keeps class and centre with a long node id");
+    char tiny[40];
+    CHECK(report_wideband_json(tiny, sizeof(tiny), &r, 0) == 0, "wb tiny buffer");
+
+    /* A 2.4 GHz channel (DUAL_BAND): the key and basic_id say so, the record is the same. */
+    r.node_id = "RX01"; r.band = 'G'; r.ch = 3; r.freq_mhz = 2442; r.fc_mhz = 2444.5f; r.cfo_khz = 2500;
+    r.cls = "dot11"; r.conf = "med"; r.bw_mhz = 20; r.duty_pct = 80; r.span_mhz = 20; r.seq = 44;
+    n1 = report_wideband_json(usb, sizeof(usb), &r, 1);
+    n2 = report_wideband_json(mesh, sizeof(mesh), &r, 0);
+    printf("JSON_USB %s\n", usb);
+    printf("JSON_MESH %s\n", mesh);
+    CHECK(n1 > 0 && strstr(usb, "\"mac\":\"DF:00:47:03:09:8A\"") && strstr(usb, "\"fp\":\"dot11/20/2444.5\",\"basic_id\":\"2.4G-G3-2442MHz\""), "2.4 GHz wb usb");
+    CHECK(n2 > 0 && n2 <= 191 && strstr(mesh, "\"mac\":\"DF:00:47:03:09:8A\"") && strstr(mesh, "\"cls\":\"dot11\",\"fc_mhz\":2444.5,\"bw_mhz\":20,\"duty\":80"), "2.4 GHz wb mesh");
+}
+
+/* ---- digital video links ---------------------------------------------------
+ * The analog gate (q_phase, env_cv2) and the lag features on the waveforms the
+ * wideband path has to tell apart, through the firmware's gain loop at S/N 30
+ * and 12 dB. Model numbers in SPEC section 11; thresholds as in config.h. */
+#ifndef DETECT_LEVEL_DB
+#define DETECT_LEVEL_DB 8.0f
+#endif
+#ifndef Q_MIN
+#define Q_MIN 40
+#endif
+#ifndef ANALOG_CV2_MAX
+#define ANALOG_CV2_MAX 0.5f
+#endif
+#ifndef WB_R128_MIN
+#define WB_R128_MIN 0.10f
+#endif
+#ifndef WB_R2667_MIN
+#define WB_R2667_MIN 0.03f
+#endif
+#ifndef WB_R128_LTE_MAX
+#define WB_R128_LTE_MAX 0.05f
+#endif
+#ifndef WB_R128_HIGH
+#define WB_R128_HIGH 0.15f
+#endif
+#ifndef WB_R2667_HIGH
+#define WB_R2667_HIGH 0.04f
+#endif
+
+/* main.cpp's class rule and bandwidth bucket (SPEC section 6); the bucket is
+ * taken on r1 scaled back by (S+N)/S, since the noise decorrelates at lag 1 */
+static const char* wb_class(const IqLagFeatures* f)
+{
+    if (f->r2667 >= WB_R2667_MIN && f->r128 < WB_R128_LTE_MAX) return "lte";
+    if (f->r128 >= WB_R128_MIN) return "dot11";
+    return "wb";
+}
+static int wb_bucket(float r1, double level_db)
+{
+    double r = r1 * (1.0 + pow(10, -level_db / 10.0));
+    if (r > 1.0) r = 1.0;
+    return r >= 0.78 ? 10 : r >= 0.52 ? 20 : r >= 0.30 ? 30 : 40;
+}
+static double median(double* v, int n)                  /* sorts v */
+{
+    for (int i = 1; i < n; i++) {
+        double x = v[i];
+        int j = i - 1;
+        while (j >= 0 && v[j] > x) { v[j + 1] = v[j]; j--; }
+        v[j + 1] = x;
+    }
+    return (n & 1) ? v[n / 2] : 0.5 * (v[n / 2 - 1] + v[n / 2]);
+}
+
+static void test_wideband(double snr_db)
+{
+    static uint8_t buf[N];
+    const double a0 = sqrt(2.0 * pow(10, snr_db / 10.0));  /* unit-power waveform over the sigma = 1 floor */
+    enum { NW = 8 };                                          /* WB_WINDOWS: level = min, q and cv2 = median, features = mean */
+    unsigned seed = g_seed;                                   /* own stream: the suites after this one see the same numbers as before */
+    g_seed = 7u + (unsigned)snr_db;
+    IqMetrics nm;
+    IqLagFeatures nf;
+    gen_noise(buf, N, 1.0);
+    iq_metrics(buf, N, &nm);
+    iq_lag_features(buf, N, &nf);
+    printf("\nS/N %.0f dB, after the gain loop, %d windows:\n"
+           "  %-26s %5s %5s %5s | %5s %5s %5s %5s %5s | class bw scan\n",
+           snr_db, NW, "waveform", "level", "q", "cv2", "r1", "r4", "r128", "r512", "r2667");
+    printf("  %-26s %5s %5.1f %5.2f | %5.2f %5.2f %5.3f %5.3f %5.3f |\n",
+           "noise", "-", nm.q_phase_pct, nm.env_cv2, nf.r1, nf.r4, nf.r128, nf.r512, nf.r2667);
+    CHECK(nf.r128 < 0.03 && nf.r2667 < 0.02, "noise lag features r128 %.3f r2667 %.3f", nf.r128, nf.r2667);
+
+    for (int kind = 0; kind < WF_COUNT; kind++) {
+        double level = 1e9, q[NW], cv2[NW];
+        IqLagFeatures sum = { 0 };
+        int scan_lag = 0, hits = 0;
+        float scan_r = 0;
+        for (int w = 0; w < NW; w++) {
+            IqMetrics m;
+            IqLagFeatures lf;
+            gen_waveform(kind, buf, N, a0, 1.0);
+            double back = gain_loop(buf, N, a0, 1.0, &m);
+            double lvl = back + 10 * log10(m.p_mean / nm.p_mean);
+            if (lvl < level) level = lvl;
+            q[w] = m.q_phase_pct;
+            cv2[w] = m.env_cv2;
+            iq_lag_features(buf, N, &lf);
+            sum.r1 += lf.r1 / NW; sum.r4 += lf.r4 / NW; sum.r128 += lf.r128 / NW;
+            sum.r512 += lf.r512 / NW; sum.r2667 += lf.r2667 / NW;
+            /* The bench scan. The 802.11 symbol peak (0.18) stands ten sigma over
+             * the scan's own estimation noise on one 410 us window; the LTE-like
+             * CP peak (0.05, 4.7 us of copy in 71 us) about three, and the noise
+             * maximum over 1760 lags reaches 0.04, so the bench sees that one on
+             * most windows, not all: every window is scanned and counted. */
+            if (kind == WF_LTE || (w == 0 && (kind == WF_DOT11 || kind == WF_DOT11_40))) {
+                float r;
+                int lag = iq_lag_scan(buf, N, 40, 3200, &r);
+                if (lag >= 2665 && lag <= 2669) hits++;
+                if (w == 0) { scan_lag = lag; scan_r = r; }
+            }
+        }
+        double qm = median(q, NW), cm = median(cv2, NW);
+        const char* cls = wb_class(&sum);
+        int bw = wb_bucket(sum.r1, level);
+        int analog = qm >= Q_MIN && cm <= ANALOG_CV2_MAX;
+        printf("  %-26s %5.1f %5.1f %5.2f | %5.2f %5.2f %5.3f %5.3f %5.3f | %-5s %2d %4d (%.3f)",
+               k_wf_names[kind], level, qm, cm, sum.r1, sum.r4, sum.r128, sum.r512, sum.r2667, cls, bw, scan_lag, scan_r);
+        if (kind == WF_LTE) printf(" %d/%d", hits, NW);
+        printf("%s\n", analog ? "  analog gate" : "");
+        switch (kind) {
+        case WF_FM:
+            CHECK(level >= DETECT_LEVEL_DB && analog, "FM video must pass the analog gate: level %.1f q %.1f cv2 %.2f", level, qm, cm);
+            CHECK(sum.r2667 < 0.02, "FM r2667 %.3f", sum.r2667);
+            break;
+        case WF_LTE:
+            CHECK(level >= DETECT_LEVEL_DB && !analog, "LTE-like must fail the analog gate: q %.1f cv2 %.2f", qm, cm);
+            CHECK(sum.r2667 >= WB_R2667_MIN && sum.r128 < WB_R128_LTE_MAX && strcmp(cls, "lte") == 0, "LTE-like r2667 %.3f r128 %.3f -> %s", sum.r2667, sum.r128, cls);
+            CHECK(sum.r2667 >= WB_R2667_HIGH, "LTE-like r2667 %.3f short of conf high (%.3f)", sum.r2667, WB_R2667_HIGH);
+            CHECK(sum.r1 >= 0.78 && bw == 10, "LTE-like r1 %.2f -> %d MHz", sum.r1, bw);
+            CHECK(hits >= NW / 2, "LTE-like lag scan in 2665..2669 on %d of %d windows (w0: %d, %.3f)", hits, NW, scan_lag, scan_r);
+            break;
+        case WF_DOT11:
+            CHECK(level >= DETECT_LEVEL_DB && !analog, "802.11-like must fail the analog gate: q %.1f cv2 %.2f", qm, cm);
+            CHECK(sum.r128 >= WB_R128_MIN && strcmp(cls, "dot11") == 0, "802.11-like r128 %.3f -> %s", sum.r128, cls);
+            CHECK(sum.r128 >= WB_R128_HIGH, "802.11-like r128 %.3f short of conf high (%.3f)", sum.r128, WB_R128_HIGH);
+            CHECK(sum.r1 >= 0.52 && sum.r1 < 0.78 && bw == 20, "802.11-like r1 %.2f -> %d MHz", sum.r1, bw);
+            CHECK(scan_lag == 128, "802.11-like lag scan %d (%.3f)", scan_lag, scan_r);
+            break;
+        case WF_DOT11_BURST:
+            CHECK(!analog, "bursty 802.11-like must fail the analog gate: q %.1f cv2 %.2f", qm, cm);
+            break;
+        case WF_DOT11_40:
+            CHECK(level >= DETECT_LEVEL_DB && !analog, "802.11-like 40 MHz must fail the analog gate: q %.1f cv2 %.2f", qm, cm);
+            CHECK(sum.r128 >= WB_R128_MIN && strcmp(cls, "dot11") == 0, "802.11-like 40 MHz r128 %.3f -> %s", sum.r128, cls);
+            CHECK(sum.r128 >= WB_R128_HIGH, "802.11-like 40 MHz r128 %.3f short of conf high (%.3f)", sum.r128, WB_R128_HIGH);
+            CHECK(sum.r1 < 0.30 && bw == 40, "802.11-like 40 MHz r1 %.2f -> %d MHz", sum.r1, bw);
+            CHECK(scan_lag == 128, "802.11-like 40 MHz lag scan %d (%.3f)", scan_lag, scan_r);
+            break;
+        case WF_SC:
+            /* Four samples per symbol through a raised cosine: three phase steps in
+             * four are small and the envelope ripple is mild, so a fast single carrier
+             * reads as a coherent carrier (q ~50, cv2 ~0.3: SPEC 11) and passes the
+             * gate. Printed for the record; what is pinned is that its lag features
+             * carry no OFDM symbol, so it could only ever class as "wb". */
+            CHECK(sum.r128 < WB_R128_LTE_MAX && sum.r2667 < WB_R2667_MIN && strcmp(cls, "wb") == 0, "SC QPSK r128 %.3f r2667 %.3f -> %s", sum.r128, sum.r2667, cls);
+            break;
+        }
+    }
+    g_seed = seed;
 }
 
 /* The price of three lanes per component: level above the noise reference and
@@ -437,6 +834,8 @@ static void run_suite(int bits)
     test_video("PAL", 2560.0, 15625, 4.5, 0.7, +1, 1);
     test_video("NTSC", 2542.2, 15734, 4.5, 0.7, -1, 1);   /* sync at the high end */
     test_video("PAL", 2560.0, 15625, 2.0, 1.0, +1, 0);     /* weak: informational */
+    test_wideband(30);
+    test_wideband(12);
 }
 
 int main(void)
@@ -447,6 +846,7 @@ int main(void)
     test_channels();
     test_switch_bits();
     test_report();
+    test_wideband_report();
     sensitivity_table();
     printf(g_fail ? "\n%d FAILURE(S)\n" : "\nALL TESTS PASSED\n", g_fail);
     return g_fail ? 1 : 0;

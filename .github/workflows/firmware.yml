@@ -1,0 +1,72 @@
+# Builds both level 1 station firmware variants and runs the signal-processing
+# host tests on each push to level1 and on each pull request that touches the
+# firmware. Nothing is published: level 1 stations are flashed from source with
+# PlatformIO (the station's own environment carries its position and antenna
+# settings, so there is no generic image worth shipping). The merged images of
+# the two generic environments are kept as run artifacts for two weeks, for a
+# quick bench flash of a build without the per-station settings.
+#
+# Every action is pinned to a commit SHA, with the release it was taken from in
+# a comment, so a moved or hijacked version tag can't change what runs here.
+# Dependabot (.github/dependabot.yml) opens a pull request when one of them has
+# a new release; keep the SHA and the comment in step.
+name: Firmware
+
+on:
+  push:
+    branches: [level1]
+    paths:
+      - "level1-c5phy/**"
+      - ".github/workflows/firmware.yml"
+  pull_request:
+    paths:
+      - "level1-c5phy/**"
+      - ".github/workflows/firmware.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firmware-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: host tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Signal-processing host tests (both lane modes, both channel-plan configurations)
+        run: make -C level1-c5phy/test/host
+
+  build:
+    name: build ${{ matrix.env }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # the two generic environments of level1-c5phy/platformio.ini; a
+        # deployed station extends one of them in its own stations.ini
+        env: [seeed_xiao_esp32c5, seeed_xiao_esp32c5_dualband]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install PlatformIO
+        run: pip install platformio==6.2.0
+      - name: Build
+        run: pio run -d level1-c5phy -e "${{ matrix.env }}"
+      - name: Collect the image
+        # firmware.factory.bin is bootloader + partition table + app merged
+        # into one file that flashes at offset 0 (after a full erase, as the
+        # README insists)
+        run: |
+          mkdir -p out
+          cp "level1-c5phy/.pio/build/${{ matrix.env }}/firmware.factory.bin" "out/level1-${{ matrix.env }}.bin"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: image-level1-${{ matrix.env }}
+          path: out/level1-${{ matrix.env }}.bin
+          if-no-files-found: error
+          retention-days: 14

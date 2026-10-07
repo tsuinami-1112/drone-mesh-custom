@@ -29,6 +29,10 @@
   button.on { border-color:var(--accent); color:var(--accent); font-weight:600; }
   button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; width:100%; margin-top:16px; }
   button:disabled { opacity:.5; cursor:default; }
+  details { margin-top:12px; }
+  summary { cursor:pointer; font-weight:600; font-size:13px; }
+  details p.hint { margin:6px 0 0; }
+  #note { margin-top:6px; font-size:12.5px; color:var(--err); white-space:pre-line; }
   #map { height:100vh; }
   .pin { background:#c2410c; border:3px solid #fff; border-radius:50%; box-shadow:0 0 0 2px #c2410c, 0 1px 4px rgba(0,0,0,.5); cursor:move; }
   #offline { display:none; padding:24px; color:var(--muted); }
@@ -42,7 +46,7 @@
 <div class="wrap">
   <aside>
     <h1>Level 1 station setup</h1>
-    <p class="lead">Pick where a station stands and which way its face N points. Save writes it to
+    <p class="lead">Pick where a station stands, which way its face N points and what patches it carries. Save writes it to
       <code>stations.ini</code> as its own PlatformIO environment; flash it from there.</p>
 
     <label for="existing">Station</label>
@@ -68,6 +72,30 @@
     <label for="heading">Heading of face N <span class="hint">(degrees clockwise from true north)</span></label>
     <input id="heading" inputmode="numeric" placeholder="0">
 
+    <label for="antennas">Antennas <span class="hint">(picks the build: 5.8 GHz only, or the dual-band variant)</span></label>
+    <select id="antennas">
+      <option value="5.8">5.8 GHz patches only</option>
+      <option value="dual">Dual-band patches, 2.4 + 5.8 GHz</option>
+    </select>
+    <div class="row">
+      <div><label for="dbi">Antenna gain (dBi) <span class="hint dual">(5.8 GHz)</span></label><input id="dbi" inputmode="decimal" value="8"></div>
+      <div class="dual"><label for="dbi24">2.4 GHz gain (dBi)</label><input id="dbi24" inputmode="decimal" value="6"></div>
+    </div>
+    <details>
+      <summary>Antenna pattern (optional)</summary>
+      <p class="hint">Leave empty and the firmware derives the beamwidth from the gain (8 dBi = 72°, 6 dBi = 90°) and the
+        bearing constant K from the beamwidth. Fill in the datasheet beamwidth, or K from a stage 6 pattern sweep.</p>
+      <div class="row">
+        <div><label for="bw">Beamwidth (deg) <span class="hint dual">(5.8 GHz)</span></label><input id="bw" inputmode="decimal" placeholder="72"></div>
+        <div class="dual"><label for="bw24">2.4 GHz beamwidth (deg)</label><input id="bw24" inputmode="decimal" placeholder="90"></div>
+      </div>
+      <div class="row">
+        <div><label for="k">Bearing K (deg/dB) <span class="hint dual">(5.8 GHz)</span></label><input id="k" inputmode="decimal" placeholder="3.0"></div>
+        <div class="dual"><label for="k24">2.4 GHz bearing K (deg/dB)</label><input id="k24" inputmode="decimal" placeholder="4.7"></div>
+      </div>
+    </details>
+    <div id="note"></div>
+
     <button id="save" class="primary" type="button">Save station</button>
     <button id="cancel" type="button" style="width:100%; margin-top:8px;">Close without saving</button>
     <div id="msg"></div>
@@ -76,6 +104,8 @@
       <li>Face N: switch to <b>Face N direction</b> and click a point the N patch faces, e.g. along a
         road or roof edge on the satellite layer. Or type the heading; a compass reads magnetic north,
         so add your local declination.</li>
+      <li>Antennas: the patches' gain from their datasheet (the usual 5.8 GHz patch is 8 dBi). Dual-band
+        patches on both bands make the station a dual-band build that sweeps 2.4 GHz too.</li>
       <li>Save, then flash the station from its own entry in PROJECT TASKS.</li>
     </ol>
   </aside>
@@ -89,6 +119,16 @@
 'use strict';
 const $ = id => document.getElementById(id);
 const ID_RE = /^[A-Za-z0-9_-]{1,23}$/;
+// [input id, key in stations.ini / the save request, min, max, label, default]; the *24 rows are the 2.4 GHz patches
+// of a dual-band station. An empty optional field is left to the firmware (derived from the gain).
+const ANTENNA_FIELDS = [
+  ['dbi',   'antenna_dbi',        0,  20, 'Antenna gain (dBi)',         '8'],
+  ['bw',    'beamwidth_deg',     20, 180, 'Beamwidth (deg)',            ''],
+  ['k',     'bearing_k',        0.5,  20, 'Bearing K (deg/dB)',         ''],
+  ['dbi24', 'antenna_dbi_24',     0,  20, '2.4 GHz gain (dBi)',         '6'],
+  ['bw24',  'beamwidth_deg_24',  20, 180, '2.4 GHz beamwidth (deg)',    ''],
+  ['k24',   'bearing_k_24',     0.5,  20, '2.4 GHz bearing K (deg/dB)', ''],
+];
 let mode = 'pos', map = null, stationMarker = null, headingLine = null;
 const others = {};
 
@@ -136,6 +176,37 @@ function redraw(pan) {
       .bindTooltip('face N ' + Math.round(h) + '°', { permanent: true, direction: 'right' }).addTo(map);
   }
   if (p && pan) map.setView(p, Math.max(map.getZoom(), 17));
+}
+
+function dualband() { return $('antennas').value === 'dual'; }
+function setAntennas(dual) {
+  $('antennas').value = dual ? 'dual' : '5.8';
+  document.querySelectorAll('.dual').forEach(el => { el.hidden = !dual; });
+  patternNote();
+}
+// What the firmware derives (config.h): beamwidth = sqrt(32400 / 10^(dBi/10)) unless overridden
+function beamwidth(dbi, bw) { return isFinite(bw) ? bw : Math.sqrt(32400 / Math.pow(10, dbi / 10)); }
+function patternNote() {
+  const notes = [];
+  for (const [band, dbiId, bwId] of [['5.8 GHz', 'dbi', 'bw'], ['2.4 GHz', 'dbi24', 'bw24']]) {
+    if (dbiId === 'dbi24' && !dualband()) continue;
+    const bw = beamwidth(num($(dbiId).value), num($(bwId).value));
+    if (isFinite(bw) && bw < 60) notes.push(band + ' beamwidth ~' + Math.round(bw) + '°: four sectors 90° apart leave holes at the sector boundaries.');
+  }
+  $('note').textContent = notes.join('\n');
+}
+function antennaValues() {
+  // {dualband, antenna_dbi, ...} for the save request, or an error message
+  const dual = dualband(), out = { dualband: dual };
+  for (const [id, key, lo, hi, label, dflt] of ANTENNA_FIELDS) {
+    if (id.endsWith('24') && !dual) continue;
+    const text = $(id).value.trim();
+    if (text === '' && dflt === '') continue;
+    const v = num(text);
+    if (!isFinite(v) || v < lo || v > hi) return label + ': ' + lo + ' to ' + hi + '.';
+    out[key] = v;
+  }
+  return out;
 }
 
 function initMap() {
@@ -186,6 +257,8 @@ function pick(id) {
   if (!s) { $('nodeId').value = ''; return; }
   $('nodeId').value = s.node_id;
   $('heading').value = s.heading || 0;
+  for (const [fid, key, , , , dflt] of ANTENNA_FIELDS) $(fid).value = s[key] != null ? s[key] : dflt;
+  setAntennas(!!s.dualband);
   if (isFinite(num(s.lat)) && isFinite(num(s.lon))) setPosition(s.lat, s.lon, true);
 }
 
@@ -193,6 +266,8 @@ $('existing').addEventListener('change', e => pick(e.target.value));
 $('modePos').addEventListener('click', () => setMode('pos'));
 $('modeHdg').addEventListener('click', () => setMode('hdg'));
 ['lat', 'lon', 'heading'].forEach(k => $(k).addEventListener('input', () => redraw(false)));
+$('antennas').addEventListener('change', e => setAntennas(e.target.value === 'dual'));
+ANTENNA_FIELDS.forEach(([fid]) => $(fid).addEventListener('input', patternNote));
 $('paste').addEventListener('input', e => {
   const m = String(e.target.value).match(/(-?\d{1,3}(?:\.\d+)?)\s*[, ]\s*(-?\d{1,3}(?:\.\d+)?)/);
   if (!m) return;
@@ -213,10 +288,13 @@ $('save').addEventListener('click', async () => {
   if (!ID_RE.test(nodeId)) { msg('Node id: 1-23 letters, digits, _ or -.', 'err'); return; }
   if (!p) { msg('Set the station position (latitude -90..90, longitude -180..180).', 'err'); return; }
   if (!isFinite(h) || h < 0 || h > 360) { msg('Heading: 0 to 359 degrees.', 'err'); return; }
+  const antennas = antennaValues();
+  if (typeof antennas === 'string') { msg(antennas, 'err'); return; }
   $('save').disabled = true;
   try {
     const r = await fetch('/api/save', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ node_id: nodeId, lat: p[0].toFixed(6), lon: p[1].toFixed(6), heading: Math.round(h) % 360 }) });
+      body: JSON.stringify(Object.assign({ node_id: nodeId, lat: p[0].toFixed(6), lon: p[1].toFixed(6),
+                                           heading: Math.round(h) % 360 }, antennas)) });
     const j = await r.json();
     if (!r.ok) { msg(j.error || ('error ' + r.status), 'err'); $('save').disabled = false; return; }
     msg('Saved [env:' + j.env + '] to stations.ini.\n\nBack in VS Code: refresh PROJECT TASKS, then under ' + j.env +
@@ -230,6 +308,7 @@ $('cancel').addEventListener('click', async () => {
   $('save').disabled = true; $('cancel').disabled = true;
 });
 
+setAntennas(false);
 initMap();
 loadStations();
 </script>
