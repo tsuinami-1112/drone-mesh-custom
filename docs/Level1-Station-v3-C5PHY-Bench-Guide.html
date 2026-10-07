@@ -117,7 +117,7 @@
     <table class="meta">
       <tr><td class="k">Document</td><td class="v"><code>docs/Level1-Station-v3-C5PHY-Bench-Guide.html</code></td><td class="k">Firmware</td><td class="v"><code>level1-c5phy/</code></td></tr>
       <tr><td class="k">Branch</td><td class="v"><code>level1</code></td><td class="k">Date</td><td class="v">2026-10-07</td></tr>
-      <tr><td class="k">Status</td><td class="v"><b>Both variants build and link (CI; Arduino core 3.3.12 / ESP-IDF 5.5.5), host tests pass — nothing bench validated</b></td><td class="k">Station</td><td class="v"><span class="bl w"></span></td></tr>
+      <tr><td class="k">Status</td><td class="v"><b>Both variants build and link (CI and locally; Arduino core 3.3.12 / ESP-IDF 5.5.5; RAM 44 %, flash 29 %), host tests pass — nothing bench validated</b></td><td class="k">Station</td><td class="v"><span class="bl w"></span></td></tr>
     </table>
 
     <h3>Signal chain at a glance</h3>
@@ -202,7 +202,7 @@
 
     <div class="callout"><p><b>Before you start:</b> nothing in this station has run on hardware yet. The receiver is the C5's Wi-Fi PHY driven through undocumented calls that the C5VRX project proved on ESP-IDF 6.0; this firmware re-implements them on the fleet's Arduino/ESP-IDF 5.5 toolchain. The procedure on sheets 6–9 is ordered so that each stage proves the next one is worth doing: receiver alive, channel coverage, selectivity, video (NTSC then PAL), sensitivity against an RX5808 station, the switch and the pattern, and last whatever digital video kit you have. Two build variants, one firmware: single-band (5.8 GHz patches, optional filtered LNA) and dual-band (dual-band patches, G1–G5 at 2.4 GHz added to the sweep); the sheets mark what the dual-band build adds. Two rules that are easy to break: the six I/Q lane pads (D0, D1, D2, D3, D6, D10) must stay unconnected, and every flash starts with a full erase. Full BOM on sheet 5.</p></div>
   </div>
-  <div class="foot"><span>drone-sentinel · level1 · 2026-10-07 · firmware builds (CI), host tests pass, nothing bench validated</span><span>Page 1 of 9</span></div>
+  <div class="foot"><span>drone-sentinel · level1 · 2026-10-07 · firmware builds (CI and local), host tests pass, nothing bench validated</span><span>Page 1 of 9</span></div>
 </section>
 
 <!-- ===================================================== SHEET 2 — FULL BLOCK DIAGRAM -->
@@ -387,9 +387,9 @@
       <tr><td>GND</td><td>all</td><td>—</td><td class="n">—</td><td>single star point</td><td class="c"><span class="cb"></span></td></tr>
     </table>
 
-    <div class="callout"><p><b>GPIO numbers are from the Arduino core's <code>XIAO_ESP32C5</code> variant</b> (<code>config.h</code>); wire by the D-labels. D4 = GPIO23 / D5 = GPIO24 is corroborated by C5VRX's DAC on D4–D9 = GPIO 23, 24, 11, 12, 8, 9. The I/Q lanes are GPIO 1, 0, 25 (Q7–Q9) and 7, 10, 11 (I7–I9): six of C5VRX's eight, the bit-6 lanes and the underside GPIO2–5 pads left out so the eleven top-side pins hold lanes, UART and switch; the firmware reads the missing bit as the midpoint (<code>IQ_LANE_BITS</code>; measure <code>RF_NOISE_POWER</code> in this mode, stage 1). Each MODEM_DIAG bit is driven out through its pad and read back from it, so a load on a lane pad corrupts the samples.</p></div>
+    <div class="callout"><p><b>GPIO numbers are from the Arduino core's <code>XIAO_ESP32C5</code> variant</b> (<code>config.h</code>); wire by the D-labels. The I/Q lanes are GPIO 1, 0, 25 (Q7–Q9) and 7, 10, 11 (I7–I9): six of C5VRX's eight, the bit-6 lanes and the underside GPIO2–5 pads left out so the eleven top-side pins hold lanes, UART and switch; the firmware reads the missing bit as the midpoint (<code>IQ_LANE_BITS</code>). Each lane pad is driven and read back by the modem: any load on it corrupts the samples.</p></div>
   </div>
-  <div class="foot"><span>drone-sentinel · level1 · 2026-10-07 · firmware builds (CI), host tests pass, nothing bench validated</span><span>Page 2 of 9</span></div>
+  <div class="foot"><span>drone-sentinel · level1 · 2026-10-07 · firmware builds (CI and local), host tests pass, nothing bench validated</span><span>Page 2 of 9</span></div>
 </section>
 
 <!-- ===================================================== SHEET 3 — SECTOR LAYOUT AND RECEIVER -->
@@ -477,7 +477,7 @@ hit: best sector level &gt;= 8 dB, q &gt;= 40 %, cv2 &lt;= 0.5</pre>
     </table>
     <p class="cap"><code>demod.c</code>, <code>bearing.c</code> and <code>report.c</code> are plain C, unit-tested on a desktop with synthetic 4-bit I/Q (<code>test/host</code>, <code>make</code>).</p>
   </div>
-  <div class="foot"><span>drone-sentinel · level1 · 2026-10-07 · firmware builds (CI), host tests pass, nothing bench validated</span><span>Page 3 of 9</span></div>
+  <div class="foot"><span>drone-sentinel · level1 · 2026-10-07 · firmware builds (CI and local), host tests pass, nothing bench validated</span><span>Page 3 of 9</span></div>
 </section>
 
 <!-- ===================================================== SHEET 4 — VIDEO CHECK AND SERIAL OUTPUT -->
@@ -510,7 +510,7 @@ hit: best sector level &gt;= 8 dB, q &gt;= 40 %, cv2 &lt;= 0.5</pre>
 
     <div class="callout"><p><code>rssi</code> is dBm like every other station tier; <code>rssi_raw</code> is the 10-bit RX5808-style value of the v2 contract. <code>bearing_deg</code> is relative to the box's face N — the mapper rotates it by the station heading set in its LEVEL 1 STATIONS panel, where each station's position is also set; two stations' crossing bearings give a position fix with an error radius. A station registers itself in the mapper from its first heartbeat. <code>tune_fail</code> counts channels the regulatory table refused, <code>cap_err</code> failed I/Q captures, <code>nf_dbm</code> the station's own noise-floor estimate from the quietest sector of the last sweep (<code>nf_dbm_24</code> for the 2.4 GHz plan on a dual-band build), <code>wb_seen</code> the digital-link reports, <code>pullin</code> the retunes onto off-channel analog carriers.</p></div>
   </div>
-  <div class="foot"><span>drone-sentinel · level1 · 2026-10-07 · firmware builds (CI), host tests pass, nothing bench validated</span><span>Page 4 of 9</span></div>
+  <div class="foot"><span>drone-sentinel · level1 · 2026-10-07 · firmware builds (CI and local), host tests pass, nothing bench validated</span><span>Page 4 of 9</span></div>
 </section>
 
 <!-- ===================================================== SHEET 5 — FULL BILL OF MATERIALS -->
@@ -558,7 +558,7 @@ hit: best sector level &gt;= 8 dB, q &gt;= 40 %, cv2 &lt;= 0.5</pre>
 
     <div class="callout"><p><b>Carrier PCB rules.</b> XIAO C5 footprint with D0, D1, D2, D3, D6, D10 <b>unrouted</b> (no test points; the underside GPIO2–5 pads are not used); SP4T with four u.FL launches and a u.FL to the XIAO (or a u.FL pair bridging the optional LNA); control lines on D7/D8/D9 via 2 kΩ; UART header on D4/D5; decoupling. Nothing else. Make it after stage 6.</p></div>
   </div>
-  <div class="foot"><span>drone-sentinel · level1 · 2026-10-07 · firmware builds (CI), host tests pass, nothing bench validated</span><span>Page 5 of 9</span></div>
+  <div class="foot"><span>drone-sentinel · level1 · 2026-10-07 · firmware builds (CI and local), host tests pass, nothing bench validated</span><span>Page 5 of 9</span></div>
 </section>
 
 <!-- ===================================================== SHEET 6 — BENCH 0–3 -->
@@ -577,10 +577,10 @@ hit: best sector level &gt;= 8 dB, q &gt;= 40 %, cv2 &lt;= 0.5</pre>
 
     <h4>Stage 1 — receiver alive</h4>
     <ul class="chk">
-      <li><span class="cb"></span><div class="t">No VTX on. <code>h A1</code>. <b>Expected:</b> <code>level_db</code> 0 ± 2, <code>p_mean</code> ≈ 2, <code>q_phase</code> under 15, <code>gain</code> 62, <code>clip</code> 0, <code>noise</code> 1, <code>stuck</code> 0 (a dead I/Q bus shows every sample identical: <code>stuck</code> 1 and <code>bus_stuck</code> climbing in the heartbeat; stuck at all zeros it also reads <code>p_mean</code> exactly 2.0, so trust the flag, not the number). Measured: level_db <span class="bl"></span> p_mean <span class="bl"></span> q_phase <span class="bl"></span></div></li>
+      <li><span class="cb"></span><div class="t">No VTX on. <code>h A1</code>. <b>Expected:</b> <code>level_db</code> 0 ± 2, <code>p_mean</code> ≈ 2, <code>q_phase</code> under 15, <code>gain</code> 62, <code>clip</code> 0, <code>noise</code> 1, <code>stuck</code> 0 (a dead I/Q bus reads <code>stuck</code> 1 with <code>bus_stuck</code> climbing; all-zero it also reads <code>p_mean</code> 2.0, so trust the flag). Measured: level_db <span class="bl"></span> p_mean <span class="bl"></span> q_phase <span class="bl"></span></div></li>
       <li><span class="cb"></span><div class="t">Note the station's own no-signal noise floor: <code>nf_dbm</code> <span class="bl"></span> dBm. <code>p_mean</code> far from 2 means <code>RF_NOISE_POWER</code> is not this board's value — write it down for the calibration. <code>cv2</code> on noise: <span class="bl s"></span> (≈ 1).</div></li>
       <li><span class="cb"></span><div class="t">Key a VTX on A1 (5865 MHz) a few metres away. <b>Expected:</b> <code>level_db</code> up by ≥ 30 dB, <code>gain</code> stepping below 62, <code>q_phase</code> ≥ 50, <code>cv2</code> ≤ 0.3 (gate limit 0.5), <code>mod</code> 1, <code>noise</code> 0, <code>cfo_khz</code> within ±2000. Measured: level_db <span class="bl"></span> gain <span class="bl"></span> q_phase <span class="bl"></span> cv2 <span class="bl"></span> cfo <span class="bl"></span></div></li>
-      <li><span class="cb"></span><div class="t">Move the VTX away or unkey it. <b>Expected:</b> the readings return to the no-signal values on the next line. <code>level_db</code> rising without <code>q_phase</code> rising means power but no FM coherence: an off-channel carrier (check <code>cfo_khz</code>) or scrambled lane order; with <code>cv2</code> ≈ 1 it is a digital signal or Wi-Fi (sheet 9).</div></li>
+      <li><span class="cb"></span><div class="t">Move the VTX away or unkey it. <b>Expected:</b> back to the no-signal values on the next line. <code>level_db</code> up without <code>q_phase</code>: an off-channel carrier (check <code>cfo_khz</code>) or scrambled lanes; with <code>cv2</code> ≈ 1 a digital signal or Wi-Fi (sheet 9).</div></li>
       <li><span class="cb"></span><div class="t"><span class="opt">Dual-band</span><code>h G3</code>: the A1 values with no signal, <code>?</code> shows <code>band</code> 2; a phone hotspot raises the level. level_db <span class="bl s"></span> stuck <span class="bl s"></span></div></li>
     </ul>
 
@@ -597,10 +597,10 @@ hit: best sector level &gt;= 8 dB, q &gt;= 40 %, cv2 &lt;= 0.5</pre>
       <li><span class="cb"></span><div class="t">VTX on R3 (5732), scanning. <b>Expected:</b> a detection line for R3 within two sweeps; B1 (5733) and F1 (5740) may hit too and <code>PEAK_PICK</code> folds them into one. Channels reported: <span class="bl w"></span></div></li>
       <li><span class="cb"></span><div class="t"><b>Expected:</b> no hit on any channel more than 40 MHz away. If one appears, <code>h</code> it and note <code>q_phase</code> <span class="bl s"></span> (a hit needs ≥ 40) and <code>cfo_khz</code> <span class="bl s"></span>.</div></li>
       <li><span class="cb"></span><div class="t"><code>h R3</code>, VTX on: <code>cfo_khz</code> <span class="bl s"></span> → <code>freq_peak</code> <span class="bl s"></span> MHz in the detection line. <b>Expected:</b> stable, the VTX's real offset.</div></li>
-      <li><span class="cb"></span><div class="t">Hold the channel nearest a live 5 GHz access point (band A = Wi-Fi 149–173). <b>Expected:</b> raised <code>level_db</code>, <code>q_phase</code> under 40, <code>cv2</code> above 1.5 or jumping: no analog hit, no <code>wideband</code> report. Loaded (a long file copy): a <code>wideband</code> report with <code>cls</code> <code>dot11</code>, <code>duty</code> ≥ 90 is correct, a real emitter. cv2 <span class="bl s"></span> loaded: cls <span class="bl s"></span> duty <span class="bl s"></span></div></li>
+      <li><span class="cb"></span><div class="t">Hold the channel nearest a live 5 GHz access point (band A = Wi-Fi 149–173). <b>Expected:</b> raised <code>level_db</code>, <code>q_phase</code> under 40, <code>cv2</code> above 1.5: no hit of either kind. Under a long file copy a <code>wideband</code> <code>dot11</code> report with <code>duty</code> ≥ 90 is correct. cv2 <span class="bl s"></span> loaded: cls <span class="bl s"></span> duty <span class="bl s"></span></div></li>
     </ul>
   </div>
-  <div class="foot"><span>drone-sentinel · level1 · 2026-10-07 · firmware builds (CI), host tests pass, nothing bench validated</span><span>Page 6 of 9</span></div>
+  <div class="foot"><span>drone-sentinel · level1 · 2026-10-07 · firmware builds (CI and local), host tests pass, nothing bench validated</span><span>Page 6 of 9</span></div>
 </section>
 
 <!-- ===================================================== SHEET 7 — BENCH 4–5 -->
@@ -644,7 +644,7 @@ hit: best sector level &gt;= 8 dB, q &gt;= 40 %, cv2 &lt;= 0.5</pre>
       <p><b><span class="opt">Optional</span>With the LNA fitted</b>, run this calibration with the LNA in the chain and leave <code>RF_FRONTEND_GAIN_DB</code> at 0; <code>RF_FRONTEND_GAIN_DB = 20</code> only carries a calibration taken without the LNA over to a station that has one. Re-measure <code>RF_NOISE_POWER</code> (<code>p_mean</code> with no signal at gain 62): the LNA's output noise can exceed the C5's own floor. Expect the gain stepping (gain index 62 → lower) to engage ~20 dB earlier.</p>
     </div>
   </div>
-  <div class="foot"><span>drone-sentinel · level1 · 2026-10-07 · firmware builds (CI), host tests pass, nothing bench validated</span><span>Page 7 of 9</span></div>
+  <div class="foot"><span>drone-sentinel · level1 · 2026-10-07 · firmware builds (CI and local), host tests pass, nothing bench validated</span><span>Page 7 of 9</span></div>
 </section>
 
 <!-- ===================================================== SHEET 8 — BENCH 6–7, POWER, RECORD -->
@@ -688,7 +688,7 @@ hit: best sector level &gt;= 8 dB, q &gt;= 40 %, cv2 &lt;= 0.5</pre>
     </table>
     <p class="cap">Copy the numbers from every stage into the station record; the v2 station's guide stays the reference for the switch truth table, pattern sweep and field acceptance details.</p>
   </div>
-  <div class="foot"><span>drone-sentinel · level1 · 2026-10-07 · firmware builds (CI), host tests pass, nothing bench validated</span><span>Page 8 of 9</span></div>
+  <div class="foot"><span>drone-sentinel · level1 · 2026-10-07 · firmware builds (CI and local), host tests pass, nothing bench validated</span><span>Page 8 of 9</span></div>
 </section>
 
 <!-- ===================================================== SHEET 9 — BENCH 8, DIGITAL -->
@@ -735,7 +735,7 @@ hit: best sector level &gt;= 8 dB, q &gt;= 40 %, cv2 &lt;= 0.5</pre>
 
     <div class="callout"><p><b><span class="opt">Dual-band</span>2.4 GHz.</b> Repeat the block for any kit with a 2.4 GHz mode (DJI OcuSync 2 / DJI FPV, an OpenIPC link on a 2.4 GHz adapter): <code>h G1</code>–<code>h G5</code>, the same <code>w</code> and rotation. Under test are the patches' 2.4 GHz side, <code>ANTENNA_GAIN_DBI_24</code> (6 dBi → 90° beam, K 4.7 °/dB) and the <code>_24</code> calibration from stage 5; the mapper labels it a 2.4 GHz digital video link. Expect every 2.4 GHz access point in view as <code>dot11</code> traffic (idle: duty under 90, "Wi-Fi traffic" in the mapper). The I/Q bus at BW40 on 2.4 GHz is itself unproven (stage 1, <code>h G3</code>).</p></div>
   </div>
-  <div class="foot"><span>drone-sentinel · level1 · 2026-10-07 · firmware builds (CI), host tests pass, nothing bench validated</span><span>Page 9 of 9</span></div>
+  <div class="foot"><span>drone-sentinel · level1 · 2026-10-07 · firmware builds (CI and local), host tests pass, nothing bench validated</span><span>Page 9 of 9</span></div>
 </section>
 
 </body>
