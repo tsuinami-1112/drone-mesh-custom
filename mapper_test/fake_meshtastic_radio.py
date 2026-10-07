@@ -15,8 +15,9 @@ the mesh, so the direct-radio path can be exercised without hardware.
         prints the /dev/pts path to pass to --mesh
 
 --demo loops a scenario: a Remote ID drone circling (node mode JSON from two
-field stations), a 5.8 GHz emitter heard by two level 1 stations, and the
-plain-text alerts of a standalone detector. The level 1 stations behave as if
+field stations), an analog 5.8 GHz video carrier and a DJI O4-like digital
+link each heard by two level 1 stations, and the plain-text alerts of a
+standalone detector. The level 1 stations behave as if
 flashed with their position and heading (level1 branch, Station setup): their
 heartbeats carry lat/lon, so the mapper places them by itself and their
 bearings cross into a fix. --mapper URL places them by hand through the
@@ -260,44 +261,90 @@ class FakeRadio:
             return len(self.clients)
 
 
-# ---- level 1 heartbeat -------------------------------------------------------
+# ---- level 1 mesh lines ------------------------------------------------------
 L1_MESH_JSON_MAX = 191
 
 
-def l1_mesh_heartbeat(node_id, heading=0, pos=None, scanning=True, sweeps=0, video_seen=0, nf_dbm=-98.0,
-                      temp_c=38.5, uptime_s=0, tune_fail=0, cap_err=0, bus_stuck=0, alias_drop=0):
-    """The mesh heartbeat line of the level 1 firmware (level1 branch,
-    level1-c5phy/src/report.c report_heartbeat_json(..., full=0)): fields in
-    priority order, each added only while the line stays within 191 bytes, with
-    lat/lon right after the heading when the station was flashed with its
-    position. Byte-identical to lines built from report.c (test_mesh_direct.py
-    checks it against them)."""
-    out = ['{']
+class _MeshJson:
+    """The level 1 firmware's JSON budget (level1 branch, level1-c5phy/src/report.c
+    json_add): a field is appended only while the line, closing brace included,
+    stays within L1_MESH_JSON_MAX bytes; the caller decides which fields it
+    cannot do without."""
 
-    def add(item):
-        cur = ''.join(out)
+    def __init__(self):
+        self.out = ['{']
+
+    def add(self, item):
+        cur = ''.join(self.out)
         need = len(item) + (1 if cur != '{' else 0)
         if len(cur) + need + 2 > L1_MESH_JSON_MAX + 1:
             return False
-        out.append((',' if cur != '{' else '') + item)
+        self.out.append((',' if cur != '{' else '') + item)
         return True
 
+    def end(self):
+        return ''.join(self.out) + '}'
+
+
+def l1_mesh_heartbeat(node_id, heading=0, pos=None, scanning=True, sweeps=0, video_seen=0, nf_dbm=-98.0,
+                      temp_c=38.5, uptime_s=0, tune_fail=0, cap_err=0, bus_stuck=0, alias_drop=0, wb_seen=None):
+    """The mesh heartbeat line of the level 1 firmware (report_heartbeat_json(...,
+    full=0)): fields in priority order, each added only while the line stays
+    within 191 bytes, with lat/lon right after the heading when the station was
+    flashed with its position. Byte-identical to lines built from report.c
+    (test_mesh_direct.py checks it against them). wb_seen (digital links
+    confirmed; the wideband firmware puts it right after video_seen) is left
+    out when None, as the firmware before it did."""
+    j = _MeshJson()
     for item in ('"heartbeat":true', f'"node_id":"{node_id}"', '"receiver":"c5phy"'):
-        if not add(item):
+        if not j.add(item):
             return None
-    add('"hw":"v3"')
-    add(f'"heading":{int(heading)}')
+    j.add('"hw":"v3"')
+    j.add(f'"heading":{int(heading)}')
     if pos is not None:
-        add(f'"lat":{pos[0]:.6f},"lon":{pos[1]:.6f}')
-    add('"scanning":' + ('true' if scanning else 'false'))
-    add(f'"sweeps":{int(sweeps)}')
-    add(f'"video_seen":{int(video_seen)}')
-    add(f'"nf_dbm":{nf_dbm:.0f}')
-    add(f'"temp_c":{temp_c:.1f}')
-    add(f'"uptime_s":{int(uptime_s)}')
+        j.add(f'"lat":{pos[0]:.6f},"lon":{pos[1]:.6f}')
+    j.add('"scanning":' + ('true' if scanning else 'false'))
+    j.add(f'"sweeps":{int(sweeps)}')
+    j.add(f'"video_seen":{int(video_seen)}')
+    if wb_seen is not None:
+        j.add(f'"wb_seen":{int(wb_seen)}')
+    j.add(f'"nf_dbm":{nf_dbm:.0f}')
+    j.add(f'"temp_c":{temp_c:.1f}')
+    j.add(f'"uptime_s":{int(uptime_s)}')
     for k, v in (('tune_fail', tune_fail), ('cap_err', cap_err), ('bus_stuck', bus_stuck), ('alias_drop', alias_drop)):
-        add(f'"{k}":{int(v)}')
-    return ''.join(out) + '}'
+        j.add(f'"{k}":{int(v)}')
+    return j.end()
+
+
+def l1_mesh_wideband(node_id, bearing_deg, sigma_deg=16, band='R', ch=4, freq_mhz=5769, fc_mhz=5768.5, rssi=-61,
+                     cls='lte', bw_mhz=10, duty=95, conf='high', sector=0, seq=0):
+    """The mesh line of a level 1 station's digital video link report
+    (report_wideband_json(..., full=0)): type, mac, node_id and freq_mhz must
+    fit (None otherwise), then rssi, bearing_deg, bearing_sigma_deg, cls,
+    fc_mhz, bw_mhz, duty, conf, fp, sector and seq for as long as the line stays
+    within 191 bytes. The MAC is the station's DF: key for the table channel it
+    folded the link onto. The defaults are a DJI O4-like link: LTE waveform,
+    10 MHz wide at 5768.5 MHz, keyed to R4 5769. The budget is tried field by
+    field, as json_add is: with a four-character node id conf and fp no longer
+    fit but the shorter sector still does, and mesh-mapper.py fills the missing
+    fields from the track."""
+    j = _MeshJson()
+    mac = f'DF:00:{ord(band):02X}:{ch:02X}:{int(freq_mhz) >> 8:02X}:{int(freq_mhz) & 0xFF:02X}'
+    for item in ('"type":"wideband"', f'"mac":"{mac}"', f'"node_id":"{node_id}"', f'"freq_mhz":{int(freq_mhz)}'):
+        if not j.add(item):
+            return None
+    j.add(f'"rssi":{int(rssi)}')
+    j.add(f'"bearing_deg":{int(bearing_deg)}')
+    j.add(f'"bearing_sigma_deg":{int(sigma_deg)}')
+    j.add(f'"cls":"{cls}"')
+    j.add(f'"fc_mhz":{fc_mhz:.1f}')
+    j.add(f'"bw_mhz":{int(bw_mhz)}')
+    j.add(f'"duty":{int(duty)}')
+    j.add(f'"conf":"{conf}"')
+    j.add(f'"fp":"{cls}/{int(bw_mhz)}/{fc_mhz:.1f}"')
+    j.add(f'"sector":{int(sector)}')
+    j.add(f'"seq":{int(seq)}')
+    return j.end()
 
 
 # ---- demo scenario ----------------------------------------------------------
@@ -357,19 +404,24 @@ def run_demo(radio, center, mapper=None, period=4.0):
                "eu_cat": 1, "eu_class": 2}
         radio.serial_line(FS1 if n % 2 == 0 else FS2, json.dumps(rid, separators=(',', ':')))
         flat, flon = _dest(clat, clon, (90 + t * 2) % 360, 300)
+        wlat, wlon = _dest(clat, clon, (270 - t * 2) % 360, 350)   # the digital link, circling the other way
         for nid, (num, (slat, slon), heading) in st.items():
             if n % 4 == 0:
                 # The firmware puts the position on its first 3 mesh heartbeats after
                 # boot and then on every 5th (every 10 minutes). The demo sends it on
                 # every heartbeat, so a mapper started later places the stations at once.
                 radio.serial_line(num, l1_mesh_heartbeat(nid, heading, (slat, slon), sweeps=n * 2, video_seen=n,
-                                                         nf_dbm=-97, temp_c=38.0 + (n % 10) / 10, uptime_s=int(t)))
+                                                         nf_dbm=-97, temp_c=38.0 + (n % 10) / 10, uptime_s=int(t),
+                                                         wb_seen=n))
             # bearing_deg is relative to the station's face N, as the firmware reports it
             b = round(_bearing(slat, slon, flat, flon) - heading + random.gauss(0, 4)) % 360
             radio.serial_line(num, json.dumps({"type": "analog_fm", "mac": "AF:00:52:03:16:64", "node_id": nid,
                                                "freq_mhz": 5732, "band": "R", "ch": 3, "rssi": -70, "bearing_deg": b,
                                                "bearing_sigma_deg": 10, "video": "NTSC", "fp": "NTSC/15736/5734"},
                                               separators=(',', ':')))
+            # The digital link, with the coarser sigma of a wideband bearing
+            wb = round(_bearing(slat, slon, wlat, wlon) - heading + random.gauss(0, 6)) % 360
+            radio.serial_line(num, l1_mesh_wideband(nid, wb, sector=int(((wb + 45) % 360) // 90), seq=n))
         if n % 3 == 0:
             alat, alon = _dest(clat, clon, 30, 900)
             radio.serial_line(SA, f"Drone: 9c:9c:1f:00:00:02 RSSI:-74 ID:1668A0000000000ABCDE "

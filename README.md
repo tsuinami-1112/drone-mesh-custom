@@ -18,9 +18,9 @@ WiFi, so the base needs no ESP32 home station: a Heltec V4 running stock
 Meshtastic is all the mapper needs.
 
 - **Reads every current station message:** level 2 node mode JSON detections,
-  level 1 bearing reports and heartbeats (two or more stations' bearings cross
-  into a position), and the standalone detectors' `Drone:` / `Pilot:` /
-  `Possible drone` text alerts.
+  level 1 bearing reports (analog and digital video links) and heartbeats (two
+  or more stations' bearings cross into a position), and the standalone
+  detectors' `Drone:` / `Pilot:` / `Possible drone` text alerts.
 - **Handles how Meshtastic carries them:** it re-joins lines the radio split
   across packets, drops repeat reports of the same drone from several stations
   (as the ESP32 home node does), and counts a packet heard by two radios once.

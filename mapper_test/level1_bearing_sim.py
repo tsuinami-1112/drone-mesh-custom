@@ -4,22 +4,24 @@ Level 1 bearing simulator for mesh-mapper.py
 ============================================
 
 Fakes two or three level 1 stations (level1-c5phy firmware: XIAO ESP32-C5 as
-a 5.8 GHz analog video receiver with four patch antennas) watching one drone
-that broadcasts nothing but its FPV video link. Each station reports exactly
-what the firmware reports - a {"type":"analog_fm", ...} record with a bearing
-relative to the box's face N - and a heartbeat, over the mapper's HTTP API,
-so the LEVEL 1 STATIONS panel, the bearing rays and the bearing-fix
-intersection can be exercised without hardware.
+a 5.8 GHz video receiver with four patch antennas) watching one drone that
+broadcasts nothing but its FPV video link. Each station reports exactly what
+the firmware reports - a {"type":"analog_fm", ...} record with a bearing
+relative to the box's face N, or with --wideband a {"type":"wideband", ...}
+record for a digital link - and a heartbeat, over the mapper's HTTP API, so
+the LEVEL 1 STATIONS panel, the bearing rays, the bearing-fix intersection and
+the digital-system label can be exercised without hardware.
 
     python3 level1_bearing_sim.py                     # 3 stations, 5 minutes
     python3 level1_bearing_sim.py --stations 2 --duration 2 --noise-deg 10
+    python3 level1_bearing_sim.py --wideband          # a DJI O4-like link on R4 5769 instead
 
 The stations are placed in a triangle around --center and registered with
 their positions and headings through /api/stations (the headings are
 deliberately non-zero: the mapper must rotate the box-relative bearings).
-The second station labels the carrier B1 (5733 MHz) instead of R3 (5732) to
-exercise the overlapping-channel merge. The script prints the mapper's fix
-against the true drone position every report.
+The second station labels the analog carrier B1 (5733 MHz) instead of R3
+(5732) to exercise the overlapping-channel merge. The script prints the
+mapper's fix against the true drone position every report.
 
     python3 level1_bearing_sim.py --position-in-heartbeat
 
@@ -92,6 +94,8 @@ def main():
     ap.add_argument('--position-in-heartbeat', action='store_true',
                     help='stations report their position in the heartbeat (flashed with Station setup) instead of being placed through the API')
     ap.add_argument('--keep-stations', action='store_true', help='leave the simulated stations in the mapper when done')
+    ap.add_argument('--wideband', action='store_true',
+                    help='the drone flies a digital link (LTE-like 10 MHz at 5768.5 MHz, reported on R4 5769 as a DJI O4 would be) instead of analog video')
     args = ap.parse_args()
 
     clat, clon = (float(v) for v in args.center.split(','))
@@ -100,6 +104,9 @@ def main():
 
     # Stations on a triangle around the centre, faces deliberately not north.
     plan = [('RX01', 0.0, 'R', 3, 5732, 15.0), ('RX02', 120.0, 'B', 1, 5733, 350.0), ('RX03', 240.0, 'R', 3, 5732, 42.0)]
+    if args.wideband:
+        # A 10 MHz link does not straddle channels, so every station folds it onto R4
+        plan = [(n, az, 'R', 4, 5769, h) for n, az, _, _, _, h in plan]
     stations = []
     for i in range(args.stations):
         node_id, az, band, ch, freq, heading = plan[i]
@@ -108,9 +115,10 @@ def main():
 
     for st in stations:
         hb = {'heartbeat': True, 'node_id': st['node_id'], 'receiver': 'c5phy', 'hw': 'v3', 'scanning': True,
-              'channels': 40, 'sectors': 4, 'heading': int(st['heading']), 'threshold_dbm': -87.0, 'video_seen': 0,
+              'channels': 50, 'sectors': 4, 'heading': int(st['heading']), 'threshold_dbm': -87.0, 'video_seen': 0,
               'gain_max': 62, 'bw40': 1, 'tune_fail': 0, 'cap_err': 0, 'sweeps': 0, 'nf_dbm': -98, 'temp_c': 38.5,
-              'uptime_s': 0, 'seq': 0}
+              'uptime_s': 0, 'bands': '5.8', 'antenna_dbi': 8.0, 'beamwidth_deg': 72, 'bearing_k': 3.0,
+              'wb_seen': 0, 'pullin': 0, 'seq': 0}
         if args.position_in_heartbeat:
             hb['lat'], hb['lon'] = round(st['lat'], 6), round(st['lon'], 6)
         api.post('/api/detections', hb)
@@ -120,7 +128,7 @@ def main():
         print(f"station {st['node_id']}: {st['lat']:.6f},{st['lon']:.6f} heading {st['heading']:.0f} deg")
 
     t0 = time.time()
-    print(f"flying one analog FPV drone around {clat:.5f},{clon:.5f} for {args.duration} min ...")
+    print(f"flying one {'digital-link' if args.wideband else 'analog'} FPV drone around {clat:.5f},{clon:.5f} for {args.duration} min ...")
     try:
         fly(args, api, rng, stations, clat, clon, t0)
     finally:
@@ -154,9 +162,10 @@ def fly(args, api, rng, stations, clat, clon, t0):
             level = max(0.0, rssi_dbm + 95)
             sector = int(((rel + 45) % 360) // 90)
             sectors = [round(rssi_dbm - (0 if s == sector else 8 + 6 * rng.random()), 1) for s in range(4)]
+            mac_prefix = 'DF' if args.wideband else 'AF'
             det = {
-                'type': 'analog_fm', 'receiver': 'c5phy', 'hw': 'v3',
-                'mac': f"AF:00:{ord(st['band']):02X}:{st['ch']:02X}:{st['freq'] >> 8:02X}:{st['freq'] & 0xFF:02X}",
+                'type': 'wideband' if args.wideband else 'analog_fm', 'receiver': 'c5phy', 'hw': 'v3',
+                'mac': f"{mac_prefix}:00:{ord(st['band']):02X}:{st['ch']:02X}:{st['freq'] >> 8:02X}:{st['freq'] & 0xFF:02X}",
                 'freq_mhz': st['freq'], 'band': st['band'], 'ch': st['ch'],
                 'rssi': int(round(rssi_dbm)), 'rssi_dbm': round(rssi_dbm, 1),
                 'rssi_raw': int(max(0, min(1023, (rssi_dbm + 110) / 80 * 1023))),
@@ -169,6 +178,20 @@ def fly(args, api, rng, stations, clat, clon, t0):
                 'fp': f"NTSC/15736/{st['freq'] + 2}", 'basic_id': f"5.8G-{st['band']}{st['ch']}-{st['freq']}MHz",
                 'node_id': st['node_id'], 'seq': seq,
             }
+            if args.wideband:
+                # What report_wideband_json(full=1) emits for an LTE-like 10 MHz link whose
+                # centroid sits 0.5 MHz under R4 (the spec's model numbers for the features;
+                # the bearing sigma carries WB_SIGMA_EXTRA_DEG and the duty term)
+                for k in ('carrier', 'freq_peak', 'video', 'sync_hz', 'field_hz', 'sync_q', 'sync_score', 'video_windows'):
+                    det.pop(k)
+                fc = st['freq'] - 0.5
+                det.update({
+                    'fc_mhz': fc, 'q_phase': 40 + int(4 * rng.random()), 'cfo_khz': -500,
+                    'cls': 'lte', 'conf': 'high', 'bw_mhz': 10, 'duty': 95,
+                    'cv2': 0.98, 'r1': 0.85, 'r128': 0.01, 'r512': 0.012, 'r2667': 0.056, 'span_mhz': 0,
+                    'bearing_sigma_deg': det['bearing_sigma_deg'] + 5 + int((100 - 95) * 0.2),
+                    'fp': f"lte/10/{fc:.1f}", 'basic_id': f"5.8G-{st['band']}{st['ch']}-{st['freq']}MHz",
+                })
             try:
                 api.post('/api/detections', det)
             except urllib.error.URLError as e:
@@ -181,6 +204,7 @@ def fly(args, api, rng, stations, clat, clon, t0):
                 try:
                     hb = {'heartbeat': True, 'node_id': st['node_id'], 'receiver': 'c5phy', 'hw': 'v3',
                           'scanning': True, 'heading': int(st['heading']), 'sweeps': sweeps,
+                          'video_seen': 0 if args.wideband else seq, 'wb_seen': seq if args.wideband else 0,
                           'nf_dbm': -98, 'temp_c': 39.0, 'uptime_s': int(t)}
                     if args.position_in_heartbeat:
                         hb['lat'], hb['lon'] = round(st['lat'], 6), round(st['lon'], 6)
@@ -190,14 +214,15 @@ def fly(args, api, rng, stations, clat, clon, t0):
         # what did the mapper make of it?
         try:
             tracked = api.get('/api/detections')
-            fixes = [d for d in tracked.values() if d.get('type') == 'analog_fm']
+            fixes = [d for d in tracked.values() if d.get('type') in ('analog_fm', 'wideband')]
             for d in fixes:
+                what = f" [{d['system']} · {d.get('system_conf')}]" if d.get('system') else ''
                 if d.get('pos_src') == 'bearing_fix':
                     err = haversine_m(d['drone_lat'], d['drone_long'], dlat, dlon)
-                    print(f"t={t:5.0f}s {d['mac']} fix {d['drone_lat']:.5f},{d['drone_long']:.5f} "
+                    print(f"t={t:5.0f}s {d['mac']}{what} fix {d['drone_lat']:.5f},{d['drone_long']:.5f} "
                           f"±{d.get('fix_error_m')} m from {d.get('fix_stations')} | true error {err:.0f} m")
                 else:
-                    print(f"t={t:5.0f}s {d['mac']} bearing only ({len(d.get('bearings', []))} bearings, stations {d.get('fix_stations')})")
+                    print(f"t={t:5.0f}s {d['mac']}{what} bearing only ({len(d.get('bearings', []))} bearings, stations {d.get('fix_stations')})")
         except Exception as e:
             print('status failed:', e)
         time.sleep(args.interval)

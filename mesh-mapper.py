@@ -846,9 +846,11 @@ DETECTION_CSV_FIELDS = [
     'id_type', 'op_id', 'ua_type', 'desc', 'eu_cat', 'eu_class',
     'height', 'speed', 'heading', 'home_lat', 'home_long',
     'src', 'vendor', 'model', 'ssid', 'conf', 'node_id', 'ch',
-    # Added with the level 1 (bearing-only analog video) stations
+    # Added with the level 1 (bearing-only video, analog or digital) stations
     'type', 'freq_mhz', 'band', 'rssi_dbm', 'bearing_deg', 'bearing_sigma_deg',
-    'bearing_true_deg', 'video', 'fp', 'pos_src', 'fix_error_m'
+    'bearing_true_deg', 'video', 'fp', 'pos_src', 'fix_error_m',
+    # Added with the level 1 digital video link ("wideband") reports
+    'fc_mhz', 'cls', 'bw_mhz', 'duty', 'system', 'system_conf'
 ]
 
 # Fields that identify the aircraft or its operator rather than describe the
@@ -860,7 +862,7 @@ IDENTITY_FIELDS = [
     'basic_id', 'id_type', 'basic_id2', 'id_type2', 'ua_type', 'op_id', 'desc',
     'eu_cat', 'eu_class', 'src', 'vendor', 'model', 'ssid', 'conf', 'role',
     'sysid', 'mavtype', 'autopilot', 'node_id',
-    # Level 1 analog video stations: the emitter's channel is its identity
+    # Level 1 video stations (analog or digital): the emitter's channel is its identity
     # (ch itself stays per-frame: for WiFi sources it describes the frame)
     'type', 'receiver', 'freq_mhz', 'band', 'fp'
 ]
@@ -1701,25 +1703,38 @@ generate_cumulative_kml()
 # ----------------------
 
 # ----------------------
-# Level 1 stations: bearing-only 5.8 GHz analog video receivers
+# Level 1 stations: bearing-only 5.8 GHz video receivers (analog and digital links)
 # ----------------------
 # A level 1 station (level1-c5phy firmware: XIAO ESP32-C5 as the receiver,
-# four patch antennas on an RF switch) hears the analog FM video link of a
-# drone that broadcasts nothing else and reports
+# four patch antennas on an RF switch) hears the FPV video link of a drone
+# that broadcasts nothing else and reports
 #   {"type":"analog_fm","mac":"AF:00:52:03:16:64","freq_mhz":5732,"band":"R",
 #    "ch":3,"rssi":-68,"bearing_deg":32,"bearing_sigma_deg":15,"video":"NTSC",
 #    "fp":"NTSC/15736/5734","node_id":"RX01"}
-# - a compass bearing from the station, never a position. bearing_deg is
-# relative to the box's face N; the mapper holds each station's position and
-# true-north heading (stations.json, LEVEL 1 STATIONS panel), rotates the
-# bearing, draws it as a ray from the station, and when two or more stations
-# with known positions report the same emitter within BEARING_FUSE_WINDOW_S
-# it intersects the bearing lines (weighted least squares) into a position
-# fix with an error radius. The fix is written into drone_lat/drone_long with
-# pos_src "bearing_fix", so markers, paths, geofences, CSV, KML and webhooks
-# treat it like any other position. A station registers itself from its
-# first heartbeat ({"heartbeat":true,"node_id":..,"receiver":"c5phy",..});
-# only its position has to be typed in or placed on the map.
+# for an analog FM carrier, or
+#   {"type":"wideband","mac":"DF:00:52:04:16:89","freq_mhz":5769,"fc_mhz":5768.5,
+#    "band":"R","ch":4,"rssi":-61,"bearing_deg":32,"bearing_sigma_deg":20,"cls":"lte",
+#    "conf":"high","bw_mhz":10,"duty":95,"fp":"lte/10/5768.5","node_id":"RX01"}
+# for a digital link (DJI O3/O4, OcuSync, Walksnail, HDZero, 802.11-based):
+# freq_mhz is the table channel the station folded the emitter to (the tracking
+# key, also in the DF: MAC), fc_mhz the estimated centre, bw_mhz the bandwidth
+# bucket (10/20/30/40), cls the coarse waveform class (lte: 66.7 us symbols,
+# the OcuSync family; dot11: 802.11 OFDM; wb: neither), duty the share of the
+# confirmation windows the link was on, conf the station's confidence in the
+# class. Both carry a compass bearing from the station, never a position.
+# bearing_deg is relative to the box's face N; the mapper holds each station's
+# position and true-north heading (stations.json, LEVEL 1 STATIONS panel),
+# rotates the bearing, draws it as a ray from the station, and when two or more
+# stations with known positions report the same emitter within
+# BEARING_FUSE_WINDOW_S it intersects the bearing lines (weighted least squares)
+# into a position fix with an error radius. The fix is written into
+# drone_lat/drone_long with pos_src "bearing_fix", so markers, paths, geofences,
+# CSV, KML and webhooks treat it like any other position. A station registers
+# itself from its first heartbeat ({"heartbeat":true,"node_id":..,
+# "receiver":"c5phy",..}); only its position has to be typed in or placed on
+# the map. The two types share that whole path; they differ in how reports are
+# merged into one track (channels for analog, overlapping centres for digital)
+# and in the WIDEBAND_SYSTEMS lookup that names the digital system.
 STATIONS_FILE = os.path.join(BASE_DIR, "stations.json")
 STATIONS = {}                   # node_id -> {node_id, name, lat, lon, heading_deg, kind, auto}
 STATIONS_LOCK = threading.Lock()
@@ -1733,14 +1748,23 @@ ANALOG_FM_MERGE_MHZ = 10        # reports within this many MHz are the same emit
                                 # F1 5740 cluster spans 8 MHz. The station itself folds hits within
                                 # PEAK_PICK_MHZ (20) of a stronger one, so two stations can still label one
                                 # carrier with any channel of the cluster; this window joins them again.
+BEARING_TYPES = ('analog_fm', 'wideband')   # the level 1 report types: a bearing each, never a position
+WIDEBAND_MERGE_MARGIN_MHZ = 5   # a wideband report joins a live wideband track when the two centres are within
+                                # max(bw, bw')/2 + this: a 20 MHz link covers four table channels, and the
+                                # station keys its DF: MAC to whichever of them it folded the footprint onto
+WIDEBAND_MATCH_MHZ = 2          # a WIDEBAND_SYSTEMS centre matches an estimated centre (fc_mhz) within this
 MAX_STATIONS = 64               # auto-registration stops here (a flood of node_ids is not a deployment)
 BEARING_MIN_CROSSING_DEG = 8    # bearings closer to parallel than this give no fix
 BEARING_MAX_RANGE_M = 20000     # a fix further than this from a station is rejected
 BEARING_OUTLIER_DEG = 20        # a line missing the fix by more than max(3 sigma, this) is dropped
 STATION_HEARTBEAT_FIELDS = ('receiver', 'hw', 'heading', 'scanning', 'channels', 'sectors', 'sweeps',
                             'video_seen', 'tune_fail', 'cap_err', 'bus_stuck', 'alias_drop', 'usb_drop',
-                            'mesh_drop', 'nf_dbm', 'temp_c', 'uptime_s', 'threshold_dbm', 'fe_gain_db')
+                            'mesh_drop', 'nf_dbm', 'temp_c', 'uptime_s', 'threshold_dbm', 'fe_gain_db',
+                            # wideband firmware: digital links confirmed, off-channel pull-ins, the
+                            # antenna model the bearings were computed with, the bands swept
+                            'wb_seen', 'pullin', 'bands', 'antenna_dbi', 'beamwidth_deg', 'bearing_k')
 STATION_TEXT_FIELDS = ('receiver', 'hw')
+STATION_BANDS = ('5.8', '2.4+5.8')    # the only values of 'bands' ('+' is not an id character, so no _norm_text)
 RESERVED_IDS = ('__proto__', 'constructor', 'prototype')
 last_fix = {}                   # mac -> (fix dict, epoch s): a fix is held through a short gap instead of flickering
 app.config.setdefault('MAX_CONTENT_LENGTH', 1 << 20)   # one JSON line, not a megabyte of 'bearings'
@@ -1911,6 +1935,8 @@ def register_station_heartbeat(hb, source=None):
         v = hb.get(k)
         if k in STATION_TEXT_FIELDS:
             v = _norm_text(v)
+        elif k == 'bands':
+            v = v if v in STATION_BANDS else None
         elif isinstance(v, bool):
             pass
         else:
@@ -1959,14 +1985,18 @@ def register_station_heartbeat(hb, source=None):
     emit_stations()
 
 
-def _analog_basic_id(det):
+def _l1_basic_id(det):
+    # What the station's own basic_id says, for the mesh copy that dropped it. The
+    # firmware prefixes all of 5 GHz "5.8G" (D1 5190 included); 2.4 GHz is the
+    # dual-band build's G plan.
     band = det.get('band')
     ch = det.get('ch')
     freq = det.get('freq_mhz')
+    prefix = '2.4G' if freq and freq < 3000 else '5.8G'
     if band and ch is not None and freq:
-        return f"5.8G-{band}{ch}-{freq}MHz"
+        return f"{prefix}-{band}{ch}-{freq}MHz"
     if freq:
-        return f"5.8G-{freq}MHz"
+        return f"{prefix}-{freq}MHz"
     return None
 
 
@@ -1998,6 +2028,153 @@ def _analog_canonical_mac(det, now):
         if d <= ANALOG_FM_MERGE_MHZ and (best_d is None or d < best_d):
             best, best_d = other_mac, d
     return best or mac
+
+
+def _wideband_canonical_mac(det, now):
+    """A digital link is wider than the channel grid (a 20 MHz carrier at 5789.5
+    is heard on F3 5780, A4 5785 and B4 5790 alike), so two stations can key the
+    same emitter to different DF: MACs. Fold a report onto the live wideband
+    track whose footprint it overlaps: |fc - fc'| <= max(bw, bw')/2 +
+    WIDEBAND_MERGE_MARGIN_MHZ. Never across types: an analog carrier inside a
+    digital link's footprint is its own emitter. A mesh copy that lost fc_mhz
+    (or bw_mhz) is placed by its channel (and a zero width)."""
+    mac = det.get('mac')
+    fc = _safe_float(det.get('fc_mhz', det.get('freq_mhz')))
+    if fc is None:
+        return mac
+    bw = _safe_float(det.get('bw_mhz'), 0.0)
+    own = tracked_pairs.get(mac)
+    if own and own.get('type') == 'wideband' and now - float(own.get('last_update') or 0) <= BEARING_OBS_KEEP_S:
+        return mac                      # already a live track of its own: keep it
+    best, best_d = None, None
+    for other_mac, other in list(tracked_pairs.items()):
+        if other_mac == mac or other.get('type') != 'wideband':
+            continue
+        if now - float(other.get('last_update') or 0) > BEARING_OBS_KEEP_S:
+            continue
+        other_fc = _safe_float(other.get('fc_mhz', other.get('freq_mhz')))
+        if other_fc is None:
+            continue
+        d = abs(other_fc - fc)
+        if d <= max(bw, _safe_float(other.get('bw_mhz'), 0.0)) / 2 + WIDEBAND_MERGE_MARGIN_MHZ and (best_d is None or d < best_d):
+            best, best_d = other_mac, d
+    return best or mac
+
+
+# Which system is behind a wideband report. A row matches on the estimated
+# centre (the system's channel plan, within WIDEBAND_MATCH_MHZ, or a band it
+# owns), on the bandwidth bucket (one of the row's, or the next bucket on
+# WB_BW_LADDER: a 60 MHz O4 mode reads as the 40 bucket, a 17 MHz HDZero mode
+# as 20) and on the waveform class where the row states one. The 5.8 GHz grid
+# is shared - 5768.5 is an O3 and an O4 channel, 5770 a Walksnail one, 5769 an
+# HDZero one - so rows are ranked: a row whose class agrees outranks one that
+# takes any, a listed centre outranks a band, an exact bucket a neighbouring
+# one, the nearer centre the farther, and among equals the first row wins,
+# which puts the table in order of likelihood (O4 before O3; the two are
+# indistinguishable on their shared channels). 'quality' caps the match: 'med'
+# where the class is expected from the system's lineage rather than
+# bench-verified (the DJI OFDM rows), or where the row is a rule about the
+# waveform rather than a channel plan; a tie between two systems is 'med' as
+# well. The report's system_conf is that cap taken against the station's own
+# conf.
+WIDEBAND_SYSTEMS = [
+    {'system': 'DJI O4', 'cls': 'lte', 'quality': 'med',
+     'centres': {5794.5: (40, 60), 5768.5: (20, 10), 5789.5: (20, 10), 5814.5: (20, 10)},
+     'bands': ((5170, 5250),)},                   # CE variant: three 5.1 GHz channels, any width
+    {'system': 'DJI O3', 'cls': 'lte', 'quality': 'med',
+     'centres': {5794.5: (40,), 5768.5: (20, 10), 5804.5: (20, 10), 5839.5: (20, 10)}},
+    {'system': 'DJI OcuSync 2', 'cls': 'lte',
+     'centres': {5756.5: (10,), 5776.5: (10,), 5796.5: (10,),
+                 2399.5: (10,), 2414.5: (10,), 2429.5: (10,), 2444.5: (10,), 2459.5: (10,)}},
+    {'system': 'Walksnail Avatar / DJI FPV V1',
+     'centres': {5660: (20,), 5695: (20, 40), 5735: (20,), 5770: (20, 40), 5805: (20,),
+                 5839: (20, 40), 5878: (20, 40), 5914: (20,)}},
+    {'system': 'HDZero',                          # 30 = the 27 MHz mode, 20 = the 17 MHz narrow one
+     'centres': {5658: (30, 20), 5695: (30, 20), 5732: (30, 20), 5769: (30, 20),
+                 5806: (30, 20), 5843: (30, 20), 5880: (30, 20), 5917: (30, 20)}},
+    # wfb-ng / OpenIPC-like: a saturated 802.11 link on the 5 MHz Wi-Fi grid. Below
+    # 90 % duty an 802.11 waveform is traffic, not video. (duty is a whole percent.)
+    {'system': '802.11 video link', 'cls': 'dot11', 'duty_min': 90, 'grid_mhz': 5, 'quality': 'med'},
+    {'system': 'Wi-Fi traffic', 'cls': 'dot11', 'duty_max': 89, 'quality': 'low'},
+]
+WIDEBAND_UNKNOWN = 'unknown digital'
+WB_BW_LADDER = (10, 20, 30, 40, 60)   # the firmware's r1 buckets, plus 60 for O4's wide mode
+_CONF_RANK = {'low': 0, 'med': 1, 'high': 2}
+_CONF_NAME = ('low', 'med', 'high')
+
+
+def _wb_bw_steps(bw, buckets):
+    # Distance on WB_BW_LADDER from the reported bucket to the nearest of the row's:
+    # 0 exact, 1 neighbouring, None further. A report without bw_mhz (mesh copy)
+    # counts as one step off rather than as a miss.
+    if bw is None:
+        return 1
+    i = min(range(len(WB_BW_LADDER)), key=lambda n: abs(WB_BW_LADDER[n] - bw))
+    d = min(abs(i - WB_BW_LADDER.index(b)) for b in buckets)
+    return d if d <= 1 else None
+
+
+def _wb_match(row, fc, bw, cls, duty):
+    """(score, quality) of a WIDEBAND_SYSTEMS row against a report, or None.
+    Score ranks rows: (points, -distance) with class agreement 4 points, a
+    listed centre 2, an exact bucket 1, the distance that of the centre hit (a
+    band or a rule counts as the worst). Quality is the row's own confidence in
+    the match, 0..2 (low..high)."""
+    if row.get('cls') and cls != row['cls']:
+        return None
+    if 'duty_min' in row and (duty is None or duty < row['duty_min']):
+        return None
+    if 'duty_max' in row and (duty is None or duty > row['duty_max']):
+        return None
+    points = 4 if row.get('cls') else 0
+    dist = WIDEBAND_MATCH_MHZ
+    quality = 2
+    if 'centres' in row:
+        hit = None                      # (|fc - centre|, bucket steps) of the closest listed centre
+        for centre, buckets in row['centres'].items():
+            d = abs(fc - centre)
+            if d > WIDEBAND_MATCH_MHZ:
+                continue
+            steps = _wb_bw_steps(bw, buckets)
+            if steps is not None and (hit is None or (d, steps) < hit):
+                hit = (d, steps)
+        if hit is not None:
+            points += 2 + (1 - hit[1])
+            dist = hit[0]
+            if hit[0] > WIDEBAND_MATCH_MHZ / 2 or hit[1]:
+                quality = 1             # off the centre or a bucket off: plausible, not nailed
+        elif any(lo <= fc <= hi for lo, hi in row.get('bands', ())):
+            quality = 1
+        else:
+            return None
+    elif 'grid_mhz' in row:
+        if abs(fc - row['grid_mhz'] * round(fc / row['grid_mhz'])) > WIDEBAND_MATCH_MHZ:
+            return None
+    return (points, -dist), min(quality, _CONF_RANK[row.get('quality', 'high')])
+
+
+def classify_wideband(det):
+    """Name the system behind a wideband report from WIDEBAND_SYSTEMS. Writes
+    system and system_conf: the winning row's match quality, capped by the
+    station's conf (a mesh copy that dropped conf counts as 'med', not as
+    certainty). A report nothing matches is 'unknown digital' / 'low'."""
+    fc = det.get('fc_mhz', det.get('freq_mhz'))
+    best, best_row, tie = None, None, False
+    if fc is not None:
+        for row in WIDEBAND_SYSTEMS:
+            m = _wb_match(row, fc, det.get('bw_mhz'), det.get('cls'), det.get('duty'))
+            if m is None:
+                continue
+            if best is None or m[0] > best[0]:
+                best, best_row, tie = m, row, False
+            elif m[0] == best[0]:
+                tie = True              # first row keeps the name, the doubt shows in system_conf
+    if best is None:
+        det['system'], quality = WIDEBAND_UNKNOWN, 0
+    else:
+        det['system'], quality = best_row['system'], min(best[1], 1 if tie else 2)
+    det['system_conf'] = _CONF_NAME[min(quality, _CONF_RANK.get(det.get('conf'), 1))]
+    return det['system'], det['system_conf']
 
 
 def _solve_bearing_lines(lines):
@@ -2109,35 +2286,53 @@ def _bearing_fix(mac, now):
     return None
 
 def level1_prepare_detection(detection):
-    """Normalise an analog_fm report, record its bearing, attach every live
-    bearing for the UI and, when the geometry allows, a position fix."""
+    """Normalise a level 1 report (analog_fm or wideband), record its bearing,
+    attach every live bearing for the UI and, when the geometry allows, a
+    position fix."""
     now = time.time()
-    detection.setdefault('src', 'analog_fm')
+    kind = detection.get('type')
+    detection.setdefault('src', kind)
     # Only the mapper writes these; a client that sends them is lying
     for k in ('bearings', 'fix_stations', 'fix_ranges_m', 'fix_error_m', 'fix_excluded', 'fix_age_s', 'pos_src',
-              'bearing_true_deg', 'drone_lat', 'drone_long'):
+              'bearing_true_deg', 'drone_lat', 'drone_long', 'system', 'system_conf'):
         detection.pop(k, None)
-    # The analog fields the page prints and the fusion uses, bounded to what the firmware emits
+    # The station fields the page prints and the fusion uses, bounded to what the firmware emits
     band = detection.get('band')
     detection['band'] = band.strip()[:1].upper() if isinstance(band, str) and band.strip()[:1].isalpha() else None
     for k in ('ch', 'sync_hz', 'field_hz', 'sync_q', 'sync_score', 'video_windows', 'gain', 'q_phase', 'cfo_khz',
-              'sector', 'seq', 'rssi', 'rssi_raw', 'rssi_min', 'rssi_max', 'rssi_n'):
+              'sector', 'seq', 'rssi', 'rssi_raw', 'rssi_min', 'rssi_max', 'rssi_n', 'bw_mhz', 'duty', 'span_mhz'):
         if k in detection:
             v = _safe_float(detection.get(k))
             if v is None:
                 detection.pop(k, None)
             else:
                 detection[k] = int(v) if abs(v) < 1e9 else None
-    for k in ('freq_mhz', 'freq_peak', 'rssi_dbm', 'level_db', 'bearing_deg', 'bearing_sigma_deg', 'station_heading'):
+    for k, lo, hi in (('bw_mhz', WB_BW_LADDER[0], WB_BW_LADDER[-1]), ('duty', 0, 100), ('span_mhz', 0, 1000)):
+        # Held to what the firmware can emit: the wideband merge window scales with bw_mhz,
+        # so a bogus width would fold a report onto any live track; duty drives the 802.11 rows
+        if detection.get(k) is not None:
+            detection[k] = min(hi, max(lo, detection[k]))
+    for k in ('freq_mhz', 'freq_peak', 'fc_mhz', 'rssi_dbm', 'level_db', 'bearing_deg', 'bearing_sigma_deg', 'station_heading'):
         if k in detection:
             v = _safe_float(detection.get(k))
             if v is None:
                 detection.pop(k, None)
             else:
                 detection[k] = round(v, 1)
+    for k, nd in (('cv2', 2), ('r1', 2), ('r128', 3), ('r512', 3), ('r2667', 3)):
+        # wideband features, at the precision the USB line carries them
+        if k in detection:
+            v = _safe_float(detection.get(k))
+            if v is None:
+                detection.pop(k, None)
+            else:
+                detection[k] = round(v, nd)
     video = detection.get('video')
     if video is not None:
         detection['video'] = video if video in ('NTSC', 'PAL', 'none') else 'none'
+    for k, allowed in (('cls', ('lte', 'dot11', 'wb')), ('conf', ('high', 'med', 'low'))):
+        if k in detection and detection.get(k) not in allowed:
+            detection.pop(k, None)
     for k, limit in (('fp', 40), ('basic_id', 40), ('receiver', 16), ('hw', 8), ('carrier', 8)):
         if k in detection:
             v = _norm_text(detection.get(k), limit) if k not in ('fp', 'basic_id') else (
@@ -2152,11 +2347,11 @@ def level1_prepare_detection(detection):
         if detection['sectors'] is None:
             detection.pop('sectors', None)
     if not detection.get('basic_id'):
-        bid = _analog_basic_id(detection)
+        bid = _l1_basic_id(detection)
         if bid:
             detection['basic_id'] = bid
     reported_mac = detection.get('mac')
-    detection['mac'] = _analog_canonical_mac(detection, now)
+    detection['mac'] = _wideband_canonical_mac(detection, now) if kind == 'wideband' else _analog_canonical_mac(detection, now)
     mac = detection['mac']
     track = tracked_pairs.get(mac) or {}
     merged = mac != reported_mac
@@ -2170,6 +2365,13 @@ def level1_prepare_detection(detection):
             detection[k] = track[k]
     if merged:
         detection['reported_mac'] = reported_mac
+    if kind == 'wideband':
+        for k in ('fc_mhz', 'bw_mhz', 'cls', 'duty', 'conf'):
+            # The mesh line is cut at 191 bytes and sheds its tail first; the track's
+            # last values stand in so the system label does not come and go with it
+            if detection.get(k) in (None, '') and track.get(k) not in (None, ''):
+                detection[k] = track[k]
+        classify_wideband(detection)
     node_id = _norm_node_id(detection.get('node_id'))
     if node_id:
         detection['node_id'] = node_id
@@ -2275,7 +2477,7 @@ def update_detection(detection):
     mac = detection.get("mac")
     if not mac:
         return
-    if detection.get('type') == 'analog_fm':
+    if detection.get('type') in BEARING_TYPES:
         detection = level1_prepare_detection(detection)
         mac = detection['mac']
     prev = tracked_pairs.get(mac)
@@ -5500,9 +5702,10 @@ HTML_PAGE = '''
     }
     .drone-item.src-mavlink { border-left: 3px solid #66aaff !important; }
     .drone-item.src-dji     { border-left: 3px solid #ff66ff !important; }
-    /* Level 1 station hits: an analog 5.8 GHz video carrier located by bearing
-       (no Remote ID; a position only once two stations' bearings cross). */
-    .drone-item.src-analog  { border-left: 3px solid #ffaa33 !important; }
+    /* Level 1 station hits: a 5.8 GHz video link, analog carrier or digital
+       (wideband), located by bearing (no Remote ID; a position only once two
+       stations' bearings cross). */
+    .drone-item.src-analog, .drone-item.src-wideband { border-left: 3px solid #ffaa33 !important; }
     .l1-station-icon { position:relative; }
     .l1-station-icon svg { display:block; overflow:visible; }
     .l1-row { display:flex; gap:4px; align-items:center; margin-top:4px; flex-wrap:wrap; }
@@ -7050,7 +7253,7 @@ HTML_PAGE = '''
       </div>
     </div>
 
-    <!-- LEVEL 1 STATIONS: bearing-only 5.8 GHz analog video receivers. Each
+    <!-- LEVEL 1 STATIONS: bearing-only 5.8 GHz video receivers. Each
          station registers itself from its heartbeat; its position and
          true-north heading are set here (or by clicking the map). -->
     <div style="margin:8px 8px 0 8px; padding:6px; border:1px solid #ffaa33; background:rgba(0,0,0,0.5); border-radius:4px; box-sizing:border-box; font-family:monospace; font-size:0.75em; color:#ffd9a0;">
@@ -7060,7 +7263,7 @@ HTML_PAGE = '''
       </div>
       <div id="l1Panel" style="display:none; margin-top:6px;">
         <div style="font-size:0.9em; color:#c9a06a; line-height:1.35; margin-bottom:4px;">
-          Analog 5.8 GHz video receivers report a compass bearing, not a position. A station flashed
+          Level 1 video receivers (analog or digital FPV links) report a compass bearing, not a position. A station flashed
           with its position and the true-north heading of its face N (level 1 Station setup) places
           itself; for any other, set them here. Two crossing bearings give a fix.
         </div>
@@ -7837,16 +8040,37 @@ function generatePopupContent(detection, markerType) {
     odid_nan:'Remote ID · WiFi NAN', odid_bcn:'Remote ID · WiFi Beacon', dji:'DJI DroneID · WiFi beacon',
     mavlink:'MAVLink telemetry · WiFi', wifi:'WiFi fingerprint', ble:'BLE fingerprint',
     analog_fm:'5.8 GHz analog video · level 1 station',
+    wideband:'5.8 GHz digital video link · level 1 station',
     mesh_text:'Remote ID · mesh text alert', fingerprint:'Fingerprint · mesh text alert'};
+  // The waveform class a level 1 station puts on a digital link (cls)
+  const WB_CLS_LABEL = {lte:'LTE-like OFDM (OcuSync family)', dot11:'802.11 OFDM', wb:'wideband, class unknown'};
   const CONF_COLOR = {high:'#88ff99', med:'#ffcc66', low:'#ff8866'};
   const isFingerprint = detection.src === 'wifi' || detection.src === 'ble' || detection.src === 'fingerprint';
+  const isLevel1 = detection.type === 'analog_fm' || detection.type === 'wideband';
   const hasIdentity = detection.basic_id || detection.op_id || detection.desc || detection.src
                    || detection.vendor || detection.ssid;
   if (hasIdentity) {
     html += '<div style="height:1px; background:rgba(255,255,255,0.07); margin:8px 0;"></div>';
     html += '<div style="font-size:0.72em; color:' + muted + '; letter-spacing:1.5px; margin-bottom:4px;">'
-         +  (isFingerprint ? 'IDENTIFICATION (HEURISTIC)' : (detection.type === 'analog_fm' ? 'IDENTIFICATION (ANALOG VIDEO CHANNEL)' : 'REMOTE ID')) + '</div>';
-    if (detection.src) html += stat('SOURCE', SRC_LABEL[detection.src] || detection.src, '#dde6ee');
+         +  (isFingerprint ? 'IDENTIFICATION (HEURISTIC)' : (detection.type === 'analog_fm' ? 'IDENTIFICATION (ANALOG VIDEO CHANNEL)'
+             : (detection.type === 'wideband' ? 'IDENTIFICATION (DIGITAL VIDEO LINK)' : 'REMOTE ID'))) + '</div>';
+    if (detection.src) {
+      // The dual-band station's G plan is the only 2.4 GHz source
+      const srcLabel = (detection.src === 'wideband' && detection.freq_mhz && detection.freq_mhz < 3000)
+                     ? '2.4 GHz digital video link · level 1 station' : (SRC_LABEL[detection.src] || detection.src);
+      html += stat('SOURCE', srcLabel, '#dde6ee');
+    }
+    if (detection.type === 'wideband') {
+      // What the mapper made of (fc, bw, cls, duty) against WIDEBAND_SYSTEMS, then the measurement
+      if (detection.system) html += stat('SYSTEM', l1Esc(detection.system) + (detection.system_conf ? ' · ' + detection.system_conf : ''),
+                                         CONF_COLOR[detection.system_conf] || '#dde6ee');
+      if (detection.cls) html += stat('WAVEFORM', WB_CLS_LABEL[detection.cls] || l1Esc(detection.cls));
+      const link = [];
+      if (detection.bw_mhz) link.push(detection.bw_mhz + ' MHz wide');
+      if (detection.fc_mhz) link.push('centre ' + detection.fc_mhz + ' MHz');
+      if (detection.duty !== undefined && detection.duty !== null) link.push('duty ' + detection.duty + '%');
+      if (link.length) html += stat('LINK', l1Esc(link.join(' · ')));
+    }
     if (detection.basic_id) {
       const t = ID_TYPE_LABEL[detection.id_type];
       html += stat(t ? t.toUpperCase() : 'UAS ID', detection.basic_id, '#fff');
@@ -7878,10 +8102,11 @@ function generatePopupContent(detection, markerType) {
     }
   }
 
-  // ── Level 1: analog video carrier located by bearing ──
-  if (detection.type === 'analog_fm') {
+  // ── Level 1: a video link (analog carrier or digital) located by bearing ──
+  if (isLevel1) {
     html += '<div style="height:1px; background:rgba(255,255,255,0.07); margin:8px 0;"></div>';
-    html += '<div style="font-size:0.72em; color:' + muted + '; letter-spacing:1.5px; margin-bottom:4px;">ANALOG VIDEO · LEVEL 1</div>';
+    html += '<div style="font-size:0.72em; color:' + muted + '; letter-spacing:1.5px; margin-bottom:4px;">'
+         +  (detection.type === 'wideband' ? 'DIGITAL VIDEO · LEVEL 1' : 'ANALOG VIDEO · LEVEL 1') + '</div>';
     const chLabel = (detection.band || '') + (detection.ch !== undefined && detection.ch !== null ? detection.ch : '');
     if (detection.freq_mhz) html += stat('CHANNEL', l1Esc((chLabel ? chLabel + ' · ' : '') + detection.freq_mhz + ' MHz'), '#fff');
     if (detection.video) html += stat('VIDEO', detection.video === 'none' ? 'carrier, no sync found' : l1Esc(detection.video + (detection.sync_hz ? ' · ' + detection.sync_hz + ' Hz lines' : '')), detection.video === 'none' ? '#dde6ee' : '#ffd9a0');
@@ -7925,13 +8150,15 @@ function generatePopupContent(detection, markerType) {
   const skip = new Set(['mac','basic_id','last_update','userLocked','lockTime','_simulated',
     'id_type','basic_id2','id_type2','ua_type','op_id','desc','eu_cat','eu_class',
     'src','vendor','model','ssid','conf','role']);
-  if (detection.type === 'analog_fm') {
+  if (isLevel1) {
     // Shown in the LEVEL 1 section above, or internal to the bearing bookkeeping
     ['bearings','fix_stations','fix_ranges_m','fix_excluded','fix_age_s','sectors','type','receiver','hw','band','ch','freq_mhz',
      'video','fp','freq_peak','pos_src','fix_error_m','sync_hz','field_hz','sync_q','sync_score',
      'video_windows','rssi_raw','rssi_min','rssi_max','rssi_n','station_heading','seq','source_port',
      'reported_mac','bearing_deg','bearing_sigma_deg','bearing_true_deg','node_id','sector','rssi','rssi_dbm',
-     'carrier','cfo_khz','gain','level_db','q_phase'].forEach(k => skip.add(k));
+     'carrier','cfo_khz','gain','level_db','q_phase',
+     // wideband: in the IDENTIFICATION section, or raw features for the bench
+     'system','system_conf','cls','bw_mhz','fc_mhz','duty','cv2','r1','r128','r512','r2667','span_mhz'].forEach(k => skip.add(k));
   }
   const telemetryKeys = Object.keys(detection).filter(k => !skip.has(k) && detection[k] !== '' && detection[k] !== null && detection[k] !== undefined);
   if (telemetryKeys.length > 0) {
@@ -12533,11 +12760,15 @@ function updateComboList(data) {
     item.classList.toggle('src-mavlink', srcKind === 'mavlink');
     item.classList.toggle('src-dji', srcKind === 'dji');
     item.classList.toggle('src-analog', srcKind === 'analog_fm' || (det && det.type === 'analog_fm'));
+    item.classList.toggle('src-wideband', srcKind === 'wideband' || (det && det.type === 'wideband'));
     if (det) {
       const bits = [];
       if (det.type === 'analog_fm') {
         bits.push('analog video ' + (det.freq_mhz || '') + ' MHz');
         if (det.video && det.video !== 'none') bits.push(det.video);
+        bits.push(det.pos_src === 'bearing_fix' ? 'bearing fix' : 'bearing only');
+      } else if (det.type === 'wideband') {
+        bits.push('digital video ' + (det.fc_mhz || det.freq_mhz || '') + ' MHz' + (det.system ? ' · ' + det.system : ''));
         bits.push(det.pos_src === 'bearing_fix' ? 'bearing fix' : 'bearing only');
       } else if (det.src) bits.push(det.src);
       if (det.vendor) bits.push(det.vendor + (det.model ? ' ' + det.model : ''));
@@ -12605,7 +12836,7 @@ var previousActive = {};
   }
 })();
 // =============================================================================
-// LEVEL 1 STATIONS - bearing-only analog video receivers
+// LEVEL 1 STATIONS - bearing-only video receivers (analog or digital links)
 // Station markers (a four-sector rose turned to the station heading), one ray
 // per fresh bearing from the station that reported it, a translucent wedge of
 // +/- sigma, and a dashed error circle around a bearing fix. The server owns
@@ -12673,8 +12904,11 @@ function l1StationPopup(st) {
   if (stt.tune_fail !== undefined) h += row('tune_fail / cap_err', stt.tune_fail + ' / ' + (stt.cap_err !== undefined ? stt.cap_err : '-'));
   if (stt.bus_stuck !== undefined) h += row('bus_stuck', stt.bus_stuck + (Number(stt.bus_stuck) > 0 ? ' (I/Q bus not streaming!)' : ''));
   if (stt.alias_drop !== undefined) h += row('alias_drop', stt.alias_drop);
-  if (stt.video_seen !== undefined) h += row('video seen', stt.video_seen);
-  if (stt.channels !== undefined) h += row('plan', stt.channels + ' ch × ' + (stt.sectors || 4) + ' sectors');
+  if (stt.video_seen !== undefined) h += row('video seen', stt.video_seen + (stt.wb_seen !== undefined ? ' analog / ' + stt.wb_seen + ' digital' : ''));
+  if (stt.pullin !== undefined) h += row('pull-ins', stt.pullin);
+  if (stt.channels !== undefined) h += row('plan', stt.channels + ' ch × ' + (stt.sectors || 4) + ' sectors' + (stt.bands ? ' · ' + stt.bands + ' GHz' : ''));
+  if (stt.antenna_dbi !== undefined) h += row('antenna', stt.antenna_dbi + ' dBi' + (stt.beamwidth_deg !== undefined ? ' · ' + stt.beamwidth_deg + '° beam' : '')
+                                                       + (stt.bearing_k !== undefined ? ' · K ' + stt.bearing_k + '°/dB' : ''));
   h += '</div>';
   return h;
 }
@@ -12910,7 +13144,7 @@ function removeBearingLayers(mac) {
 }
 const l1RaySig = {};
 function updateBearingLayers(mac, det, currentTime) {
-  if (!det || det.type !== 'analog_fm') return;
+  if (!det || (det.type !== 'analog_fm' && det.type !== 'wideband')) return;
   const color = get_color_for_mac(mac);
   const bl = Array.isArray(det.bearings) ? det.bearings : [];
   // Nothing to redraw while the detection and the station geometry are unchanged
@@ -14314,7 +14548,7 @@ def start_serial_thread(port):
 # or a 250 ms pause. One packet can therefore hold two lines, or half of one,
 # so each sender's text is re-joined and split on newlines before parsing.
 # Lines are then treated exactly like serial lines from the ESP32 home node:
-# JSON (level 2 detections, level 1 analog_fm reports and heartbeats) goes
+# JSON (level 2 detections, level 1 analog_fm / wideband reports and heartbeats) goes
 # through handle_station_json(), and the plain-text alerts of the standalone
 # firmwares ("Drone: ...", "Possible drone (...) ...", "Pilot: ...") are
 # turned into the same records first. The home node's dedup (the first report
@@ -14528,8 +14762,9 @@ class MeshTextAlerts:
 class MeshDedup:
     """The home node's dedup engine (node-mode-dualcore/src/main_home.cpp): the
     first report of a MAC wins and later copies inside MESH_DEDUP_WINDOW_S are
-    dropped. Level 1 bearing reports always pass, because every station that
-    hears a carrier reports the same channel-derived MAC with its own bearing."""
+    dropped. Level 1 bearing reports (analog_fm and wideband alike) always pass,
+    because every station that hears a video link reports the same
+    channel-derived MAC with its own bearing."""
 
     def __init__(self):
         self._window_start = {}  # mac -> start of its current window
@@ -14539,7 +14774,7 @@ class MeshDedup:
         if MESH_DEDUP_WINDOW_S <= 0:
             return True
         mac = rec.get('mac')
-        if not isinstance(mac, str) or not mac or rec.get('type') == 'analog_fm':
+        if not isinstance(mac, str) or not mac or rec.get('type') in BEARING_TYPES:
             return True
         now = time.time() if now is None else now
         key = mac.lower()

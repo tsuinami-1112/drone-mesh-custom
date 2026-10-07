@@ -8,6 +8,7 @@ project documentation live on the
 - [Mapper features](#mapper-features)
 - [Raspberry Pi installer](#raspberry-pi-installer)
 - [Direct Meshtastic radio input](#direct-meshtastic-radio-input)
+- [Level 1 stations](#level-1-stations)
 - [Offline maps](#offline-maps)
 - [ADS-B air traffic](#ads-b-air-traffic)
 - [API reference](#api-reference)
@@ -161,7 +162,7 @@ can't be the start of a station line (chat from a phone) is handed on at once.
 
 | Line | Becomes | `src` |
 |---|---|---|
-| JSON (node mode detection, level 1 `analog_fm` report or heartbeat) | handled exactly as a serial line from the home node | as sent |
+| JSON (node mode detection, level 1 `analog_fm` / `wideband` report or heartbeat) | handled exactly as a serial line from the home node | as sent |
 | `Drone: <mac> RSSI:<n> [ID:<id>] [OP:<id>] [maps link]`, or the C5's `Drone[<band>]: ...` | detection with MAC, RSSI, IDs, position and `rf_band` | `mesh_text` |
 | `Pilot: <maps link>` | the same sender's last `Drone:` record (within 10 s) with the pilot added | `mesh_text` |
 | `Possible drone (<what>) <mac> RSSI:<n>` | fingerprint entry, `vendor` = `<what>` | `fingerprint` |
@@ -172,9 +173,10 @@ Text alerts don't say whether a hit came over WiFi or BLE, hence the two new
 heuristic hits.
 
 **Dedup.** As on the home node, the first report of a MAC wins and repeats
-inside `--mesh-dedup-ms` (500 ms) are dropped. Level 1 `analog_fm` reports
-always pass, because each station's bearing is its own observation. The same
-packet heard through two radios (same sender and packet id) is processed once.
+inside `--mesh-dedup-ms` (500 ms) are dropped. Level 1 `analog_fm` and
+`wideband` reports always pass, because each station's bearing is its own
+observation. The same packet heard through two radios (same sender and packet
+id) is processed once.
 Only `--mesh-channel` (default 0, the channel serial modules send on) is read.
 
 **Level 1 stations.** A heartbeat registers its station in the LEVEL 1
@@ -210,11 +212,164 @@ enough of the radio side of the protocol for the library to connect over a
 pseudo-terminal (`--pty`) or TCP (`--tcp PORT`). `--demo` loops a mesh with a
 Remote ID drone, a standalone detector and two level 1 stations flashed with
 their positions, which the mapper places from their heartbeats (`--mapper URL`
-places them by hand through the API instead). `mapper_test/test_mesh_direct.py`
-runs the real mapper against it over both transports and checks every message
-format (level 1 heartbeats as the firmware builds them, flashed position
-included), the dedup, telemetry, a TCP drop and reconnect, and that the mapper
-never transmits.
+places them by hand through the API instead), hearing an analog carrier and a
+DJI O4-like digital link. `mapper_test/test_mesh_direct.py` runs the real
+mapper against it over both transports and checks every message format (level
+1 heartbeats and wideband reports as the firmware builds them, flashed
+position included), the dedup, both bearing fixes and the system label,
+telemetry, a TCP drop and reconnect, and that the mapper never transmits.
+
+---
+
+## Level 1 stations
+
+A level 1 station (the
+[`level1`](https://github.com/tsuinami-1112/drone-sentinel/tree/level1)
+branch: a XIAO ESP32-C5 as a 5.8 GHz receiver behind four patch antennas on
+an RF switch) finds a drone by its FPV video link and reports a **compass
+bearing**, never a position. The mapper holds each station's position and the
+heading of its face N (the LEVEL 1 STATIONS panel, or flashed into the station
+with the level 1 Station setup task and sent in its heartbeat), rotates the
+bearing, draws it as a ray from the station and, when two or more placed
+stations report the same emitter within 30 s, intersects the rays into a
+position fix with an error radius. The fix then behaves like any other
+position (markers, paths, geofences, CSV, KML, webhooks). A station registers
+itself from its first heartbeat; only its position has to be set. Reports
+arrive like every other detection: over USB, `POST /api/detections`, or as
+mesh text read straight off a radio, whose dedup lets both level 1 types
+through (each station's bearing is needed).
+
+### Analog video (`"type":"analog_fm"`)
+
+```json
+{"type":"analog_fm","mac":"AF:00:52:03:16:64","freq_mhz":5732,"band":"R","ch":3,
+ "rssi":-68,"bearing_deg":32,"bearing_sigma_deg":15,"video":"NTSC",
+ "fp":"NTSC/15736/5734","node_id":"RX01"}
+```
+
+The MAC is synthesised from the channel (`AF:00:` + band letter, channel
+number, frequency), so every station that hears the carrier reports the same
+one. Reports within 10 MHz of a live analog track are the same emitter (the
+R3 5732 / B1 5733 / F1 5740 cluster spans 8 MHz).
+
+### Digital video links (`"type":"wideband"`)
+
+A channel that stays above threshold with a noise-like envelope - an OFDM
+link rather than an FM carrier - is confirmed over eight windows and reported
+as
+
+```json
+{"type":"wideband","mac":"DF:00:52:04:16:89","freq_mhz":5769,"fc_mhz":5768.5,"band":"R","ch":4,
+ "rssi":-61,"rssi_dbm":-61.4,"level_db":28.0,"cls":"lte","conf":"high","bw_mhz":10,"duty":95,
+ "cv2":0.98,"r1":0.85,"r128":0.010,"r512":0.012,"r2667":0.056,"span_mhz":0,
+ "bearing_deg":32,"bearing_sigma_deg":21,"fp":"lte/10/5768.5","basic_id":"5.8G-R4-5769MHz",
+ "node_id":"RX01"}
+```
+
+| Field | Meaning |
+|---|---|
+| `mac` | `DF:00:` + band letter, channel number, frequency of the table channel the station folded the emitter to: the tracking key |
+| `freq_mhz`, `band`, `ch` | that table channel |
+| `fc_mhz` | estimated centre of the link: channel + spectral centroid |
+| `cls` | coarse waveform class: `lte` (66.7 µs symbols: DJI OcuSync, O3, O4), `dot11` (802.11 OFDM, 3.2 µs symbols), `wb` (neither feature above its floor) |
+| `conf` | the station's confidence in `cls`: `high`, `med` or `low` |
+| `bw_mhz` | bandwidth bucket from the lag-1 autocorrelation: 10, 20, 30 or 40 |
+| `duty` | percent of the confirmation windows the link was on; a report needs 75 |
+| `cv2`, `r1`, `r128`, `r512`, `r2667` | the raw features: envelope variance / mean², lag autocorrelations \|R(L)\| / R(0) |
+| `span_mhz` | width of the footprint across table channels in that sweep, 0 when it fit one |
+| `bearing_deg`, `bearing_sigma_deg` | as for analog; the sigma carries an extra 5° plus 0.2° per percent of duty missing |
+| `fp`, `basic_id` | `cls/bw/fc`, and `5.8G-R4-5769MHz` (`2.4G-G3-2442MHz` on a dual-band station) |
+
+The other fields (`rssi*`, `level_db`, `gain`, `q_phase`, `cfo_khz`,
+`sectors`, `sector`, `station_heading`, `seq`) mean what they mean in an
+analog report. The mesh copy is cut at 191 bytes: `type`, `mac`, `node_id`
+and `freq_mhz` must fit, then `rssi`, `bearing_deg`, `bearing_sigma_deg`,
+`cls`, `fc_mhz`, `bw_mhz`, `duty`, `conf`, `fp`, `sector` and `seq` are tried
+one by one in that order and each kept only if it still fits (a short field
+can make it after a longer one did not). With a four-character node id `conf`
+and `fp` are already out, and whether `sector` or `seq` fits turns on the
+digit counts. The mapper fills `fc_mhz`, `bw_mhz`, `cls`, `duty` and `conf`
+that a copy dropped from the track's last report, so the system label does
+not come and go with the budget; `fp` is carried over like the other identity
+fields, `band` and `ch` (never on the mesh line) come from the track when it
+has them, a missing `basic_id` is synthesised from `freq_mhz`
+(`5.8G-5769MHz`), and `sector` and `seq` stay missing.
+`mapper_test/fake_meshtastic_radio.py` builds that line (`l1_mesh_wideband`)
+for the demo mesh and the end-to-end test.
+
+A report posted by hand is held to what the firmware emits: `bw_mhz` 10-60,
+`duty` 0-100 and `span_mhz` 0-1000 (clamped), `cls` and `conf` from the lists
+above (anything else is dropped), `fp` and `basic_id` as `[A-Za-z0-9/._:-]`
+up to 40 characters, and the features rounded to the precision of the USB
+line.
+
+**Merging.** A digital link is wider than the channel grid, so two stations
+can key the same emitter to different `DF:` MACs. A wideband report merges
+onto the live wideband track whose centre is within `max(bw, bw') / 2 + 5 MHz`
+of its own; it never merges onto an analog track, nor an analog report onto a
+digital one.
+
+**Naming the system.** The mapper matches `fc_mhz`, `bw_mhz`, `cls` and
+`duty` against the `WIDEBAND_SYSTEMS` table in `mesh-mapper.py` and writes
+`system` and `system_conf` into the detection (the popup's IDENTIFICATION
+section, the detection list, the CSV). A row matches when the centre is
+within 2 MHz of one of its channels (or inside a band it owns), the bandwidth
+bucket is one of the row's or the next one up or down the 10 / 20 / 30 / 40 /
+60 ladder (a copy without `bw_mhz` counts as one step off), and the class
+agrees where the row states one; the two 802.11 rows also need `duty`. A row
+whose class agrees outranks one that takes any, a listed centre outranks a
+band, an exact bucket a neighbouring one, the nearer centre the farther; among
+equals the first row wins.
+
+| System | Centres (MHz) and buckets | Class | Best match |
+|---|---|---|---|
+| DJI O4 | 5794.5 (40, 60); 5768.5, 5789.5, 5814.5 (20, 10); 5170-5250 any width (CE) | `lte` (expected, unverified) | med |
+| DJI O3 | 5794.5 (40); 5768.5, 5804.5, 5839.5 (20, 10) | `lte` (expected, unverified) | med |
+| DJI OcuSync 2 | 5756.5, 5776.5, 5796.5 (10); 2399.5, 2414.5, 2429.5, 2444.5, 2459.5 (10) | `lte` | high |
+| Walksnail Avatar / DJI FPV V1 | 5660, 5695, 5735, 5770, 5805, 5839, 5878, 5914 (20); 5695, 5770, 5839, 5878 also (40) | any | high |
+| HDZero | 5658, 5695, 5732, 5769, 5806, 5843, 5880, 5917 (30 = the 27 MHz mode, 20 = the 17 MHz narrow one) | any | high |
+| 802.11 video link (wfb-ng / OpenIPC-like) | a centre within 2 MHz of the 5 MHz Wi-Fi grid, `duty` ≥ 90 | `dot11` | med |
+| Wi-Fi traffic | `duty` < 90 | `dot11` | low |
+| unknown digital | nothing above matched | | low |
+
+`system_conf` is the row's best match, lowered to `med` when the centre is
+more than 1 MHz off or the bucket a step off, when only a band matched, or
+when a second system matched equally well (5768.5 is an O3 and an O4 channel;
+5769.5 is as close to HDZero's 5769 as to Walksnail's 5770), and never above
+the station's own `conf` (a mesh copy that dropped `conf` counts as `med`). To
+add a system, put a row where its likelihood ranks it (among equal matches the
+first row wins): `system`, `centres` (`{MHz: (buckets)}`), optional `bands`
+(`((low, high),)`), `cls`, `duty_min` / `duty_max`, `grid_mhz`, `quality`.
+
+### Boot line and heartbeat
+
+The station's console prints a boot line (`{"info":"c5phy v3 station ready",...}`, which the
+mapper logs at debug level and otherwise ignores) and a heartbeat every 60 s
+on USB and every 120 s over the mesh
+(`{"heartbeat":true,"node_id":..,"receiver":"c5phy",..}`), from which the
+mapper registers the station and fills its popup. Added with the wideband
+firmware:
+
+| Field | Where | Meaning |
+|---|---|---|
+| `bands` | boot line, USB heartbeat | `"5.8"`, or `"2.4+5.8"` for the dual-band build |
+| `antenna_dbi` | boot line, USB heartbeat | patch gain the station was flashed with (Station setup) |
+| `beamwidth_deg` | boot line, USB heartbeat | 3 dB beamwidth, derived from the gain unless overridden (8 dBi → 72°) |
+| `bearing_k` | boot line, USB heartbeat | degrees of bearing per dB of neighbour-sector difference (8 dBi → 3.0) |
+| `wideband`, `pullin`, `gain_step` | boot line | the build's `WIDEBAND` and `PULLIN` switches and its `GAIN_STEP` |
+| `wb_seen` | USB heartbeat (after `bearing_k`), mesh heartbeat (after `video_seen`) | digital links confirmed since boot |
+| `pullin` | USB heartbeat | off-channel analog carriers retuned onto and re-measured since boot |
+| `nf_dbm_24` | USB heartbeat, dual-band build only | 2.4 GHz noise floor (`nf_dbm` stays the 5 GHz one) |
+
+The mapper keeps `bands` (`5.8` or `2.4+5.8`; anything else is dropped),
+`antenna_dbi`, `beamwidth_deg`, `bearing_k`, `wb_seen` and `pullin` with the
+station's other heartbeat fields (`status` in `GET /api/stations`, and the
+station popup's **video seen** "N analog / M digital", **pull-ins**, **plan**
+and **antenna** rows); `nf_dbm_24` it does not keep.
+
+`mapper_test/level1_bearing_sim.py` fakes two or three stations and one
+drone through the HTTP API, analog by default and a DJI O4-like link with
+`--wideband`.
 
 ---
 
@@ -426,7 +581,7 @@ dump1090-fa --net --net-bo-port 30005 --device-type hackrf
 | `GET` | `/api/stations` | Stations (position, heading, `position_auto` / `heading_auto` while they follow what the station reports, its last reported `rep_lat` / `rep_lon`) and their last heartbeat |
 | `POST` | `/api/stations` | Add or update a station: `{node_id, name, lat, lon, heading_deg}`. `lat`/`lon` set its position by hand; both empty (`""` or `null`) go back to the position the station reports (unplaced if it has reported none); left out, the position stays as it is. `heading_deg` sets the heading by hand |
 | `DELETE` | `/api/stations/<node_id>` | Remove a station; a running one registers again from its next heartbeat |
-| `GET` | `/api/bearings` | Recent bearing reports, per emitter MAC and station |
+| `GET` | `/api/bearings` | Recent bearing reports, per emitter MAC (`AF:` analog, `DF:` digital video link) and station |
 
 ### Webhooks
 | Method | Endpoint | Description |
@@ -543,6 +698,6 @@ drone-sentinel/  (standalone-mapper-meshtastic)
 `-- mapper_test/
     |-- fake_meshtastic_radio.py   # Fake radio (USB pty or TCP) with a demo mesh
     |-- test_mesh_direct.py        # End-to-end test of the direct radio input
-    |-- level1_bearing_sim.py      # Level 1 bearing stations over the HTTP API
+    |-- level1_bearing_sim.py      # Level 1 bearing stations (analog, or --wideband) over the HTTP API
     `-- mapper_test.py             # Simulated Remote ID drones over the HTTP API
 ```
