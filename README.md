@@ -214,58 +214,6 @@ header as the 19/20 pins the V3 wiring used.
 
 </details>
 
-### Set up the Heltec V4 (Meshtastic)
-
-<details>
-<summary>Expand</summary>
-
-Flash stock Meshtastic with the official [Meshtastic Web Flasher](https://flasher.meshtastic.org/)
-(Chrome or Edge, device **Heltec V4**). If the browser doesn't see the board,
-hold the **PRG** button while plugging it in. If you'd rather use PlatformIO,
-Meshtastic's firmware is a PlatformIO project too: clone
-`meshtastic/firmware` with `--recursive`, open it in VS Code and run Upload
-under `env:heltec-v4`.
-
-Then configure the region and the serial module, either in the Meshtastic app
-(**Settings → Module Configuration → Serial**: enabled, RX 47, TX 48,
-115200 baud, mode TEXTMSG) or with the Python CLI while the Heltec is on USB:
-
-```bash
-pip3 install meshtastic
-meshtastic --set lora.region EU_868     # your region: US, EU_868, ANZ, JP, KR, ...
-meshtastic --set serial.enabled true --set serial.mode TEXTMSG \
-           --set serial.baud BAUD_115200 --set serial.rxd 47 --set serial.txd 48
-```
-
-`serial.rxd` is the pin the Heltec listens on (wired to the XIAO's TX) and
-`serial.txd` the pin it sends on.
-
-Do this on every Heltec, field and home, and put them all on the same primary
-channel. TEXTMSG sends every line on the primary channel. Give that channel
-your own name and key, otherwise detections go out on the public default
-mesh. The [Meshtastic channel docs](https://meshtastic.org/docs/configuration/radio/channels/)
-cover copying a channel URL between radios.
-
-For a station that will run unattended:
-
-```bash
-meshtastic --set power.is_power_saving false   # power saving switches the serial port off
-meshtastic --set bluetooth.enabled false       # once configured: saves power, nothing to pair with on a pole
-```
-
-Keep the `CLIENT` role on every radio with a XIAO attached. Before you switch
-Bluetooth off, set up [remote administration](https://meshtastic.org/docs/configuration/remote-admin/)
-so you can still change settings over the mesh.
-
-> **Coming from a Heltec V3?** The V3 setup used `serial.rxd 19` /
-> `serial.txd 20`. On the V4, GPIO19/20 are the USB-C data lines: the V4
-> drops the V3's USB-to-serial chip and uses the ESP32-S3's native USB.
-> GPIO38-42 now serve the GNSS connector and GPIO2/7/46 drive the new 28 dBm
-> amplifier. Move the two signal wires to 47/48 and set `serial.rxd 47`,
-> `serial.txd 48`. The XIAO side and its firmware don't change.
-
-</details>
-
 </details>
 
 ---
@@ -424,10 +372,16 @@ station.
 <details>
 <summary>Expand</summary>
 
-The quickest way is the [web flasher](https://tsuinami-1112.github.io/drone-sentinel/):
-open it in Chrome or Edge on a computer, plug the XIAO in and click
-**Install** under your station type. It installs the latest
-[release](../../releases) and needs nothing installed.
+### Flash the XIAO ESP32-S3
+
+**Recommended (web flasher)**
+
+Open the [web flasher](https://tsuinami-1112.github.io/drone-sentinel/) in
+Chrome or Edge on a computer, plug the XIAO in and click **Install** under your
+station type. It installs the latest [release](../../releases) and needs
+nothing installed.
+
+**Manual setup (PlatformIO or otherwise)**
 
 Build from source with PlatformIO in VS Code, as below, to change the
 [detection knobs](docs/REFERENCE.md#detection-knobs) or to run code newer than
@@ -525,6 +479,58 @@ pio device monitor -b 115200
 Detection knobs (stay on channel 6, drop fingerprints, dwell times) go in the
 environment's `build_flags`. See the
 [reference](docs/REFERENCE.md#detection-knobs).
+
+### Set up the Heltec V4 (Meshtastic)
+
+<details>
+<summary>Expand</summary>
+
+Flash stock Meshtastic with the official [Meshtastic Web Flasher](https://flasher.meshtastic.org/)
+(Chrome or Edge, device **Heltec V4**). If the browser doesn't see the board,
+hold the **PRG** button while plugging it in. If you'd rather use PlatformIO,
+Meshtastic's firmware is a PlatformIO project too: clone
+`meshtastic/firmware` with `--recursive`, open it in VS Code and run Upload
+under `env:heltec-v4`.
+
+Then configure the region and the serial module, either in the Meshtastic app
+(**Settings → Module Configuration → Serial**: enabled, RX 47, TX 48,
+115200 baud, mode TEXTMSG) or with the Python CLI while the Heltec is on USB:
+
+```bash
+pip3 install meshtastic
+meshtastic --set lora.region EU_868     # your region: US, EU_868, ANZ, JP, KR, ...
+meshtastic --set serial.enabled true --set serial.mode TEXTMSG \
+           --set serial.baud BAUD_115200 --set serial.rxd 47 --set serial.txd 48
+```
+
+`serial.rxd` is the pin the Heltec listens on (wired to the XIAO's TX) and
+`serial.txd` the pin it sends on.
+
+Do this on every Heltec, field and home, and put them all on the same primary
+channel. TEXTMSG sends every line on the primary channel. Give that channel
+your own name and key, otherwise detections go out on the public default
+mesh. The [Meshtastic channel docs](https://meshtastic.org/docs/configuration/radio/channels/)
+cover copying a channel URL between radios.
+
+For a station that will run unattended:
+
+```bash
+meshtastic --set power.is_power_saving false   # power saving switches the serial port off
+meshtastic --set bluetooth.enabled false       # once configured: saves power, nothing to pair with on a pole
+```
+
+Keep the `CLIENT` role on every radio with a XIAO attached. Before you switch
+Bluetooth off, set up [remote administration](https://meshtastic.org/docs/configuration/remote-admin/)
+so you can still change settings over the mesh.
+
+> **Coming from a Heltec V3?** The V3 setup used `serial.rxd 19` /
+> `serial.txd 20`. On the V4, GPIO19/20 are the USB-C data lines: the V4
+> drops the V3's USB-to-serial chip and uses the ESP32-S3's native USB.
+> GPIO38-42 now serve the GNSS connector and GPIO2/7/46 drive the new 28 dBm
+> amplifier. Move the two signal wires to 47/48 and set `serial.rxd 47`,
+> `serial.txd 48`. The XIAO side and its firmware don't change.
+
+</details>
 
 </details>
 
