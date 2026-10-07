@@ -25,7 +25,7 @@
 
 | **Level 1** · [`level1`](../../tree/level1) branch (in bench testing) | **Level 2** · [`level2-main`](../../tree/level2-main) branch (this one) |
 |---|---|
-| Finds drones by their **5.8 GHz analog FPV video link**, including drones that broadcast nothing else | Finds drones by what they **broadcast**: Remote ID (BLE + WiFi), DJI DroneID, MAVLink, WiFi/BLE fingerprints |
+| Finds drones by their **5.8 GHz analog and digital FPV video links**, including drones that broadcast nothing else | Finds drones by what they **broadcast**: Remote ID (BLE + WiFi), DJI DroneID, MAVLink, WiFi/BLE fingerprints |
 | XIAO ESP32-C5 and four patch antennas: each station measures a **compass bearing** to the transmitter | XIAO ESP32-S3 **decodes** the broadcast: position, altitude, serial / operator ID, pilot position |
 | A position needs **two or more stations** whose bearings cross | A position from **one station**, whenever the drone broadcasts it |
 
@@ -699,7 +699,7 @@ More (web UI, tile caching, vector layers) in the
 
 | Document | What's in it |
 |---|---|
-| [`docs/REFERENCE.md`](docs/REFERENCE.md) | Detection coverage, firmware variants and build knobs, offline maps, ADS-B, API, performance, project layout |
+| [`docs/REFERENCE.md`](docs/REFERENCE.md) | Detection coverage, level 1 bearing reports (analog and digital video links) and the digital-link system table, firmware variants and build knobs, offline maps, ADS-B, API, performance, project layout |
 | [`firmware-common/README.md`](firmware-common/README.md) | The shared detection library: protocols, JSON schema, limits |
 | [`node-mode-dualcore/README.md`](node-mode-dualcore/README.md) | Field/home node firmware internals and the dedup engine |
 
