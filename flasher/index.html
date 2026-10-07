@@ -2,6 +2,13 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<!-- Content-Security-Policy: scripts run only from this site (the vendored
+     esp-web-tools under vendor/ and release.js), and the page may only fetch
+     from this site (manifests, images, version.json). A page with this policy
+     can't be made to load code from a CDN or an injected tag. GitHub Pages
+     can't send HTTP headers, so the policy is declared here instead. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="strict-origin-when-cross-origin">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Drone Sentinel // Web Flasher</title>
 <meta name="description" content="Install Drone Sentinel level 2 firmware on a XIAO ESP32 from the browser: field station, home station, standalone detector and the C3 / C5 variants.">
@@ -569,36 +576,16 @@
 <footer>
   <span id="footer-release">Preview build</span><br>
   Releases and image downloads &middot; <a href="https://github.com/tsuinami-1112/drone-sentinel/releases">github.com/tsuinami-1112/drone-sentinel/releases</a><br>
+  Image checksums &middot; <a href="firmware/SHA256SUMS">firmware/SHA256SUMS</a><br>
   Source &middot; <a href="https://github.com/tsuinami-1112/drone-sentinel">github.com/tsuinami-1112/drone-sentinel</a><br>
   Based on &middot; <a href="https://github.com/colonelpanichacks/drone-mesh-mapper">colonelpanichacks/drone-mesh-mapper</a>
 </footer>
 
 </main>
 
-<script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
-<script>
-  // version.json is written by flasher/build_site.py when the Firmware
-  // workflow publishes; a local copy of this page just says "preview".
-  (function () {
-    var repo = 'https://github.com/tsuinami-1112/drone-sentinel';
-    fetch('version.json', { cache: 'no-store' })
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (v) {
-        if (!v || !v.version) return;
-        var tag = encodeURIComponent(v.version);
-        var commit = (v.commit || '').slice(0, 7);
-        var release = document.getElementById('release');
-        release.textContent = 'RELEASE ';
-        var a = document.createElement('a');
-        a.href = repo + '/releases/tag/' + tag;
-        a.textContent = v.version;
-        release.appendChild(a);
-        release.appendChild(document.createTextNode(' · ' + (v.date || '') + (commit ? ' · ' + commit : '')));
-        document.getElementById('footer-release').textContent =
-          'Release ' + v.version + (v.date ? ' · built ' + v.date : '') + (commit ? ' from ' + commit : '');
-      })
-      .catch(function () {});
-  })();
-</script>
+<!-- esp-web-tools is served from this site: build_site.py unpacks the pinned
+     release into vendor/ and checks the tarball's SHA-256 first. -->
+<script type="module" src="./vendor/esp-web-tools/install-button.js"></script>
+<script src="./release.js"></script>
 </body>
 </html>
