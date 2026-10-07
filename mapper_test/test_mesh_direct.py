@@ -21,7 +21,10 @@ mesh, and checks what the mapper made of each:
     fix); a position saved by hand overriding the flashed one, and clearing
     it going back; a station placed by hand before it reported a position
     staying there when it later reports one; heartbeat status merged across
-    heartbeats that carry different fields
+    heartbeats that carry different fields; the same two stations hearing a
+    digital video link (wideband mesh lines as report_wideband_json cuts
+    them, tail first, at 191 bytes): both kept, crossed into a fix and named
+    DJI O4
   - the standalone firmwares' text alerts: "Drone: ...", the C5's
     "Drone[5G]: ...", "Pilot: ..." and "Possible drone (...) ..."
   - chat text and a message on another channel (ignored)
@@ -46,12 +49,13 @@ import urllib.request
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
-from fake_meshtastic_radio import FakeRadio, l1_mesh_heartbeat  # noqa: E402
+from fake_meshtastic_radio import FakeRadio, l1_mesh_heartbeat, l1_mesh_wideband  # noqa: E402
 from meshtastic.protobuf import portnums_pb2  # noqa: E402
 
 FS1, FS2, RX1, RX3, SA, PHONE = 0xA1B2C3D4, 0xB2C3D4E5, 0xC3D4E5F6, 0xD4E5F6A7, 0xE5F6A7B8, 0x0F0F0F0F
 RXL, RXB = 0x17171717, 0x18181818
 DRONE = (-33.8600, 151.2100)
+DRONE_WB = (-33.8620, 151.1950)                     # the digital link, west of both stations
 RX01_POS = (-33.8700, 151.2000)                     # older firmware: no position, placed by hand
 RX03_POS, RX03_HEADING = (-33.864512, 151.208834), 135   # flashed into RX03 (Station setup)
 
@@ -254,6 +258,38 @@ def main():
             err = math.hypot((fix['drone_lat'] - DRONE[0]) * 111320,
                              (fix['drone_long'] - DRONE[1]) * 111320 * math.cos(math.radians(DRONE[0])))
             check(err < 150, f'fix lands {err:.0f} m from the true position')
+
+        print('\nlevel 1 stations (wideband bearings: a digital video link)')
+        wb = l1_mesh_wideband('RX01', 0)
+        check(len(wb) <= 191 and wb.startswith('{"type":"wideband","mac":"DF:00:52:04:16:89","node_id":"RX01","freq_mhz":5769,')
+              and '"duty":95' in wb and '"conf"' not in wb and '"fp"' not in wb and wb.endswith(',"sector":0}'),
+              'the wideband mesh line keys the link to its channel; the 191-byte budget drops conf and fp, sector still fits')
+        long_wb = l1_mesh_wideband('STATION-NORTH-TOWER-01', 0)
+        check(long_wb is not None and len(long_wb) <= 191 and json.loads(long_wb).get('fc_mhz') == 5768.5,
+              'a 22-character node id still leaves the class and centre on the line')
+        rx03_rel = (bearing(*RX03_POS, *DRONE_WB) - RX03_HEADING) % 360
+        for num, nid, rel in ((RX1, 'RX01', bearing(*RX01_POS, *DRONE_WB)), (RX3, 'RX03', rx03_rel)):
+            radio.serial_line(num, l1_mesh_wideband(nid, rel, sector=1, seq=3))
+        wfix = wait_for(lambda: (lambda d: d if d.get('pos_src') == 'bearing_fix' else None)(
+            detections(base).get('df:00:52:04:16:89', {})))
+        check(wfix is not None and {'RX01', 'RX03'} <= set(wfix.get('fix_stations') or []),
+              "both stations' wideband reports of one DF: MAC pass the dedup and cross into a position fix")
+        if wfix:
+            err = math.hypot((wfix['drone_lat'] - DRONE_WB[0]) * 111320,
+                             (wfix['drone_long'] - DRONE_WB[1]) * 111320 * math.cos(math.radians(DRONE_WB[0])))
+            check(err < 150, f"the digital link's fix lands {err:.0f} m from its true position")
+            check(wfix.get('system') == 'DJI O4' and wfix.get('system_conf') in ('med', 'high'),
+                  f"an LTE-like 10 MHz link at 5768.5 MHz is named {wfix.get('system')} ({wfix.get('system_conf')})")
+            check(wfix.get('src') == 'wideband' and wfix.get('cls') == 'lte' and wfix.get('fc_mhz') == 5768.5
+                  and wfix.get('bw_mhz') == 10 and wfix.get('duty') == 95,
+                  "the mesh copy's class, centre, bandwidth and duty survive the mapper")
+        brg = {k.upper(): v for k, v in api(base, '/api/bearings').items()}
+        check({'RX01', 'RX03'} <= set(brg.get('DF:00:52:04:16:89') or {})
+              and {'RX01', 'RX03'} <= set(brg.get('AF:00:52:03:16:64') or {}),
+              '/api/bearings keys the digital link (DF:) beside the analog carrier (AF:)')
+        an = detections(base).get('af:00:52:03:16:64', {})
+        check(an.get('type') == 'analog_fm' and 'system' not in an and an.get('freq_mhz') == 5732,
+              'the analog carrier keeps its own track and gets no system label')
 
         moved = (-33.864600, 151.208900)
         api(base, '/api/stations', {'node_id': 'RX03', 'lat': moved[0], 'lon': moved[1]})
