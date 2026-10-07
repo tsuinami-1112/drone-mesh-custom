@@ -374,14 +374,14 @@ station.
 
 ### Flash the XIAO ESP32-S3
 
-**Recommended (web flasher)**
+### Recommended (web flasher)
 
 Open the [web flasher](https://tsuinami-1112.github.io/drone-sentinel/) in
 Chrome or Edge on a computer, plug the XIAO in and click **Install** under your
 station type. It installs the latest [release](../../releases) and needs
 nothing installed.
 
-**Manual setup (PlatformIO or otherwise)**
+### Manual setup (PlatformIO or otherwise)
 
 Build from source with PlatformIO in VS Code, as below, to change the
 [detection knobs](docs/REFERENCE.md#detection-knobs) or to run code newer than
