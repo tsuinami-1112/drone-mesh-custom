@@ -109,7 +109,9 @@ Hardware to line up in parallel so sessions D–H are not the long pole: four
 patches and pigtails, a u.FL removal tool, a turntable or compass marks for 15°
 steps, the PE42442 evaluation board, a step attenuator, NTSC and PAL cameras,
 access to a v2 RX5808 station, a 5 GHz access point and a laptop to load it,
-and whatever digital kit stage 8 will get.
+and the stage 8 kits. What to buy for all of this, with the analog VTX spec
+session B needs, the attenuator set and the stage 8 kits in purchase order
+under the no-goggles rule, is `docs/Level1-Bench-Shopping-List.md`.
 
 ---
 
@@ -248,7 +250,9 @@ Everything is done on a bare board.
   terminal opened in the `level1-c5phy` folder.
 - A VTX with a camera attached, set to lowest power, that can be set to A1
   (5865), R3 (5732), A7 (5745), B1 (5733) and, if it has them, E4 (5645) and E8
-  (5945).
+  (5945). A full 40- or 48-channel unit has them, a 37-channel "US" unit does
+  not; `docs/Level1-Bench-Shopping-List.md` names the unit, the camera and the
+  attenuators that B1c needs.
 - The record sheet at the end of this part, printed or open.
 
 **Before you start.** Lay the board on a non-conductive surface (paper, wood,
