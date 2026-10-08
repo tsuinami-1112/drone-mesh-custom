@@ -190,8 +190,12 @@ files both under `docs/bench/`.
    times. It needs `make`, a C compiler (gcc by default, `make CC=clang` works
    too) and `python3`; on Windows run it in WSL after
    `sudo apt install build-essential python3`.
-2. First `pio --version`: it must report 6.2.0 or newer (`pio upgrade` if
-   not); the pinned platform refuses older cores with `IncompatiblePlatform`.
+2. First `pio system info`: Core must be 6.2.0 or newer and its Python 3.10
+   or newer; the pinned platform refuses older cores with
+   `IncompatiblePlatform`, and its setup script exits on an older Python.
+   `pio upgrade` fixes the first only when the Python is already 3.9 or newer;
+   otherwise give Core a venv of a current Python (root README, "Install the
+   tools") and use that `pio`.
    Then both builds once: `pio run -e seeed_xiao_esp32c5` and
    `pio run -e seeed_xiao_esp32c5_dualband` from `level1-c5phy/` (the first run
    downloads the platform and the Arduino libs). `platformio.ini` pins the
