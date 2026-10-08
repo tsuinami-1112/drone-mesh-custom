@@ -1,7 +1,11 @@
 # Desktop tests for the level1-c5phy signal processing: cd test/host && make
 # The suite runs twice: with the default plan (5.8 GHz only, L4..L8) and as the
 # dual-band build with the full Lowband (-DDUAL_BAND=1 -DLOWBAND=2).
-CC      ?= gcc
+# GNU make predefines CC = cc, so "CC ?= gcc" would never apply; override the
+# built-in default only, keeping CC= from the command line or the environment.
+ifeq ($(origin CC),default)
+CC      = gcc
+endif
 CFLAGS  ?= -std=gnu11 -O2 -Wall -Wextra -Wno-unused-parameter
 SRC     = ../../src
 OBJS    = $(SRC)/demod.c $(SRC)/bearing.c $(SRC)/report.c $(SRC)/fpv_channels.c $(SRC)/switch_bits.c $(SRC)/sweep_decide.c

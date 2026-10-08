@@ -187,7 +187,9 @@ files both under `docs/bench/`.
 
 1. `make -C level1-c5phy/test/host` → the suite runs twice (default plan and
    dual-band) and must end with `ALL TESTS PASSED` and `check_json: … OK` both
-   times.
+   times. It needs `make`, a C compiler (gcc by default, `make CC=clang` works
+   too) and `python3`; on Windows run it in WSL after
+   `sudo apt install build-essential python3`.
 2. Both builds once: `pio run -e seeed_xiao_esp32c5` and
    `pio run -e seeed_xiao_esp32c5_dualband` from `level1-c5phy/` (the first run
    downloads the platform and the Arduino libs). `platformio.ini` pins the
