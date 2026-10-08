@@ -576,6 +576,8 @@ the patches change.
 
 - [VS Code](https://code.visualstudio.com/) with the **PlatformIO IDE** extension,
   or the PlatformIO CLI on its own: `pip install platformio`.
+- PlatformIO Core **6.2.0 or newer** (`pio --version`): the pinned pioarduino
+  platform refuses older cores. An existing install updates with `pio upgrade`.
 - [Git](https://git-scm.com/downloads).
 - Linux only: USB serial access, then log out and back in.
   ```bash
@@ -1122,6 +1124,7 @@ The full contract (every field, the mesh line, the heartbeat) is in
 | Build stops with `station settings: …` | A value in `stations.ini` is wrong; the message names it |
 | Build prints `antenna beamwidth ~55 deg: four sectors 90 deg apart leave holes` | The gain entered (or the beamwidth) is high for a four-sector box; above about 9.5 dBi the sector boundaries go blind. A warning, not an error |
 | Host tests stop with `make: cc: Not a directory`, `cc: command not found` or `gcc: command not found` | No C compiler in that shell (a fresh WSL or Linux install). `sudo apt install build-essential python3`, then `make -C level1-c5phy/test/host` again. The "Not a directory" wording is WSL's Windows PATH entries getting in the way of the lookup, not a path problem in the repo |
+| `IncompatiblePlatform: Development platform 'espressif32' is not compatible with PlatformIO Core v6.1.x and depends on PlatformIO Core >=6.2.0` (the platform installs, then is removed again) | PlatformIO Core older than 6.2.0, usually the IDE's bundled core. `pio upgrade` (check with `pio --version`), then build again; the platform re-installs by itself |
 | Build stops with `Failed to install Python dependencies into penv`, exit code `3221225622` (`0xC0000096`), on Windows | A VPN or security product injects a Winsock LSP into `uv.exe`, the installer pioarduino's `penv_setup.py` runs to fill its Python environment (Astrill's `ASProxy64.dll` does this). Root fix, from an elevated PowerShell: `Set-ProcessMitigation -Name uv.exe -Enable DisableExtensionPoints` (a non-elevated shell reports `C0000022` for every setting), or uninstall the vendor's LSP (Astrill's client has an LSP Uninstall entry under Help) and restart. Detour: with `%USERPROFILE%\.platformio\penv\Scripts\python.exe -m pip install`, install the packages `penv_setup.py` lists (its `python_deps` table), then build with `PLATFORMIO_OFFLINE=1` set, which skips the dependency step; if the build then stops at `Failed to install esptool from …\tool-esptoolpy`, `pip install -e` that folder with the same `python.exe` and build again |
 | The build keeps an older pioarduino platform (the `platform.json` under `~/.platformio/platforms` says a version other than 55.03.312), or an override such as `PLATFORMIO_OFFLINE=1` does nothing | PlatformIO never re-downloads a platform it installed from a URL, so a `stable` URL keeps whatever it fetched first. `platformio.ini` pins release 55.03.312-1 (the same content as `stable` on 2026-10-08), which installs fresh beside the old copy on the next build; to force it by hand, delete the `espressif32*` folder under `~/.platformio/platforms` and build again |
 

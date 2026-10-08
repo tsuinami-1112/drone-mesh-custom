@@ -36,7 +36,8 @@ push, and their shared level 1 functions stay byte-identical
 is retired and will be restarted from `level1` plus `level2-main` later.
 
 **Builds and tests.** From `level1-c5phy/`: `pio run -e seeed_xiao_esp32c5`
-and `pio run -e seeed_xiao_esp32c5_dualband` (PlatformIO 6.2.0, pioarduino
+and `pio run -e seeed_xiao_esp32c5_dualband` (PlatformIO Core 6.2.0 or
+newer, the minimum the pinned platform's `engines` field accepts; pioarduino
 platform pinned in `platformio.ini` to release 55.03.312-1, Arduino core
 3.3.12 / ESP-IDF 5.5). The pin replaced pioarduino's `stable` URL on
 2026-10-08, when the two assets were byte-identical: PlatformIO never
@@ -664,4 +665,4 @@ what changed (commit), what is still open.
 | Date | Board / station | Stage | Data | Edits (commit) | Open |
 |---|---|---|---|---|---|
 | 2026-10-08 | — | plan written | no hardware yet | `docs/Level1-Bench-Data-Plan.md`, `CLAUDE.md`, `docs/bench/`, `docs/tools/`, `test/model/` | all stages |
-| 2026-10-08 | user's Windows bench PC; cloud container | session A (desk) | `pio run` on the PC stopped at the penv dependency step: a VPN's Winsock LSP crashes `uv.exe` (exit 3221225622). In the container, on the pinned platform: host tests pass, both environments and the strong-symbol build link (RAM 44.8 %, flash 28.8 %), the six PHY calls are global in `esp32c5/ld/libphy.a`, `lmac_stop_hw_txq` and `phy_track_pll_deinit` in `lib/`; libs 5.5.5+sha.b774170ff46, Arduino 3.3.12; sdkconfig: `CONFIG_BT_ENABLED=y`, `CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y`, `CONFIG_ESP_PHY_CALIBRATION_MODE=0`, no `CONFIG_PM_ENABLE` | platform pinned to pioarduino 55.03.312-1; README troubleshooting rows; run-order session A step 3 path; this note | the user's own build after the `uv.exe` mitigation, then stage 0 |
+| 2026-10-08 | user's Windows bench PC; cloud container | session A (desk) | `pio run` on the PC stopped at the penv dependency step: a VPN's Winsock LSP crashes `uv.exe` (exit 3221225622); after the pin, the PC's PlatformIO Core 6.1.19 refused the platform (`IncompatiblePlatform`, needs 6.2.0): `pio upgrade`. In the container, on the pinned platform: host tests pass, both environments and the strong-symbol build link (RAM 44.8 %, flash 28.8 %), the six PHY calls are global in `esp32c5/ld/libphy.a`, `lmac_stop_hw_txq` and `phy_track_pll_deinit` in `lib/`; libs 5.5.5+sha.b774170ff46, Arduino 3.3.12; sdkconfig: `CONFIG_BT_ENABLED=y`, `CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y`, `CONFIG_ESP_PHY_CALIBRATION_MODE=0`, no `CONFIG_PM_ENABLE` | platform pinned to pioarduino 55.03.312-1; README troubleshooting rows; run-order session A step 3 path; this note | the user's own build after the `uv.exe` mitigation, then stage 0 |

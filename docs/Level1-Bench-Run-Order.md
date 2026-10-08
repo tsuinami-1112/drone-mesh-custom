@@ -190,7 +190,9 @@ files both under `docs/bench/`.
    times. It needs `make`, a C compiler (gcc by default, `make CC=clang` works
    too) and `python3`; on Windows run it in WSL after
    `sudo apt install build-essential python3`.
-2. Both builds once: `pio run -e seeed_xiao_esp32c5` and
+2. First `pio --version`: it must report 6.2.0 or newer (`pio upgrade` if
+   not); the pinned platform refuses older cores with `IncompatiblePlatform`.
+   Then both builds once: `pio run -e seeed_xiao_esp32c5` and
    `pio run -e seeed_xiao_esp32c5_dualband` from `level1-c5phy/` (the first run
    downloads the platform and the Arduino libs). `platformio.ini` pins the
    pioarduino platform to release 55.03.312-1, so the build log's first lines
