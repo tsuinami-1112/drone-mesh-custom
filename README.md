@@ -101,6 +101,7 @@ stations that hear the same transmitter.
 |---|---|
 | [`level1-c5phy/`](level1-c5phy/) | Station firmware for the Seeed XIAO ESP32-C5 (PlatformIO) and its desktop tests. [Its README](level1-c5phy/README.md) has the full serial contract |
 | [`docs/Level1-Detection-Internals.md`](docs/Level1-Detection-Internals.md) | How the station decides, for whoever maintains the code: the per-window metrics, the analog gate, the wideband path and its thresholds, pull-in, the channel plan, dual band, the antenna model, report keys, what the tests prove |
+| [`docs/Level1-Bench-Data-Plan.md`](docs/Level1-Bench-Data-Plan.md) | The bench campaign's working memory: which stage measures which constant, document or mapper row, the decision rule for each outcome, what goes back to the user, the log. Raw records go to [`docs/bench/`](docs/bench/) |
 | [`docs/Level1-Station-v3-C5PHY-Bench-Guide.pdf`](docs/Level1-Station-v3-C5PHY-Bench-Guide.pdf) | Full BOM, block diagram, power budget and the stage 0–8 bench procedure with record sheets ([HTML](docs/Level1-Station-v3-C5PHY-Bench-Guide.html)) |
 | [`level2-main`](../../tree/level2-main) branch | Everything a level 1 station shares with the rest of the network: the mapper (`mesh-mapper.py`, with level 1 bearing support for analog and digital links), the home-station firmware (`node-mode-dualcore`, `home_node`), the Heltec V4 Meshtastic setup, the Raspberry Pi installer and a level 1 station simulator. Also the level 2 detectors (Remote ID, DJI DroneID, MAVLink, fingerprints) |
 

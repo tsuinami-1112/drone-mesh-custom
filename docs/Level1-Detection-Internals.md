@@ -620,7 +620,9 @@ ones), raised-cosine single-carrier QPSK, FM video with a per-line picture at
 firmware's own gain loop. They are models of the waveform families, not of
 any product: no DJI, Walksnail or HDZero capture has been fed to the code.
 
-**What only the bench can prove** (stages in the bench guide):
+**What only the bench can prove** (stages in the bench guide; which constant,
+document and mapper row each measurement moves, and the rule for it, is
+`docs/Level1-Bench-Data-Plan.md`):
 
 - that this core's libphy exports the undocumented calls and the diagnostic
   bus delivers I/Q at all (`"rf":true`, `captures` climbing, `stuck` 0): stages

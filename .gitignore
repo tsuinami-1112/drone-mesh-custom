@@ -17,6 +17,7 @@ level1-c5phy/test/host/test_level1
 level1-c5phy/test/host/test_level1_dualband
 level1-c5phy/test/host/json_samples.txt
 level1-c5phy/test/host/json_samples_dualband.txt
+level1-c5phy/test/model/sim_skirt
 
 # ── Python (the scripts in docs/img/) ──────────────────────
 __pycache__/
