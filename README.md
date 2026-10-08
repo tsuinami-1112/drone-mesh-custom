@@ -137,7 +137,9 @@ Per station. Prices and the full list (enclosure, solar, passives) are in the
 
 For the bench you also want a 5.8 GHz VTX with an NTSC and a PAL camera, a
 step attenuator, and for stage 8 whatever digital kit you have (an
-OpenIPC/wfb-ng link, HDZero, DJI O4 with goggles, Walksnail).
+OpenIPC/wfb-ng link, HDZero, DJI O4 with goggles, Walksnail). Sheet 10 of the
+bench guide says what each piece of kit is used for, stage by stage, and holds
+the filter-skirt record that sets `WB_ANALOG_OWN_MHZ`.
 
 ### Single-band or dual-band?
 
@@ -1016,7 +1018,7 @@ video kit at stage 8. Don't move on until a stage passes.
 | 2 Channel coverage | `x`, wait for a heartbeat. Then `h E4`, `h E8`, `h D1`, `h L4` (dual-band: `h G1`, `h G5`) | `tune_fail` 0, `channels` 50 (55 dual-band); E8 hears a VTX on E8 but not one on E5; D1 and L4 hold without a tune error. The D and L points are Wi-Fi bands where a VTX may not be keyed in most countries: a 5 GHz access point on Wi-Fi channel 36 (5180 MHz) is the test signal for D1 |
 | 3 Selectivity | VTX on R3, scanning. Then hold the channel nearest a live 5 GHz AP, then let the station scan past it | One R3 report (B1/F1 folded in), nothing > 40 MHz away; the AP raises `level_db` but `q_phase` stays < 40, and it produces no `wideband` report either (`cv2` > 1.5 or duty < 75). A saturated AP (a long file copy) is reported as `dot11` with `duty` ≥ 90: expected, it is a real emitter |
 | 4 Video | NTSC camera: hold its channel, `v`. Then PAL. Then camera unplugged | ≥ 3/8 windows read `NTSC` 15 734 Hz / `PAL` 15 625 Hz; unplugged gives `present:0` |
-| 5 Sensitivity | VTX through a step attenuator; record `level_db`, `q_phase` and `cv2` against input; compare with an RX5808 station | ~1 dB per dB over ~60 dB; `q_phase` ≥ 40 and `cv2` ≤ 0.5 all the way down to the threshold; set the `RSSI_CAL_*` constants and `DETECT_LEVEL_DB` (dual-band: the `_24` set on a G channel) |
+| 5 Sensitivity | VTX through a step attenuator; record `level_db`, `q_phase` and `cv2` against input; compare with an RX5808 station. Then the filter skirt: VTX on R4 at `level_db` 35–40, hold the channels 11–31 MHz off it (bench guide sheet 10) | ~1 dB per dB over ~60 dB; `q_phase` ≥ 40 and `cv2` ≤ 0.5 all the way down to the threshold; set the `RSSI_CAL_*` constants and `DETECT_LEVEL_DB` (dual-band: the `_24` set on a G channel). Skirt: the largest offset where `level_db` ≥ 8 with `cv2` 0.5–1.5, plus 5 MHz, is the `WB_ANALOG_OWN_MHZ` the station needs (firmware: 30) |
 | 6 Switch and pattern | [Map the sectors](#checking-the-mapping-on-the-bench), mount the patches, VTX at 30 m, rotate the box in 15° steps | Each `s n` follows its patch; the bearing error against the derived K (boot line `bearing_k`, 2.97 for 8 dBi) gives the measured K: record it as `custom_bearing_k` for the station and as `BEARING_K_SCALE` (2.5 × measured / derived) for the antenna family |
 | 7 Field | Two stations 300–500 m apart, positions and headings set; walk a VTX over 10 marked points; 72 h on solar | The 90 % circle contains the true position on ≥ 9/10; heartbeat gap never > 5 min |
 | 8 Digital | Per kit you have (OpenIPC/wfb-ng, HDZero, DJI O4 with goggles, Walksnail): `h` its channel, `w` a few times; then `x` with the mapper open; then rotate the box in 15° steps as in stage 6 | `w` reads `duty` ≥ 75 and a `cls` that fits (`dot11` with `r128` ≥ 0.10 and `scan_lag` 128 for OpenIPC; `lte` with `r2667` ≥ 0.03 and `scan_lag` 2665–2669 for DJI; HDZero and Walksnail unknown, record what they read), `bw_mhz` and `fc_mhz` matching the kit's setting; one `wideband` report per sweep, and the mapper names the system; bearing error within ±σ at 0/15/30/45°, giving the digital K |
