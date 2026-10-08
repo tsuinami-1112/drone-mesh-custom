@@ -190,16 +190,24 @@ files both under `docs/bench/`.
    times.
 2. Both builds once: `pio run -e seeed_xiao_esp32c5` and
    `pio run -e seeed_xiao_esp32c5_dualband` from `level1-c5phy/` (the first run
-   downloads the platform and the Arduino libs).
+   downloads the platform and the Arduino libs). `platformio.ini` pins the
+   pioarduino platform to release 55.03.312-1, so the build log's first lines
+   must name that release and Arduino core 3.3.12. A Windows build that stops at
+   "Failed to install Python dependencies into penv" with exit 3221225622 is a
+   VPN or security product crashing the platform's `uv.exe`: the root README's
+   troubleshooting table has the fix and a detour.
 3. Confirm the blob check on the installed package (expect 6, 1 and 1 lines):
    ```
-   L=~/.platformio/packages/framework-arduinoespressif32-libs/esp32c5/lib
-   nm --defined-only $L/libphy.a | grep -E " T phy_(disable_agc|rfagc_disable|wifi_fbw_sel|force_rx_gain|set_freq|chip_set_chan_offset)$"
-   nm --defined-only $L/libpp.a | grep -w lmac_stop_hw_txq
-   nm --defined-only $L/libesp_phy.a | grep -w phy_track_pll_deinit
+   P=~/.platformio/packages/framework-arduinoespressif32-libs/esp32c5
+   nm --defined-only $P/ld/libphy.a | grep -E " T phy_(disable_agc|rfagc_disable|wifi_fbw_sel|force_rx_gain|set_freq|chip_set_chan_offset)$"
+   nm --defined-only $P/lib/libpp.a | grep -w lmac_stop_hw_txq
+   nm --defined-only $P/lib/libesp_phy.a | grep -w phy_track_pll_deinit
    ```
-   (host `nm` reads RISC-V archives; the toolchain's `riscv32-esp-elf-nm` works
-   too.)
+   (the Arduino libs package keeps `libphy.a` in `ld/`, the other two in
+   `lib/`; done on 2026-10-08 in the cloud container on the pinned platform:
+   6, 1 and 1 lines, libs 5.5.5+sha.b774170ff46, and the strong-symbol
+   build of step 4 linked. Host `nm` reads RISC-V archives; the toolchain's
+   `riscv32-esp-elf-nm` works too.)
 4. Strong-symbol build: in `platformio.ini` remove the `; ` in front of the
    commented `-DC5PHY_STRONG_PHY_SYMBOLS=1` line, run
    `pio run -e seeed_xiao_esp32c5`, it must link; put the `; ` back.

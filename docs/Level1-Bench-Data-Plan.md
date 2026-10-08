@@ -37,15 +37,24 @@ is retired and will be restarted from `level1` plus `level2-main` later.
 
 **Builds and tests.** From `level1-c5phy/`: `pio run -e seeed_xiao_esp32c5`
 and `pio run -e seeed_xiao_esp32c5_dualband` (PlatformIO 6.2.0, pioarduino
-platform, Arduino core 3.3 / ESP-IDF 5.5). Host tests: `make -C
-level1-c5phy/test/host` (gcc, python3; runs the suite twice, default plan and
-`-DDUAL_BAND=1 -DLOWBAND=2`, then `check_json.py`). CI
-(`.github/workflows/firmware.yml`) runs the same on every push to `level1`.
-Nothing is pushed red: host tests and both builds first. In the Anthropic
-cloud container the PlatformIO toolchain download fails TLS verification
-until the proxy CA (`/root/.ccr/ca-bundle.crt`) is appended to the certifi
-`cacert.pem` files pioarduino's `penv_setup.py` points at; the user authorised
-that edit on 2026-10-07; never disable verification instead.
+platform pinned in `platformio.ini` to release 55.03.312-1, Arduino core
+3.3.12 / ESP-IDF 5.5). The pin replaced pioarduino's `stable` URL on
+2026-10-08, when the two assets were byte-identical: PlatformIO never
+re-downloads a platform it installed from a URL, so a `stable` URL can leave
+an older copy building for ever, and `level2-main` pins the same release.
+Host tests: `make -C level1-c5phy/test/host` (gcc, python3; runs the suite
+twice, default plan and `-DDUAL_BAND=1 -DLOWBAND=2`, then `check_json.py`).
+CI (`.github/workflows/firmware.yml`) runs the same on every push to
+`level1`. Nothing is pushed red: host tests and both builds first. In the
+Anthropic cloud container the PlatformIO toolchain download fails TLS
+verification until the proxy CA (`/root/.ccr/ca-bundle.crt`) is appended to
+the certifi `cacert.pem` files pioarduino's `penv_setup.py` points at; the
+user authorised that edit on 2026-10-07; never disable verification instead.
+On a Windows machine whose VPN or security product injects a Winsock LSP,
+the `uv.exe` that `penv_setup.py` runs crashes with exit 3221225622
+(`0xC0000096`) and the build stops at "Failed to install Python dependencies
+into penv"; the root `README.md` troubleshooting table has the fix and the
+detour.
 
 **Where the numbers live.** Every tunable is a `#define` in
 `level1-c5phy/include/config.h`, overridable per station with `-D` in
@@ -655,3 +664,4 @@ what changed (commit), what is still open.
 | Date | Board / station | Stage | Data | Edits (commit) | Open |
 |---|---|---|---|---|---|
 | 2026-10-08 | — | plan written | no hardware yet | `docs/Level1-Bench-Data-Plan.md`, `CLAUDE.md`, `docs/bench/`, `docs/tools/`, `test/model/` | all stages |
+| 2026-10-08 | user's Windows bench PC; cloud container | session A (desk) | `pio run` on the PC stopped at the penv dependency step: a VPN's Winsock LSP crashes `uv.exe` (exit 3221225622). In the container, on the pinned platform: host tests pass, both environments and the strong-symbol build link (RAM 44.8 %, flash 28.8 %), the six PHY calls are global in `esp32c5/ld/libphy.a`, `lmac_stop_hw_txq` and `phy_track_pll_deinit` in `lib/`; libs 5.5.5+sha.b774170ff46, Arduino 3.3.12; sdkconfig: `CONFIG_BT_ENABLED=y`, `CONFIG_ESP_COEX_SW_COEXIST_ENABLE=y`, `CONFIG_ESP_PHY_CALIBRATION_MODE=0`, no `CONFIG_PM_ENABLE` | platform pinned to pioarduino 55.03.312-1; README troubleshooting rows; run-order session A step 3 path; this note | the user's own build after the `uv.exe` mitigation, then stage 0 |
