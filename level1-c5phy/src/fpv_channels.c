@@ -44,7 +44,9 @@ static const FpvChannel k_channels_all[] = {
     /* FatShark / Airwave */
     {'F',1,5740},{'F',2,5760},{'F',3,5780},{'F',4,5800},{'F',5,5820},{'F',6,5840},{'F',7,5860},{'F',8,5880},
 #if GAP_CHANNELS
-    /* The two holes of the table that no pull-in reaches from a neighbour */
+    /* The two 20 MHz holes of the analog table (E3 5665 / E2 5685, E1 5705 / A8
+     * 5725): a carrier there is a table channel with a key of its own rather
+     * than a pull-in keyed to a neighbour */
     {'X',1,5675},{'X',2,5715},
 #endif
 #if SCAN_5G1

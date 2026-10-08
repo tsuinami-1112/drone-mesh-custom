@@ -99,9 +99,9 @@ again. The plan is 55 channels on the dual-band build, 58 with everything on;
 E6, E7, E8 at 5905-5945 MHz) sit above the last public 5 GHz centre and rely on
 `phy_set_freq` pulling the synthesizer up to 60 MHz past it, which bench stage 2
 proves; the same pull is what reaches the top digital channels, HDZero R8 at
-5917 MHz and Walksnail's 5914 MHz. A hit up there that merely mirrors a carrier
-at 5885 is dropped (`alias_drop` in the heartbeat); `-DC5PHY_MAX_MHZ=5885`
-removes those channels from the plan.
+5917 MHz and Walksnail's 5914 MHz. A hit, or a wideband candidate, up there
+that merely mirrors a carrier at 5885 is dropped (`alias_drop` in the heartbeat
+counts both); `-DC5PHY_MAX_MHZ=5885` removes those channels from the plan.
 
 The eleven top-side GPIOs cannot hold the eight I/Q lanes C5VRX uses next to
 the D4/D5 UART and the switch lines, so this station wires six: bits 9..7 of
@@ -259,6 +259,8 @@ bandwidth plus 5 MHz of each other.
 ```
 include/config.h      every tunable: pins, switch table, thresholds, calibration, the antenna model, the build variants
 src/main.cpp          sweep, sector measurement, analog gate, video check, wideband confirmation, pull-in, reports, bench console
+src/sweep_decide.c    the sweep's decisions: analog order and fold, the mirror test above 5885, pull-in picks,
+                      wideband fold, span and ownership by an analog carrier (WB_ANALOG_OWN_MHZ)            (plain C)
 src/c5phy_rf.cpp      Wi-Fi PHY receive-only bring-up and tuning (C5VRX port); auto band mode under DUAL_BAND
 src/iq_capture.cpp    PARLIO RX, one 16 KiB I/Q window at a time
 src/sector_switch.cpp SP4T control lines

@@ -16,6 +16,7 @@
 #include "report.h"
 #include "fpv_channels.h"
 #include "switch_bits.h"
+#include "sweep_decide.h"
 
 #define FS 40.0e6
 #define N  16384
@@ -784,6 +785,179 @@ static void test_wideband(double snr_db)
  * FM coherence of a video carrier, at the real noise floor (sigma = 1 LSB of
  * the 4-bit scale), for both lane modes. Printed for the record; the strict
  * checks above are what gate the build. */
+/* ---- The sweep's decision stage (sweep_decide.c) ---------------------------
+ * run_sweep measures; these functions decide what is reported. The cases are
+ * the real channel plan with hits and candidates placed by name. */
+static SweepChannel g_sw[SWEEP_MAX_CHANNELS];
+static int g_swn;
+static void sw_reset(void)
+{
+    g_swn = fpv_channel_count();
+    for (int i = 0; i < g_swn; i++) {
+        g_sw[i].freq_mhz = fpv_channel(i)->freq_mhz;
+        g_sw[i].level_db = 0.0f;
+        g_sw[i].hit = 0;
+        g_sw[i].wb = 0;
+    }
+}
+static int sw_hit(const char* name, float level) { int i = fpv_find(name); if (i >= 0) { g_sw[i].hit = 1; g_sw[i].level_db = level; } return i; }
+static int sw_wb(const char* name, float level)  { int i = fpv_find(name); if (i >= 0) { g_sw[i].wb = 1; g_sw[i].level_db = level; } return i; }
+/* config.h's defaults: PEAK_PICK 20, ALIAS_GUARD 2 dB / 5 MHz at the top centre, 2 pull-ins,
+ * WB_FOLD_MHZ 25, WB_ANALOG_OWN_MHZ as given, 2 passes */
+static SweepRules sw_rules(int own_mhz)
+{
+    SweepRules r = { 1, 20, 1, fpv_wifi_top_centre_mhz(), 2.0f, 5, 2, 25, own_mhz, 2 };
+    return r;
+}
+/* The channels of idx[] (those not dropped, when drop is given) as "R6 R3" */
+static void sw_names(const int* idx, const uint8_t* drop, int n, char* out, size_t cap)
+{
+    out[0] = 0;
+    for (int i = 0; i < n; i++) {
+        if (drop && drop[i]) continue;
+        const FpvChannel* c = fpv_channel(idx[i]);
+        char t[12];
+        snprintf(t, sizeof t, "%s%c%d", out[0] ? " " : "", c->band, c->number);
+        strncat(out, t, cap - strlen(out) - 1);
+    }
+}
+
+static void test_sweep_decide(void)
+{
+    SweepRules rules = sw_rules(30);
+    SweepAnalog an;
+    SweepWideband wb;
+    char s[128];
+    int picks[SWEEP_MAX_PASSES];
+
+    /* Nothing in the sweep */
+    sw_reset();
+    sweep_analog(g_sw, g_swn, &rules, &an);
+    int targets[SWEEP_MAX_CHANNELS] = {0};
+    CHECK(an.nh == 0 && sweep_pullin(g_sw, targets, g_swn, &an, &rules, picks) == 0, "empty sweep: no hits, no pull-ins");
+    sweep_wideband(g_sw, g_swn, &an, NULL, 0, &rules, &wb);
+    CHECK(wb.n == 0 && wb.owned == 0 && wb.alias_dropped == 0, "empty sweep: no wideband passes");
+
+    /* Analog: strongest first; the R3 / B1 / F1 overlap folds into the strongest, a far hit stays */
+    sw_reset(); sw_hit("R3", 20); sw_hit("B1", 18); sw_hit("F1", 15); sw_hit("R6", 25);
+    sweep_analog(g_sw, g_swn, &rules, &an);
+    sw_names(an.hits, an.drop, an.nh, s, sizeof s);
+    CHECK(an.nh == 4 && strcmp(s, "R6 R3") == 0, "analog order and fold: %d hits, reported '%s'", an.nh, s);
+    CHECK(an.alias_dropped == 0, "no mirrors in that sweep (%d)", an.alias_dropped);
+
+    /* Analog mirror: R8 reading the E5 carrier within 2 dB is the parked synthesizer's image; 6 dB apart it is a second carrier */
+    sw_reset(); sw_hit("E5", 20.0f); sw_hit("R8", 20.8f);
+    sweep_analog(g_sw, g_swn, &rules, &an);
+    sw_names(an.hits, an.drop, an.nh, s, sizeof s);
+    CHECK(strcmp(s, "E5") == 0 && an.alias_dropped == 1, "analog mirror: reported '%s', alias_dropped %d", s, an.alias_dropped);
+    sw_reset(); sw_hit("E5", 20.0f); sw_hit("R8", 26.0f);
+    sweep_analog(g_sw, g_swn, &rules, &an);
+    sw_names(an.hits, an.drop, an.nh, s, sizeof s);
+    CHECK(strcmp(s, "R8 E5") == 0 && an.alias_dropped == 0, "two carriers up top: reported '%s' (%d mirrors)", s, an.alias_dropped);
+    SweepRules unguarded = rules;
+    unguarded.alias_guard = 0;
+    sw_reset(); sw_hit("E5", 20.0f); sw_hit("R8", 20.8f);
+    sweep_analog(g_sw, g_swn, &unguarded, &an);
+    sw_names(an.hits, an.drop, an.nh, s, sizeof s);
+    CHECK(strcmp(s, "R8 E5") == 0, "ALIAS_GUARD 0 keeps the mirror: '%s'", s);
+
+    /* Pull-in: strongest channel's target first, the neighbour's copy of it skipped, a target an analog
+     * hit owns skipped, two per sweep */
+    sw_reset();
+    memset(targets, 0, sizeof(targets));
+    int d1 = fpv_find("D1"), d2 = fpv_find("D2"), l4 = fpv_find("L4"), l5 = fpv_find("L5"), l7 = fpv_find("L7"), f2 = fpv_find("F2");
+    CHECK(d1 >= 0 && d2 >= 0 && l4 >= 0 && l5 >= 0 && l7 >= 0 && f2 >= 0, "pull-in fixture channels");
+    g_sw[d1].level_db = 15; targets[d1] = 5200;     /* D1 5190 sees a carrier at +10 MHz ... */
+    g_sw[d2].level_db = 14; targets[d2] = 5200;     /* ... D2 5210 the same one at -10 */
+    g_sw[l4].level_db = 12; targets[l4] = 5490;
+    g_sw[l5].level_db = 10; targets[l5] = 5490;
+    g_sw[l7].level_db = 9;  targets[l7] = 5600;     /* a third carrier: over the budget of two */
+    g_sw[f2].level_db = 30; targets[f2] = 5755;     /* the strongest ask, but the R4 hit owns 5755 */
+    sw_hit("R4", 35);
+    sweep_analog(g_sw, g_swn, &rules, &an);
+    int np = sweep_pullin(g_sw, targets, g_swn, &an, &rules, picks);
+    CHECK(np == 2 && picks[0] == 5200 && picks[1] == 5490, "pull-in picks: %d (%d %d)", np, np > 0 ? picks[0] : 0, np > 1 ? picks[1] : 0);
+
+    /* Wideband fold: one 20 MHz link seen on F3 / A5 / B4 / R5 is keyed to the strongest, span = the footprint */
+    sw_reset(); sw_wb("F3", 18); sw_wb("A5", 20); sw_wb("B4", 19); sw_wb("R5", 14);
+    sweep_analog(g_sw, g_swn, &rules, &an);
+    sweep_wideband(g_sw, g_swn, &an, NULL, 0, &rules, &wb);
+    CHECK(wb.n == 1 && wb.idx[0] == fpv_find("A5") && wb.span_mhz[0] == 26,
+          "wb fold: n %d idx %d span %d", wb.n, wb.n ? wb.idx[0] : -1, wb.n ? wb.span_mhz[0] : -1);
+    CHECK(wb.owned == 0 && wb.alias_dropped == 0, "wb fold: owned %d alias %d", wb.owned, wb.alias_dropped);
+    /* a candidate folds into the strongest only: F4 goes with F3, A3 (45 MHz from F3) stands alone */
+    sw_reset(); sw_wb("F3", 20); sw_wb("F4", 18); sw_wb("A3", 16);
+    sweep_wideband(g_sw, g_swn, &an, NULL, 0, &rules, &wb);
+    CHECK(wb.n == 2 && wb.idx[0] == fpv_find("F3") && wb.span_mhz[0] == 20 && wb.idx[1] == fpv_find("A3") && wb.span_mhz[1] == 0,
+          "wb chain: n %d spans %d %d", wb.n, wb.span_mhz[0], wb.span_mhz[1]);
+    /* three separate links: strongest first, two per sweep */
+    sw_reset(); sw_wb("R4", 15); sw_wb("R6", 22); sw_wb("L4", 18);
+    sweep_wideband(g_sw, g_swn, &an, NULL, 0, &rules, &wb);
+    CHECK(wb.n == 2 && wb.idx[0] == fpv_find("R6") && wb.idx[1] == fpv_find("L4"), "wb budget: n %d", wb.n);
+
+    /* Ownership: a strong FM carrier on R4 leaves a noise-like image on B4 (+21 MHz) and A7 (-24) through
+     * the filter skirt (model). The old 20 MHz radius reported both as digital links; 30 owns them, and
+     * the unrelated link on L6 is reported instead. */
+    sw_reset(); sw_hit("R4", 35); sw_wb("B4", 12); sw_wb("A7", 11); sw_wb("L6", 9);
+    sweep_analog(g_sw, g_swn, &rules, &an);
+    SweepRules twenty = sw_rules(20);
+    sweep_wideband(g_sw, g_swn, &an, NULL, 0, &twenty, &wb);
+    CHECK(wb.n == 2 && wb.idx[0] == fpv_find("B4") && wb.idx[1] == fpv_find("A7") && wb.owned == 0,
+          "20 MHz radius let the skirt images through (n %d owned %d)", wb.n, wb.owned);
+    sweep_wideband(g_sw, g_swn, &an, NULL, 0, &rules, &wb);
+    CHECK(wb.n == 1 && wb.idx[0] == fpv_find("L6") && wb.owned == 2,
+          "30 MHz radius owns them and reports the far link (n %d owned %d)", wb.n, wb.owned);
+    /* a hit folded into a stronger one still owns: F1 (folded into R3) covers R4 at 29 MHz, R3 itself is 37 away */
+    sw_reset(); sw_hit("R3", 30); sw_hit("F1", 29); sw_wb("R4", 12);
+    sweep_analog(g_sw, g_swn, &rules, &an);
+    CHECK(an.nh == 2 && an.drop[1], "F1 folds into R3");
+    sweep_wideband(g_sw, g_swn, &an, NULL, 0, &rules, &wb);
+    CHECK(wb.n == 0 && wb.owned == 1, "a folded hit still owns (n %d owned %d)", wb.n, wb.owned);
+    /* a pull-in that found a carrier owns like a hit: 5200 covers the candidate on D3 5230 */
+    sw_reset(); sw_wb("D3", 12);
+    sweep_analog(g_sw, g_swn, &rules, &an);
+    int owner = 5200;
+    sweep_wideband(g_sw, g_swn, &an, &owner, 1, &rules, &wb);
+    CHECK(wb.n == 0 && wb.owned == 1, "pull-in owner: n %d owned %d", wb.n, wb.owned);
+    sweep_wideband(g_sw, g_swn, &an, NULL, 0, &rules, &wb);
+    CHECK(wb.n == 1 && wb.idx[0] == fpv_find("D3"), "no pull-in found: D3 reported (n %d)", wb.n);
+
+    /* Wideband mirror: a digital link at E5 shows again on E6, R8, E7 and E8 at its level when the
+     * synthesizer is parked at 5885; the fold only reaches E6, the mirror test the rest */
+    sw_reset(); sw_wb("E5", 20.0f); sw_wb("E6", 19.6f); sw_wb("R8", 20.3f); sw_wb("E7", 19.9f); sw_wb("E8", 20.1f);
+    sweep_analog(g_sw, g_swn, &rules, &an);
+    sweep_wideband(g_sw, g_swn, &an, NULL, 0, &rules, &wb);
+    CHECK(wb.n == 1 && wb.idx[0] == fpv_find("E5") && wb.span_mhz[0] == 0 && wb.alias_dropped == 4,
+          "wb mirror: n %d idx %d span %d alias %d", wb.n, wb.n ? wb.idx[0] : -1, wb.n ? wb.span_mhz[0] : -1, wb.alias_dropped);
+    sweep_wideband(g_sw, g_swn, &an, NULL, 0, &unguarded, &wb);
+    CHECK(wb.n == 2 && wb.alias_dropped == 0, "ALIAS_GUARD 0: the mirrors fold and compete (n %d)", wb.n);
+    /* a second link 6 dB under the first is its own: E5, then R8 folding E7 (span 8); E8 is over the budget */
+    sw_reset(); sw_wb("E5", 26.0f); sw_wb("R8", 20.3f); sw_wb("E7", 19.9f); sw_wb("E8", 20.1f);
+    sweep_wideband(g_sw, g_swn, &an, NULL, 0, &rules, &wb);
+    CHECK(wb.n == 2 && wb.idx[0] == fpv_find("E5") && wb.idx[1] == fpv_find("R8") && wb.span_mhz[1] == 8 && wb.alias_dropped == 0,
+          "two links up top: n %d second idx %d span %d alias %d", wb.n, wb.n > 1 ? wb.idx[1] : -1, wb.n > 1 ? wb.span_mhz[1] : -1, wb.alias_dropped);
+    /* E6 at E5's level reads as a mirror rather than folding; the fold would have hidden it anyway (span 0 instead of 20) */
+    sw_reset(); sw_wb("E5", 26.0f); sw_wb("E6", 25.5f);
+    sweep_wideband(g_sw, g_swn, &an, NULL, 0, &rules, &wb);
+    CHECK(wb.n == 1 && wb.idx[0] == fpv_find("E5") && wb.alias_dropped == 1, "E6 under E5: n %d alias %d", wb.n, wb.alias_dropped);
+    /* the reference can be an analog carrier near the top centre: F8's FM carrier, a candidate on R8 at its
+     * level is the mirror, one 4 dB louder on E8 is a link of its own (and 65 MHz from F8: not owned) */
+    sw_reset(); sw_hit("F8", 20.0f); sw_wb("R8", 20.5f); sw_wb("E8", 24.0f);
+    sweep_analog(g_sw, g_swn, &rules, &an);
+    sweep_wideband(g_sw, g_swn, &an, NULL, 0, &rules, &wb);
+    CHECK(wb.n == 1 && wb.idx[0] == fpv_find("E8") && wb.alias_dropped == 1, "analog reference: n %d alias %d", wb.n, wb.alias_dropped);
+
+    /* 2.4 GHz sits under the top centre: never a mirror (dual-band plan only) */
+    if (fpv_find("G3") >= 0) {
+        sw_reset(); sw_hit("E5", 20.0f); sw_wb("G3", 20.0f); sw_hit("G1", 20.0f);
+        sweep_analog(g_sw, g_swn, &rules, &an);
+        sw_names(an.hits, an.drop, an.nh, s, sizeof s);
+        CHECK(strcmp(s, "E5 G1") == 0 && an.alias_dropped == 0, "2.4 GHz hit kept: '%s'", s);
+        sweep_wideband(g_sw, g_swn, &an, NULL, 0, &rules, &wb);
+        CHECK(wb.n == 1 && wb.idx[0] == fpv_find("G3") && wb.alias_dropped == 0, "2.4 GHz candidate kept (n %d)", wb.n);
+    }
+}
+
 static void sensitivity_table(void)
 {
     static uint8_t buf[N];
@@ -844,6 +1018,7 @@ int main(void)
     run_suite(3);
     test_bearing();
     test_channels();
+    test_sweep_decide();
     test_switch_bits();
     test_report();
     test_wideband_report();

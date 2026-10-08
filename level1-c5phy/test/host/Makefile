@@ -4,8 +4,8 @@
 CC      ?= gcc
 CFLAGS  ?= -std=gnu11 -O2 -Wall -Wextra -Wno-unused-parameter
 SRC     = ../../src
-OBJS    = $(SRC)/demod.c $(SRC)/bearing.c $(SRC)/report.c $(SRC)/fpv_channels.c $(SRC)/switch_bits.c
-HDRS    = $(SRC)/demod.h $(SRC)/bearing.h $(SRC)/report.h $(SRC)/fpv_channels.h $(SRC)/switch_bits.h
+OBJS    = $(SRC)/demod.c $(SRC)/bearing.c $(SRC)/report.c $(SRC)/fpv_channels.c $(SRC)/switch_bits.c $(SRC)/sweep_decide.c
+HDRS    = $(SRC)/demod.h $(SRC)/bearing.h $(SRC)/report.h $(SRC)/fpv_channels.h $(SRC)/switch_bits.h $(SRC)/sweep_decide.h
 DUAL_FLAGS = -DDUAL_BAND=1 -DLOWBAND=2
 
 all: test_level1 test_level1_dualband

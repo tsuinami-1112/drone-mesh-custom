@@ -63,7 +63,8 @@
                                    C5PHY_MAX_BOOTSTRAP_OFFSET_MHZ to 140 or rf_tune refuses them */
 #endif
 #ifndef GAP_CHANNELS
-#define GAP_CHANNELS 1          /* X1 5675, X2 5715: the two holes of the table that no pull-in reaches from a neighbour */
+#define GAP_CHANNELS 1          /* X1 5675, X2 5715: the two 20 MHz holes of the analog table (E3/E2, E1/A8). A carrier
+                                   there gets a table key of its own instead of a pull-in keyed to a neighbour */
 #endif
 #define MAX_CHANNELS 64         /* upper bound of the plan (58 with every variant on): the per-channel arrays */
 
@@ -218,9 +219,16 @@
                                                LOWBAND 2 needs 140: L1 5362 from 5500) */
 #endif
 #ifndef ALIAS_GUARD
-#define ALIAS_GUARD 1                   /* drop a hit above the last public centre (5885) that merely
-                                           mirrors a carrier at that centre: what a synthesizer that did
-                                           not follow phy_set_freq would show (bench stage 2 settles it) */
+#define ALIAS_GUARD 1                   /* drop a hit, or a wideband candidate, above the last public centre
+                                           (5885) that merely mirrors a carrier at that centre: what a
+                                           synthesizer that did not follow phy_set_freq would show (bench
+                                           stage 2 settles it). alias_drop in the heartbeat counts both */
+#endif
+#ifndef ALIAS_LEVEL_DB
+#define ALIAS_LEVEL_DB 2.0f             /* a mirror reads within this of the carrier the parked receiver sees ... */
+#endif
+#ifndef ALIAS_NEAR_MHZ
+#define ALIAS_NEAR_MHZ 5                /* ... a carrier (hit or candidate) within this of the top centre */
 #endif
 
 /* ---- Detection ------------------------------------------------------------- */
@@ -300,6 +308,16 @@
 #endif
 #ifndef WB_FOLD_MHZ
 #define WB_FOLD_MHZ 25                  /* wideband candidates within this of a stronger one are the same emitter */
+#endif
+#ifndef WB_ANALOG_OWN_MHZ
+#define WB_ANALOG_OWN_MHZ 30            /* an analog carrier (a hit, or a pull-in that found one) within this owns
+                                           a wideband candidate. Wider than PEAK_PICK_MHZ: the channel filter's
+                                           skirt turns a strong FM carrier's video deviation into amplitude
+                                           modulation, and 18-24 MHz off the carrier that image passes the
+                                           candidate gate (level, cv2 0.6-1.4, steady over the windows: model
+                                           with a soft skirt; a sharp one stops at 18). The cost: a digital
+                                           link within 30 MHz of a live analog carrier is not reported while
+                                           both are up. Bench stage 5 measures the skirt */
 #endif
 #ifndef WB_SIGMA_EXTRA_DEG
 #define WB_SIGMA_EXTRA_DEG 5.0f         /* added to the bearing sigma of a wideband report (coarser levels at ~3 LSB rms) */

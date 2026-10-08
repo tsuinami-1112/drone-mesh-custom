@@ -63,6 +63,7 @@
 #include "iq_capture.h"
 #include "sector_switch.h"
 #include "switch_bits.h"
+#include "sweep_decide.h"
 
 // Surveyed position (optional, from STATION_LAT / STATION_LON: see config.h)
 #if defined(STATION_LAT) != defined(STATION_LON)
@@ -744,21 +745,6 @@ static void print_ready_line()
 // =============================================================================
 static void service_io();
 
-static float best_level(int idx) { const ChannelResult& r = s_results[idx]; return r.sec[r.best].level_db; }
-
-/* Insertion sort of channel indices, strongest sector first. */
-static void sort_by_level(int* idx, int n)
-{
-    for (int i = 1; i < n; i++) {
-        int k = idx[i], j = i - 1;
-        while (j >= 0 && best_level(idx[j]) < best_level(k)) {
-            idx[j + 1] = idx[j];
-            j--;
-        }
-        idx[j + 1] = k;
-    }
-}
-
 #if PULLIN
 /* The centroid an off-channel carrier asks to be pulled in to, or 0: a strong
  * constant-envelope carrier that fails the coherence gate with |cfo| from
@@ -772,6 +758,30 @@ static int pullin_target(const ChannelResult& r, int freq_mhz)
     return fpv_wifi_bootstrap(target, nullptr, nullptr) ? target : 0;
 }
 #endif
+
+/* The decision stage of the sweep lives in sweep_decide.c (plain C, host
+ * tested): run_sweep fills its view of the channels and acts on its answers. */
+static SweepChannel s_sweep_ch[MAX_CHANNELS];
+static SweepAnalog  s_sweep_an;
+static_assert(MAX_CHANNELS <= SWEEP_MAX_CHANNELS, "sweep_decide.h bounds the per-channel arrays");
+static_assert(WB_MAX_PER_SWEEP <= SWEEP_MAX_PASSES && PULLIN_MAX_PER_SWEEP <= SWEEP_MAX_PASSES,
+              "sweep_decide.h bounds the passes per sweep");
+
+static SweepRules sweep_rules()
+{
+    SweepRules r;
+    r.peak_pick      = PEAK_PICK;
+    r.peak_pick_mhz  = PEAK_PICK_MHZ;
+    r.alias_guard    = ALIAS_GUARD;
+    r.top_centre_mhz = fpv_wifi_top_centre_mhz();
+    r.alias_level_db = ALIAS_LEVEL_DB;
+    r.alias_near_mhz = ALIAS_NEAR_MHZ;
+    r.pullin_max     = PULLIN_MAX_PER_SWEEP;
+    r.wb_fold_mhz    = WB_FOLD_MHZ;
+    r.wb_own_mhz     = WB_ANALOG_OWN_MHZ;
+    r.wb_max         = WB_MAX_PER_SWEEP;
+    return r;
+}
 
 static void run_sweep()
 {
@@ -787,109 +797,69 @@ static void run_sweep()
     for (int b = 0; b < 2; b++)
         if (s_nf_level_min[b] < 1e8f) s_nf_dbm[b] = dbm_from_level(s_nf_level_min[b], s_cal[b]);
 
-    // Analog hits, strongest first.
-    int hits[MAX_CHANNELS], nh = 0;
-    for (int i = 0; i < n; i++) if (s_results[i].hit) hits[nh++] = i;
-    sort_by_level(hits, nh);
-    // PEAK_PICK: the same carrier shows on the channels that overlap it (R3 5732,
-    // B1 5733, F1 5740); keep the strongest, drop the rest.
-    bool drop[MAX_CHANNELS] = {};
-    if (PEAK_PICK) {
-        for (int i = 0; i < nh; i++) {
-            if (drop[i]) continue;
-            for (int j = i + 1; j < nh; j++)
-                if (!drop[j] && abs((int)fpv_channel(hits[i])->freq_mhz - (int)fpv_channel(hits[j])->freq_mhz) <= PEAK_PICK_MHZ) drop[j] = true;
-        }
+    for (int i = 0; i < n; i++) {
+        const ChannelResult& r = s_results[i];
+        s_sweep_ch[i].freq_mhz = fpv_channel(i)->freq_mhz;
+        s_sweep_ch[i].level_db = r.sec[r.best].level_db;
+        s_sweep_ch[i].hit = r.hit;
+        s_sweep_ch[i].wb = r.wb;
     }
-#if ALIAS_GUARD
-    // A synthesizer that did not follow phy_set_freq past the last public centre
-    // leaves the receiver at that centre while the firmware believes it is 20-60
-    // MHz higher: a carrier near the centre then shows up again, at the same
-    // level, on every channel above it. Drop such a mirror image. A 5 GHz thing:
-    // every 2.4 GHz channel sits under the top centre and is skipped here.
-    const int top = fpv_wifi_top_centre_mhz();
-    for (int i = 0; i < nh; i++) {
-        if (drop[i]) continue;
-        const FpvChannel* ci = fpv_channel(hits[i]);
-        if ((int)ci->freq_mhz <= top) continue;
-        float li = best_level(hits[i]);
-        for (int j = 0; j < nh; j++) {
-            if (j == i || drop[j]) continue;
-            const FpvChannel* cj = fpv_channel(hits[j]);
-            if (abs((int)cj->freq_mhz - top) > 5) continue;         // a carrier the parked receiver sees
-            if (fabsf(li - best_level(hits[j])) <= 2.0f) { drop[i] = true; s_alias_drop++; break; }
-        }
-    }
-#endif
+    const SweepRules rules = sweep_rules();
+
+    // Analog hits, strongest first: PEAK_PICK folds the same carrier seen on
+    // overlapping channels (R3 5732, B1 5733, F1 5740) into the strongest;
+    // ALIAS_GUARD drops the mirror a parked synthesizer shows above the top
+    // public centre (see sweep_decide.c).
+    sweep_analog(s_sweep_ch, n, &rules, &s_sweep_an);
+    s_alias_drop += s_sweep_an.alias_dropped;
     int videos = 0;
-    for (int i = 0; i < nh; i++) {
-        if (drop[i]) continue;
-        report_hit(s_results[hits[i]], hits[i], fpv_channel(hits[i])->freq_mhz, &videos);
+    for (int i = 0; i < s_sweep_an.nh; i++) {
+        if (s_sweep_an.drop[i]) continue;
+        const int idx = s_sweep_an.hits[i];
+        report_hit(s_results[idx], idx, fpv_channel(idx)->freq_mhz, &videos);
         service_io();
         if (s_mode != MODE_SCAN) return;   // a bench 'h' arrived: leave the radio where the console put it
     }
 
+    int owners[SWEEP_MAX_PASSES], n_owners = 0;     // analog carriers found off the table this sweep
 #if PULLIN
     // Pull-in: a strong constant-envelope carrier between table channels fails
     // the coherence gate on both neighbours; its centroid is in cfo_khz. One
     // retune onto it and the four sectors again; a hit there is reported keyed
-    // to the nearest table channel with freq_peak at the centroid. Both
-    // neighbours see the same carrier: one attempt per PEAK_PICK_MHZ.
-    int pulls[MAX_CHANNELS], np = 0;
-    for (int i = 0; i < n; i++) if (pullin_target(s_results[i], fpv_channel(i)->freq_mhz)) pulls[np++] = i;
-    sort_by_level(pulls, np);
-    int tried[PULLIN_MAX_PER_SWEEP], nt = 0;
-    for (int i = 0; i < np && nt < PULLIN_MAX_PER_SWEEP; i++) {
-        int target = pullin_target(s_results[pulls[i]], fpv_channel(pulls[i])->freq_mhz);
-        bool owned = false;
-        for (int h = 0; h < nh && !owned; h++) owned = abs((int)fpv_channel(hits[h])->freq_mhz - target) <= PEAK_PICK_MHZ;   // an analog hit has it
-        for (int t = 0; t < nt && !owned; t++) owned = abs(tried[t] - target) <= PEAK_PICK_MHZ;
-        if (owned) continue;
-        tried[nt++] = target;
+    // to the nearest table channel with freq_peak at the centroid, and owns
+    // the wideband candidates around it like a table-channel hit.
+    int targets[MAX_CHANNELS], tries[SWEEP_MAX_PASSES];
+    for (int i = 0; i < n; i++) targets[i] = pullin_target(s_results[i], fpv_channel(i)->freq_mhz);
+    const int nt = sweep_pullin(s_sweep_ch, targets, n, &s_sweep_an, &rules, tries);
+    for (int t = 0; t < nt; t++) {
         s_pullin++;
         ChannelResult pr;
-        scan_freq((uint16_t)target, &pr);
-        int key = fpv_nearest(target);
-        if (pr.hit && key >= 0) report_hit(pr, key, (uint16_t)target, &videos);
+        scan_freq((uint16_t)tries[t], &pr);
+        int key = fpv_nearest(tries[t]);
+        if (pr.hit && key >= 0) {
+            report_hit(pr, key, (uint16_t)tries[t], &videos);
+            owners[n_owners++] = tries[t];
+        }
         service_io();
         if (s_mode != MODE_SCAN) return;
     }
 #endif
 
 #if WIDEBAND
-    // Wideband candidates, strongest first. A digital link 10-40 MHz wide shows
-    // on every table channel it overlaps: fold the weaker ones within WB_FOLD_MHZ
-    // into the strongest (span_mhz keeps the footprint), and an analog hit within
-    // PEAK_PICK_MHZ owns that carrier (its sidebands are not a second emitter).
-    int wbs[MAX_CHANNELS], nw = 0;
-    for (int i = 0; i < n; i++) if (s_results[i].wb) wbs[nw++] = i;
-    sort_by_level(wbs, nw);
-    int fold[MAX_CHANNELS];                         // position of the stronger candidate this one folded into, -1 = survivor
-    for (int i = 0; i < nw; i++) fold[i] = -1;
-    for (int i = 0; i < nw; i++) {
-        if (fold[i] >= 0) continue;
-        for (int j = i + 1; j < nw; j++)
-            if (fold[j] < 0 && abs((int)fpv_channel(wbs[i])->freq_mhz - (int)fpv_channel(wbs[j])->freq_mhz) <= WB_FOLD_MHZ) fold[j] = i;
-    }
-    int checks = 0;
-    for (int i = 0; i < nw && checks < WB_MAX_PER_SWEEP; i++) {
-        if (fold[i] >= 0) continue;
-        const int fi = fpv_channel(wbs[i])->freq_mhz;
-        bool owned = false;
-        for (int h = 0; h < nh && !owned; h++) owned = abs((int)fpv_channel(hits[h])->freq_mhz - fi) <= PEAK_PICK_MHZ;
-        if (owned) continue;
-        int lo = fi, hi = fi;
-        for (int j = i + 1; j < nw; j++) {
-            if (fold[j] != i) continue;
-            int fj = fpv_channel(wbs[j])->freq_mhz;
-            if (fj < lo) lo = fj;
-            if (fj > hi) hi = fj;
-        }
-        checks++;
-        report_wideband(wbs[i], hi - lo);
+    // Wideband candidates, strongest first: the mirror test, the fold within
+    // WB_FOLD_MHZ (span_mhz keeps the footprint), and an analog carrier within
+    // WB_ANALOG_OWN_MHZ owns the candidate: its sidebands, and the image the
+    // filter skirt makes of a strong FM carrier, are not a second emitter.
+    SweepWideband wb;
+    sweep_wideband(s_sweep_ch, n, &s_sweep_an, owners, n_owners, &rules, &wb);
+    s_alias_drop += wb.alias_dropped;
+    for (int i = 0; i < wb.n; i++) {
+        report_wideband(wb.idx[i], wb.span_mhz[i]);
         service_io();
         if (s_mode != MODE_SCAN) return;
     }
+#else
+    (void)owners; (void)n_owners;
 #endif
 }
 

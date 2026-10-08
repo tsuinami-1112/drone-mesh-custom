@@ -11,6 +11,7 @@ the table that names a digital system, is on level2-main's
 
 Code: [`include/config.h`](../level1-c5phy/include/config.h) (every constant),
 [`src/main.cpp`](../level1-c5phy/src/main.cpp) (sweep, gates, reports),
+[`src/sweep_decide.c`](../level1-c5phy/src/sweep_decide.c) (what the sweep reports: fold, ownership, mirrors, pull-in picks),
 [`src/demod.c`](../level1-c5phy/src/demod.c) (metrics, video, lag features),
 [`src/bearing.c`](../level1-c5phy/src/bearing.c),
 [`src/report.c`](../level1-c5phy/src/report.c),
@@ -175,15 +176,21 @@ model, one 6 dB step putting it under the coherence power gate). `GAIN_STEP`
 price of more clipping in every measurement. `GAIN_STEP` is in the boot line
 (`gain_step`) so a log says which firmware made a report.
 
-**After the sweep.** Analog hits are sorted strongest first. `PEAK_PICK`
-(within `PEAK_PICK_MHZ` 20) folds the same carrier seen on overlapping channels
-(R3 5732 / B1 5733 / F1 5740) into the strongest. `ALIAS_GUARD` drops a hit
-above the last public 5 GHz centre (5885) whose level is within 2 dB of a hit
-within 5 MHz of that centre: what a synthesizer that did not follow
-`phy_set_freq` would show, a mirror of the carrier the parked receiver sees;
-`alias_drop` counts them, bench stage 2 settles whether the pull works and
-`-DC5PHY_MAX_MHZ=5885` removes the channels if it does not. The guard skips
-2.4 GHz hits, which all sit under that centre. The strongest
+**After the sweep.** The decisions from here on are plain C in
+`sweep_decide.c` (`sweep_analog`, `sweep_pullin`, `sweep_wideband`), driven by
+`run_sweep` with the per-channel results and the constants of `config.h`, and
+by the host tests with hand-placed hits. Analog hits are sorted strongest
+first. `PEAK_PICK` (within `PEAK_PICK_MHZ` 20) folds the same carrier seen on
+overlapping channels (R3 5732 / B1 5733 / F1 5740) into the strongest.
+`ALIAS_GUARD` drops a hit above the last public 5 GHz centre (5885) whose
+level is within `ALIAS_LEVEL_DB` 2 dB of a hit within `ALIAS_NEAR_MHZ` 5 MHz of
+that centre: what a synthesizer that did not follow `phy_set_freq` would show,
+a mirror of the carrier the parked receiver sees; the same test is applied to
+the wideband candidates (section 4), `alias_drop` counts both, bench stage 2
+settles whether the pull works and `-DC5PHY_MAX_MHZ=5885` removes the channels
+if it does not. The guard skips 2.4 GHz hits, which all sit under that centre.
+A folded or mirrored hit is not reported, but it still stands for its carrier
+when the pull-in and wideband stages ask what an analog carrier owns. The strongest
 `VIDEO_MAX_PER_SWEEP` 2 hits get the video check (`VIDEO_WINDOWS` 8,
 `VIDEO_WINDOW_GAP_MS` 5, `VIDEO_MIN_WINDOWS` 3 windows with a PAL / NTSC line
 structure for a verdict); every hit is reported, with the bearing from the
@@ -209,14 +216,38 @@ wb = WIDEBAND
   && b.cv2 >= WB_CV2_MIN && b.cv2 <= WB_CV2_MAX      (0.5..1.5: noise-like, but not bursty)
 ```
 
-**Fold** (`run_sweep`): candidates sorted strongest first; a candidate within
-`WB_FOLD_MHZ` 25 of a stronger one is the same emitter (a 10-40 MHz link shows
-on every table channel it overlaps, and the table's points are 1-20 MHz
+**Mirror test, fold, ownership** (`sweep_wideband`, sweep_decide.c):
+candidates sorted strongest first. Under `ALIAS_GUARD` a candidate above the
+top public centre (5885) whose level is within `ALIAS_LEVEL_DB` of a candidate
+or an analog hit within `ALIAS_NEAR_MHZ` of that centre is the parked
+synthesizer's mirror and dropped (`alias_drop` counts it): a digital link near
+5885 would otherwise show again on E6, R8, E7 and E8, and the fold below only
+reaches E6, so R8 would have come out as a second link, with a centre the
+mapper's Walksnail row matches. A real second link up there at the same level
+within 2 dB is lost to this, as it is for analog. Then a candidate within
+`WB_FOLD_MHZ` 25 of a stronger one is the same emitter (a 10-40 MHz link
+shows on every table channel it overlaps, and the table's points are 1-20 MHz
 apart), and `span_mhz` keeps the footprint (max - min MHz of the channels
-folded together, 0 when alone). A candidate within `PEAK_PICK_MHZ` of an
-analog hit is dropped: the analog hit owns that carrier and its sidebands are
-not a second emitter. At most `WB_MAX_PER_SWEEP` 2 survivors get a
-confirmation pass per sweep.
+folded together, 0 when alone). A survivor within `WB_ANALOG_OWN_MHZ` 30 of an
+analog carrier (a hit, reported or folded, or a pull-in that found one this
+sweep) belongs to that carrier and is not checked: its sidebands are not a
+second emitter, and neither is the image the channel filter's skirt makes of
+it. That image is why the radius is wider than `PEAK_PICK_MHZ`: the video
+deviation of a strong FM carrier swings its instantaneous frequency across
+the filter edge, the skirt turns that into amplitude modulation, and seen from
+a table channel on the far side of the edge the carrier fails coherence,
+reads a noise-like envelope and holds its level over the three windows,
+which is the candidate rule. Model (FM video through a soft-skirt filter,
+-16 dB at 25 MHz, 30 dB over threshold): at 22 and 24 MHz offset it passes
+the gate with `cv2` 0.7-1.4, and the confirmation pass then reads duty 100,
+class `dot11`, the 10 MHz bucket and a centre 40 MHz wrong (the offset
+estimate wraps past Nyquist); with a sharp skirt it passes at 18 MHz only.
+Twelve table-channel pairs are 21-24 MHz apart (R4 with B4 and A7, R5 with A5
+and B6, R6 with F5, A1 and B8, among others). The cost of 30: a digital link
+within 30 MHz of a live analog carrier is not reported while both are up.
+Bench stage 5 measures the real skirt; a sharp one allows the radius back
+down. At most `WB_MAX_PER_SWEEP` 2 survivors get a confirmation pass per
+sweep.
 
 **Confirmation pass** (`wideband_check`): tune the channel, the strongest
 sector, the gain the sweep measured; `WB_WINDOWS` 8 windows `WB_WINDOW_GAP_MS`
@@ -285,6 +316,8 @@ levels of a noise-like signal at ~3 LSB rms are coarser than a carrier's), and
 | `WB_R128_HIGH`, `WB_R2667_HIGH` | 0.15, 0.04 | `conf` high, see above |
 | `WB_MAX_PER_SWEEP` | 2 | confirmation passes per sweep (about 150 ms each) |
 | `WB_FOLD_MHZ` | 25 | candidates this close are one emitter; wider than `PEAK_PICK_MHZ` because the links are |
+| `WB_ANALOG_OWN_MHZ` | 30 | an analog carrier this close owns the candidate: sidebands and the filter-skirt image of a strong FM carrier (18-24 MHz off it in the model) are not a second emitter; a digital link that close to a live analog carrier waits |
+| `ALIAS_LEVEL_DB` / `ALIAS_NEAR_MHZ` | 2.0 / 5 | the mirror test, shared with the analog guard: a candidate above 5885 within 2 dB of a carrier within 5 MHz of 5885 |
 | `WB_SIGMA_EXTRA_DEG` | 5.0 | added to the bearing sigma base |
 | `USB_JSON_MAX` | 768 | was 640: the wideband USB record is ~600 bytes |
 
@@ -321,7 +354,11 @@ sweep (both neighbours see the same carrier). Each attempt counts in
 four sectors exactly as a table channel. A hit there is reported by
 `report_hit` keyed to the nearest table channel (`fpv_nearest`), with
 `cfo_khz` and `freq_peak` relative to that channel, so the tracking key stays
-a table channel and the carrier's real frequency is still in the record.
+a table channel and the carrier's real frequency is still in the record. A
+pull-in that found a carrier also owns the wideband candidates within
+`WB_ANALOG_OWN_MHZ` of its target, exactly as a table-channel hit does
+(section 4): the skirt image of a strong off-channel carrier is not a digital
+link either.
 
 The gap points X1 5675 and X2 5715 fill the two 20 MHz holes of the analog
 table (between E3 5665 / E2 5685 and E1 5705 / A8 5725): a carrier there is a
@@ -567,6 +604,7 @@ bytes, every record kind appears under both tags, and the run ended in
 | the lag scan | 128 on the first 802.11-like window (20 and 40 MHz); 2665..2669 on at least 4 of 8 LTE-like windows (the CP peak is about three sigma over the scan's own noise on one window) |
 | bearing | the values of four geometries, the boundary and weak-signal sigmas, the ±45° clamp, the masked cases, NULL mask = all valid |
 | channel plan | 50 / 58 channels, R A B E F first, X D L after F8, `fpv_find` by name, lower case and MHz, `fpv_nearest`, D1 / X2 / L4, L1 only with `LOWBAND` 2, G3 only with `DUAL_BAND`, the band of a frequency and of a channel, the `basic_id` prefixes, the bootstrap of R3 / A1 / D1 / L4 / G1 / G3, the second-nearest and farthest ranks, out-of-window targets, that ranking never crosses bands (13 and 24 centres), the top centre 5885 |
+| sweep decisions (`sweep_decide.c`) | on the real channel plan: analog hits strongest first with the R3 / B1 / F1 fold; the R8 mirror of an E5 carrier dropped and counted, kept 6 dB apart or with `ALIAS_GUARD` 0; pull-in picks strongest first, the neighbour's copy and a target an analog hit owns skipped, two per sweep; a 20 MHz link on F3 / A5 / B4 / R5 folded to A5 with span 26, a candidate folding into the strongest only, two passes per sweep; the skirt images on B4 and A7 of an R4 carrier passing the old 20 MHz radius and owned by 30 while the far link is reported, a folded hit and a successful pull-in owning the same way; the E6 / R8 / E7 / E8 mirrors of a digital link at E5 dropped (four counted), a second link 6 dB under kept with its span, an analog carrier near 5885 as the reference; 2.4 GHz never a mirror (dual-band run) |
 | switch bits | every accepted and refused form of the `t` argument, formatting round trips |
 | analog report | `mac`, `basic_id`, `fp`, `rssi_raw`; the USB record and a mesh record ≤ 191 bytes with a 22-character node id; the tiny-buffer refusal |
 | heartbeat | the USB fields in order (`fe_gain_db`, `bands`, `antenna_dbi`, `beamwidth_deg`, `bearing_k`, `wb_seen`, `pullin`, `tune_fail`), `wb_seen` after `video_seen` on the mesh, the position after `heading` on both and surviving a long node id, `nf_dbm_24` after `nf_dbm` on USB only |
