@@ -52,6 +52,11 @@ less.
 | D8 | `phy_set_freq(uint16_t mhz, int offset)` signature | C5VRX disassembly of the 6.0 blob; same symbol size in 5.5 | 5 % |
 | D9 | Gain index 62 = maximum; noise does not clip at 62 | C5VRX walk-around log: `G_act=62 P_med=1 clip=0` with the VTX off | 5 % |
 
+Session A confirmed D1–D4 on the installed package itself on 2026-10-08, in
+the cloud container and on the bench PC (Arduino 3.3.12, libs 5.5.5
+b774170ff46, platform 55.03.312): all nine symbols global, the strong-symbol
+build links, both environments build. Results in the Data Plan log.
+
 ### 1b. Open, most uncertain first
 
 | Rank | Assumption | Chance wrong | Why that number | If wrong: impact / fix size | Earliest test |
@@ -91,7 +96,7 @@ session C because it is free there.
 
 | Session | Who | What | Settles (Part 1 ranks) |
 |---|---|---|---|
-| **A** desk | lead | Host tests (the suite runs twice); both builds; `nm` on the installed libs; libs' sdkconfig for the record; strong-symbol build | D1–D3 on the actual package |
+| **A** desk | lead | **Done 2026-10-08** (container and bench PC). Host tests (the suite runs twice); both builds; `nm` on the installed libs; libs' sdkconfig for the record; strong-symbol build | D1–D4 on the actual package: confirmed |
 | **B** bench 1 | helpers + lead reachable | B0 flash/boot → B1 receiver alive, noise floor, `cv2` → B1b `phy_set_freq` (R3, cross-checks, E4/E8 edges) → B1c gain scale → B1d 6-lane vs 8-lane | 11, 3, 10, 14, 5, 4, 8, 9 (first readings) |
 | **C** bench 2 | helpers | Stage 2 coverage and country → stage 3 selectivity, sector-equality, sweep-versus-hold, the Wi-Fi access point idle and loaded → quick video and `w` look | 9, 5, 12, the Wi-Fi half of 2, first look at 6 |
 | **D** outdoors | helpers measure, lead computes | Single-patch pattern sweep, 15° steps, 360° | 1 (early), patch gain |
@@ -183,7 +188,10 @@ files both under `docs/bench/`.
 
 ---
 
-## Part 4 — Session A: desk checks (lead, 30–60 min, no hardware)
+## Part 4 — Session A: desk checks (lead, 30–60 min, no hardware) — done 2026-10-08
+
+Done on the bench PC and in the cloud container on 2026-10-08; the results are
+in the Data Plan log. Kept here for the next machine that joins the bench.
 
 1. `make -C level1-c5phy/test/host` → the suite runs twice (default plan and
    dual-band) and must end with `ALL TESTS PASSED` and `check_json: … OK` both
