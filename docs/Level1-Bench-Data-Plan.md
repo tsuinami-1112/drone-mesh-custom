@@ -16,7 +16,10 @@ beside it; stages 0–8 on sheets 6–9, the kit index and the skirt record on
 sheet 10); the reasoning behind every threshold is
 `docs/Level1-Detection-Internals.md`; the root `README.md` carries the
 condensed bring-up checklist and the troubleshooting table. The records the
-user fills go to `docs/bench/` (see its README).
+user fills go to `docs/bench/` (see its README). The order the stages are
+run in, with every assumption ranked by how likely it is wrong today and the
+first sessions written out for helpers, is `docs/Level1-Bench-Run-Order.md`;
+the decisions after each measurement stay here.
 
 ---
 
